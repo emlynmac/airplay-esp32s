@@ -146,13 +146,19 @@ menu "Board Configuration"
                     
             config DAC_I2C_SDA
                 int "I2C SDA GPIO for DAC"
+                default 27 if BOARD_SQUEEZEAMP_COMMON
+                default 27 if BOARD_ESPARAGUS_AUDIO_BRICK || BOARD_ESPARAGUS_AUDIO_BRICK_S3
                 default -1
+                depends on DAC_TAS57XX || DAC_TAS58XX || DAC_WM8711BL
                 help
                     I2C data GPIO pin for DAC control. Set to -1 if not used.
 
             config DAC_I2C_SCL
                 int "I2C SCL GPIO for DAC"
+                default 26 if BOARD_SQUEEZEAMP_COMMON
+                default 26 if BOARD_ESPARAGUS_AUDIO_BRICK || BOARD_ESPARAGUS_AUDIO_BRICK_S3
                 default -1
+                depends on DAC_TAS57XX || DAC_TAS58XX || DAC_WM8711BL
                 help
                     I2C clock GPIO pin for DAC control. Set to -1 if not used.
 

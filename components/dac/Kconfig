@@ -20,6 +20,13 @@ menu "DAC Configuration"
         help
             Build the ES8311 stereo audio codec driver.
             The board must register it at runtime via dac_register().
+    
+    config DAC_WM8711BL
+        bool "Wolfson WM8711BL"
+        default n
+        help
+            Build the Wolfson / Cirrus Logic WM8711BL stereo DAC driver.
+            The board must register it at runtime via dac_register().
 
     config DAC_CONTROLS_VOLUME
         bool
