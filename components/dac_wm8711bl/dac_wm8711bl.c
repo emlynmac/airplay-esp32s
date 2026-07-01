@@ -25,8 +25,9 @@
 #define WM8711_ADDR_CSB_LOW  0x1A
 #define WM8711_ADDR_CSB_HIGH 0x1B
 
-#define I2C_TIMEOUT    100
-#define I2C_LINE_SPEED 100000
+#define I2C_TIMEOUT        100
+#define I2C_LINE_SPEED     20000 // 20 kHz: gentle edges for a marginal/noisy bus
+#define WM8711_I2C_RETRIES 3
 
 static const char TAG[] = "WM8711BL DAC";
 
@@ -94,10 +95,40 @@ static uint8_t wm8711_addr;
 static i2c_master_bus_handle_t s_bus_handle;
 static i2c_master_dev_handle_t wm8711_dev;
 
+/* Current headphone volume register code (without ZCEN/BOTH bits).  Tracked so
+ * the configuration can be re-applied (e.g. after MCLK starts) without losing
+ * the user's volume. */
+static uint8_t s_hp_vol_reg = WM8711_HP_VOL_0DB;
+
 /* Forward declarations */
 static esp_err_t wm8711_write_reg(uint8_t reg, uint16_t data);
+static esp_err_t wm8711_try_write(uint8_t reg, uint16_t data);
+static esp_err_t wm8711_configure(void);
 static esp_err_t i2c_bus_add_device(uint8_t addr,
                                     i2c_master_dev_handle_t *handle);
+
+/* DIAGNOSTIC: poll the control interface and log the exact time the chip
+ * stops/starts acknowledging.  Writes a harmless register (POWER) so it does
+ * not disturb the 2-wire state machine.  Remove once root cause is found. */
+static void wm8711_health_task(void *arg) {
+  (void)arg;
+  bool last_ok = true;
+  int i = 0;
+  while (1) {
+    esp_err_t e = wm8711_try_write(WM8711_REG_POWER, WM8711_PWR_RUNNING);
+    bool ok = (e == ESP_OK);
+    long long t_ms = (long long)xTaskGetTickCount() * portTICK_PERIOD_MS;
+    if (ok != last_ok) {
+      ESP_LOGW(TAG, "DIAG health: %s at %lldms (%s)", ok ? "RECOVERED" : "LOST",
+               t_ms, esp_err_to_name(e));
+      last_ok = ok;
+    } else if ((i % 8) == 0) {
+      ESP_LOGI(TAG, "DIAG health: %s at %lldms", ok ? "ok" : "FAIL", t_ms);
+    }
+    i++;
+    vTaskDelay(pdMS_TO_TICKS(250));
+  }
+}
 
 /* ------------------------------------------------------------------ */
 /*  DAC ops implementation                                             */
@@ -134,12 +165,10 @@ static esp_err_t wm8711_init(void *i2c_bus) {
       wm8711_addr = addrs[i];
       ESP_LOGI(TAG, "Detected WM8711BL at @0x%02X (reset OK)", wm8711_addr);
 
-      /* The software reset can glitch the bus.  Drop the device handle,
-       * reset the I2C master to recover, wait for the chip to settle,
-       * then re-add the device so the driver starts from a clean state.
-       * Note: bus_reset may warn about strapping pins — this is harmless. */
+      /* The software reset needs a moment to settle.  Drop the detection
+       * device handle, wait for the chip to come back, then re-add the
+       * device so the driver starts from a clean state. */
       i2c_master_bus_rm_device(try_dev);
-      i2c_master_bus_reset(s_bus_handle);
       vTaskDelay(pdMS_TO_TICKS(20));
 
       err = i2c_bus_add_device(wm8711_addr, &wm8711_dev);
@@ -158,40 +187,65 @@ static esp_err_t wm8711_init(void *i2c_bus) {
     return ESP_ERR_NOT_FOUND;
   }
 
-  /* 2. Power-down control – power up DAC + headphone output,
-   *    keep internal oscillator and line-in powered down */
-  err = wm8711_write_reg(WM8711_REG_POWER, WM8711_PWR_RUNNING);
-  if (err != ESP_OK) return err;
-
-  /* 3. Analogue audio path – route DAC to output mixer */
-  err = wm8711_write_reg(WM8711_REG_APATH, WM8711_APATH_DACSEL);
-  if (err != ESP_OK) return err;
-
-  /* 4. Digital audio path – unmute DAC, no de-emphasis */
-  err = wm8711_write_reg(WM8711_REG_DPATH, 0x00);
-  if (err != ESP_OK) return err;
-
-  /* 5. Digital audio interface – I2S, 16-bit, slave mode */
-  err = wm8711_write_reg(WM8711_REG_IFACE,
-                          WM8711_IFACE_FMT_I2S | WM8711_IFACE_IWL_16);
-  if (err != ESP_OK) return err;
-
-  /* 6. Sampling control – normal mode, 256 fs, 44.1 kHz */
-  err = wm8711_write_reg(WM8711_REG_SAMPLING, WM8711_SAMP_SR_441K);
-  if (err != ESP_OK) return err;
-
-  /* 7. Headphone volume – 0 dB, zero-cross enabled, both channels */
-  err = wm8711_write_reg(WM8711_REG_LHPOUT,
-                          WM8711_HP_VOL_0DB | WM8711_HPOUT_ZCEN |
-                              WM8711_HPOUT_BOTH);
-  if (err != ESP_OK) return err;
-
-  /* 8. Activate the digital audio interface */
-  err = wm8711_write_reg(WM8711_REG_ACTIVE, WM8711_ACTIVE);
-  if (err != ESP_OK) return err;
+  /* Apply the register configuration.  Note: MCLK is typically not running
+   * yet at board-init time; when it later starts the chip briefly drops off
+   * the bus and resets its registers, so on_i2s_started() re-applies this. */
+  err = wm8711_configure();
+  if (err != ESP_OK)
+    return err;
 
   ESP_LOGI(TAG, "WM8711BL initialised at I2C 0x%02X", wm8711_addr);
+
+  /* DIAGNOSTIC: periodic I2C health probe to timestamp exactly when (if) the
+   * chip stops acknowledging, decoupled from the I2S hook.  Remove once the
+   * root cause is found. */
+  xTaskCreate(wm8711_health_task, "wm8711_diag", 3072, NULL, 3, NULL);
+
   return ESP_OK;
+}
+
+/**
+ * Apply the full register configuration.  Reused at init and again after MCLK
+ * starts.  Uses the tracked headphone volume so re-applying does not reset it.
+ */
+static esp_err_t wm8711_configure(void) {
+  esp_err_t err;
+
+  /* Power-down control – power up DAC + headphone output, keep internal
+   * oscillator and line-in powered down (MCLK is supplied externally). */
+  err = wm8711_write_reg(WM8711_REG_POWER, WM8711_PWR_RUNNING);
+  if (err != ESP_OK)
+    return err;
+
+  /* Analogue audio path – route DAC to output mixer */
+  err = wm8711_write_reg(WM8711_REG_APATH, WM8711_APATH_DACSEL);
+  if (err != ESP_OK)
+    return err;
+
+  /* Digital audio path – unmute DAC, no de-emphasis */
+  err = wm8711_write_reg(WM8711_REG_DPATH, 0x00);
+  if (err != ESP_OK)
+    return err;
+
+  /* Digital audio interface – I2S, 16-bit, slave mode */
+  err = wm8711_write_reg(WM8711_REG_IFACE,
+                         WM8711_IFACE_FMT_I2S | WM8711_IFACE_IWL_16);
+  if (err != ESP_OK)
+    return err;
+
+  /* Sampling control – normal mode, 256 fs, 44.1 kHz */
+  err = wm8711_write_reg(WM8711_REG_SAMPLING, WM8711_SAMP_SR_441K);
+  if (err != ESP_OK)
+    return err;
+
+  /* Headphone volume – current level, zero-cross enabled, both channels */
+  err = wm8711_write_reg(WM8711_REG_LHPOUT,
+                         s_hp_vol_reg | WM8711_HPOUT_ZCEN | WM8711_HPOUT_BOTH);
+  if (err != ESP_OK)
+    return err;
+
+  /* Activate the digital audio interface */
+  return wm8711_write_reg(WM8711_REG_ACTIVE, WM8711_ACTIVE);
 }
 
 static esp_err_t wm8711_deinit(void) {
@@ -219,8 +273,7 @@ static void wm8711_set_power_mode(dac_power_mode_t mode) {
   case DAC_POWER_STANDBY:
     /* Keep DAC clocked but power down the output stage */
     wm8711_write_reg(WM8711_REG_ACTIVE, 0x00);
-    wm8711_write_reg(WM8711_REG_POWER,
-                     WM8711_PWR_RUNNING | WM8711_PWR_OUTPD);
+    wm8711_write_reg(WM8711_REG_POWER, WM8711_PWR_RUNNING | WM8711_PWR_OUTPD);
     break;
   case DAC_POWER_OFF:
     wm8711_write_reg(WM8711_REG_ACTIVE, 0x00);
@@ -244,6 +297,49 @@ static void wm8711_enable_speaker(bool enable) {
 static void wm8711_enable_line_out(bool enable) {
   /* Headphone output doubles as line out on WM8711BL */
   wm8711_enable_speaker(enable);
+}
+
+/**
+ * Fired right after I2S/MCLK starts.  When MCLK first appears the WM8711's
+ * digital core begins clocking; on this board that briefly drops DCVDD enough
+ * to (re)trigger the chip's power-on reset, so it falls off the I2C bus for a
+ * variable few hundred ms to >1s and loses its register contents.  Give the
+ * rail time to settle WITHOUT bus traffic (hammering the 2-wire interface
+ * while the chip is in reset can prolong the confused state), then re-apply
+ * the full configuration once it acknowledges again.
+ */
+static void wm8711_on_i2s_started(void) {
+  const int settle_ms = 300;   /* quiet wait before touching the bus */
+  const int timeout_ms = 1500; /* additional polling budget */
+  const int step_ms = 50;
+  int waited = settle_ms;
+
+  vTaskDelay(pdMS_TO_TICKS(settle_ms));
+
+  /* Gently poll readiness with a real (2-byte) write, no log spam. */
+  esp_err_t err = wm8711_try_write(WM8711_REG_POWER, WM8711_PWR_RUNNING);
+  while (err != ESP_OK && waited < settle_ms + timeout_ms) {
+    vTaskDelay(pdMS_TO_TICKS(step_ms));
+    waited += step_ms;
+    err = wm8711_try_write(WM8711_REG_POWER, WM8711_PWR_RUNNING);
+  }
+
+  if (err != ESP_OK) {
+    ESP_LOGE(TAG,
+             "WM8711BL not responding %dms after MCLK start (%s) - check "
+             "common ground bonding and MCLK/I2S signal integrity",
+             waited, esp_err_to_name(err));
+    return;
+  }
+
+  err = wm8711_configure();
+  if (err == ESP_OK) {
+    ESP_LOGI(TAG, "WM8711BL reconfigured after MCLK start (%dms settle)",
+             waited);
+  } else {
+    ESP_LOGE(TAG, "WM8711BL reconfigure after MCLK start failed: %s",
+             esp_err_to_name(err));
+  }
 }
 
 /**
@@ -289,6 +385,10 @@ static void wm8711_set_volume(float volume_airplay_db) {
   ESP_LOGD(TAG, "Volume: AirPlay %.1f dB -> DAC %.1f dB -> reg 0x%02X",
            volume_airplay_db, dac_db, reg_val);
 
+  /* Remember the level so a later reconfigure (e.g. after MCLK start) keeps it
+   */
+  s_hp_vol_reg = reg_val;
+
   /* Write both channels, zero-cross enabled */
   uint16_t val = reg_val | WM8711_HPOUT_ZCEN | WM8711_HPOUT_BOTH;
   wm8711_write_reg(WM8711_REG_LHPOUT, val);
@@ -303,6 +403,7 @@ const dac_ops_t dac_wm8711bl_ops = {
     .deinit = wm8711_deinit,
     .set_volume = wm8711_set_volume,
     .set_power_mode = wm8711_set_power_mode,
+    .on_i2s_started = wm8711_on_i2s_started,
     .enable_speaker = wm8711_enable_speaker,
     .enable_line_out = wm8711_enable_line_out,
 };
@@ -312,25 +413,43 @@ const dac_ops_t dac_wm8711bl_ops = {
 /* ------------------------------------------------------------------ */
 
 /**
+ * Low-level single register write, no retry/logging.  Used for readiness
+ * polling.  Uses a full 2-byte transaction (not an address-only probe, which
+ * would desync the WM8711's 2-wire state machine).
+ */
+static esp_err_t wm8711_try_write(uint8_t reg, uint16_t data) {
+  if (!wm8711_dev)
+    return ESP_ERR_INVALID_STATE;
+  uint8_t buf[2];
+  buf[0] = (reg << 1) | ((data >> 8) & 0x01);
+  buf[1] = data & 0xFF;
+  return i2c_master_transmit(wm8711_dev, buf, 2, I2C_TIMEOUT);
+}
+
+/**
  * Write a 9-bit value to a WM8711BL register.
  *
  * The chip uses a non-standard I2C framing:
  *   [slave addr + W]  [reg_addr(7) | data_bit8(1)]  [data_bits7:0]
+ *
+ * Retries a few times to ride out transient NACK/timeout glitches.
  */
 static esp_err_t wm8711_write_reg(uint8_t reg, uint16_t data) {
   if (!wm8711_dev) {
+    ESP_LOGE(TAG, "write reg 0x%02X with NULL device handle", reg);
     return ESP_ERR_INVALID_STATE;
   }
 
-  uint8_t buf[2];
-  buf[0] = (reg << 1) | ((data >> 8) & 0x01);
-  buf[1] = data & 0xFF;
-
-  esp_err_t err = i2c_master_transmit(wm8711_dev, buf, 2, I2C_TIMEOUT);
-  if (err != ESP_OK) {
-    ESP_LOGE(TAG, "I2C write reg 0x%02X failed: %s", reg,
-             esp_err_to_name(err));
+  esp_err_t err = ESP_ERR_INVALID_STATE;
+  for (int attempt = 0; attempt < WM8711_I2C_RETRIES; attempt++) {
+    err = wm8711_try_write(reg, data);
+    if (err == ESP_OK)
+      return ESP_OK;
+    vTaskDelay(pdMS_TO_TICKS(2));
   }
+
+  ESP_LOGE(TAG, "I2C write reg 0x%02X failed after %d attempts: %s", reg,
+           WM8711_I2C_RETRIES, esp_err_to_name(err));
   return err;
 }
 
@@ -340,7 +459,8 @@ static esp_err_t wm8711_write_reg(uint8_t reg, uint16_t data) {
 
 static esp_err_t i2c_bus_add_device(uint8_t addr,
                                     i2c_master_dev_handle_t *handle) {
-  if (!s_bus_handle) return ESP_ERR_INVALID_STATE;
+  if (!s_bus_handle)
+    return ESP_ERR_INVALID_STATE;
 
   i2c_device_config_t dev_cfg = {
       .dev_addr_length = I2C_ADDR_BIT_LEN_7,
