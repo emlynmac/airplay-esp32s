@@ -38,7 +38,7 @@ You only need 2 boards and a few wires. Everything is available on AliExpress / 
 | **PCM5102A DAC board**   | "PCM5102A I2S DAC" (the small purple board with 3.5mm jack)             | ~3$   |
 | **Female 2.54mm header** | "Female pin header 2.54mm single row" (1x6 or longer, then cut to size) | ~0.5$ |
 
-> **Alternative:** If you have a **[SqueezeAMP](https://github.com/philippe44/SqueezeAMP)** or **[Esparagus Audio Brick](https://esparagus.com/)** board, you don't need a separate DAC — just flash the appropriate firmware target. See the [SqueezeAMP](#squeezeamp) and [Esparagus Audio Brick](#esparagus-audio-brick) sections below.
+> **Alternative:** If you have a **[SqueezeAMP](https://github.com/philippe44/SqueezeAMP)** or **[Esparagus Audio Brick](https://sonocotta.com/espragus-audio-brick/)** board, you don't need a separate DAC — just flash the appropriate firmware target. See the [SqueezeAMP](#squeezeamp) and [Esparagus Audio Brick](#esparagus-audio-brick) sections below.
 
 Here is what the PCM5102A board looks like:
 Verify the solder bridges are in the same position as the picture.
