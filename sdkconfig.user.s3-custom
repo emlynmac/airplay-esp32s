@@ -1,0 +1,10 @@
+#
+# Display Configuration
+#
+
+
+# WM8711BL Config
+# I2C on GPIO 17/18 (known-good, matches the carrier PCB netlist).
+CONFIG_DAC_WM8711BL=y
+CONFIG_DAC_I2C_SDA=17
+CONFIG_DAC_I2C_SCL=18

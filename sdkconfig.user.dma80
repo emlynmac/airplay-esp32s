@@ -1,0 +1,26 @@
+# Button GPIOs (active-low, set to -1 to disable)
+CONFIG_BTN_PLAY_PAUSE_GPIO=4
+CONFIG_BTN_VOLUME_UP_GPIO=21
+CONFIG_BTN_VOLUME_DOWN_GPIO=5
+CONFIG_BTN_NEXT_GPIO=23
+CONFIG_BTN_PREV_GPIO=18
+
+# Display (I2C OLED)
+CONFIG_DISPLAY_ENABLED=y
+CONFIG_DISPLAY_BUS_I2C=y
+CONFIG_DISPLAY_I2C_SDA=3
+CONFIG_DISPLAY_I2C_SCL=1
+
+CONFIG_BT_PIN_CODE="0503"
+CONFIG_TAS57XX_MAX_VOLUME=0
+
+# UART0 pins (GPIO1/3) are repurposed for the OLED I2C bus — disable all
+# UART console output so the UART driver doesn't claim the pins and so
+# no log bytes get written to them.
+CONFIG_ESP_CONSOLE_NONE=y
+# CONFIG_ESP_CONSOLE_UART_DEFAULT is not set
+# CONFIG_ESP_CONSOLE_UART_CUSTOM is not set
+
+# Second-stage bootloader writes to UART0 before app starts — silence it.
+CONFIG_BOOTLOADER_LOG_LEVEL_NONE=y
+CONFIG_BOOTLOADER_LOG_LEVEL=0
