@@ -1,6 +1,7 @@
 #pragma once
 
 #include "dac.h"
+#include "tas57xx_hf1.h"
 
 /**
  * TAS57xx DAC driver ops — register with dac_register() before calling
@@ -59,3 +60,26 @@ int dac_tas57xx_get_device_count(void);
  * ESP32. Safe to call before dac_init() (logs a warning and returns).
  */
 void dac_tas57xx_log_status(void);
+
+/** True when a hybrid flow is loaded and its tuning can be edited. */
+bool dac_tas57xx_hf1_available(void);
+
+/** Read the current HF1 tuning. */
+esp_err_t dac_tas57xx_hf1_get(tas57xx_hf1_config_t *cfg);
+
+/**
+ * Apply a tuning to the running DSP without persisting it. Reverted by the
+ * next reboot or flow download, so it is safe to audition anything.
+ */
+esp_err_t dac_tas57xx_hf1_set(const tas57xx_hf1_config_t *cfg);
+
+/**
+ * Bake the current tuning into the flow image and write it back to SPIFFS.
+ * A flow download rewrites all of coefficient RAM, so this is what makes a
+ * tuning outlast one.
+ */
+esp_err_t dac_tas57xx_hf1_commit(void);
+
+/** Reload the committed flow from SPIFFS and re-download it, dropping any
+ * uncommitted tuning. */
+esp_err_t dac_tas57xx_hf1_revert(void);
