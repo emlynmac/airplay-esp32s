@@ -163,6 +163,7 @@ typedef struct {
   i2c_master_dev_handle_t handle; // per-device I2C handle
   uint8_t *hf_buf;                // cached hybrid flow (NULL if none)
   long hf_size;
+  char hf_path[48];   // where hf_buf was loaded from, for writing it back
   bool is_sub;        // true for index > 0 (sub / .1 channel)
   bool has_input_mix; // flow carries a recognised bi-amp input mixer
 } tas57xx_dev_t;
@@ -189,6 +190,8 @@ static const uint8_t tas575x_addrs[] = {TAS575x, 0x4D, 0x4E, 0x4F};
 static esp_err_t write_cmd(i2c_master_dev_handle_t handle, tas57xx_cmd_e cmd,
                            ...);
 static int tas57xx_detect_all(i2c_master_bus_handle_t bus);
+static void tas57xx_reprogram_locked(void);
+static void tas57xx_enable_speaker(bool enable);
 
 #if CONFIG_TAS57XX_FAULT_MONITOR
 static void tas57xx_monitor_task(void *arg);
@@ -655,6 +658,7 @@ static void tas57xx_load_hf(int i, bool multi) {
     }
     fclose(f);
     if (d->hf_buf) {
+      snprintf(d->hf_path, sizeof(d->hf_path), "%s", path);
       return;
     }
   }
@@ -678,6 +682,209 @@ static void tas57xx_load_hf(int i, bool multi) {
     ESP_LOGI(TAG, "No HF at %s — @0x%02X runs the built-in stereo flow", path,
              d->addr);
   }
+}
+
+/* ---- HybridFlow 1 tuning ---------------------------------------------- */
+
+/* Sits next to the flow it belongs to, and is rewritten with it. */
+#define HF1_CONFIG_PATH "/spiffs/hf/hf1.cfg"
+
+static tas57xx_hf1_config_t s_hf1;
+static bool s_hf1_ready = false;
+
+/** Device 0 carries the mains flow, which is the one HF1 describes. */
+static tas57xx_dev_t *tas57xx_hf1_dev(void) {
+  if (s_dev_count == 0 || s_devs[0].hf_buf == NULL) {
+    return NULL;
+  }
+  return &s_devs[0];
+}
+
+// Caller must hold s_dac_mutex.
+static void tas57xx_hf1_load_config_locked(void) {
+  if (s_hf1_ready) {
+    return;
+  }
+  tas57xx_hf1_defaults(&s_hf1);
+  s_hf1_ready = true;
+
+  FILE *f = fopen(HF1_CONFIG_PATH, "rb");
+  if (!f) {
+    return;
+  }
+  tas57xx_hf1_config_t on_disk;
+  size_t n = fread(&on_disk, 1, sizeof(on_disk), f);
+  fclose(f);
+  if (n == sizeof(on_disk) && on_disk.magic == TAS57XX_HF1_CONFIG_MAGIC &&
+      on_disk.version == TAS57XX_HF1_CONFIG_VERSION) {
+    s_hf1 = on_disk;
+    ESP_LOGI(TAG, "Loaded HF1 tuning from %s", HF1_CONFIG_PATH);
+  } else {
+    ESP_LOGW(TAG, "Ignoring unusable HF1 tuning at %s", HF1_CONFIG_PATH);
+  }
+}
+
+bool dac_tas57xx_hf1_available(void) {
+  return tas57xx_hf1_dev() != NULL;
+}
+
+esp_err_t dac_tas57xx_hf1_get(tas57xx_hf1_config_t *cfg) {
+  if (!cfg || s_dac_mutex == NULL) {
+    return ESP_ERR_INVALID_ARG;
+  }
+  xSemaphoreTake(s_dac_mutex, portMAX_DELAY);
+  tas57xx_hf1_load_config_locked();
+  *cfg = s_hf1;
+  xSemaphoreGive(s_dac_mutex);
+  return ESP_OK;
+}
+
+esp_err_t dac_tas57xx_hf1_set(const tas57xx_hf1_config_t *cfg) {
+  if (!cfg || s_dac_mutex == NULL) {
+    return ESP_ERR_INVALID_ARG;
+  }
+  xSemaphoreTake(s_dac_mutex, portMAX_DELAY);
+  tas57xx_hf1_load_config_locked();
+
+  tas57xx_dev_t *d = tas57xx_hf1_dev();
+  esp_err_t err = ESP_OK;
+  if (d == NULL) {
+    err = ESP_ERR_NOT_SUPPORTED;
+  } else if (!s_flow_resident) {
+    // The DSP has no program running, so coefficient RAM would be wiped by
+    // the download that follows. Keep the values for the next apply.
+    s_hf1 = *cfg;
+  } else {
+    tas57xx_cram_sink_t sink = {.handle = d->handle};
+    err = tas57xx_hf1_apply(&sink, cfg);
+    if (err == ESP_OK) {
+      s_hf1 = *cfg;
+    }
+  }
+  xSemaphoreGive(s_dac_mutex);
+  return err;
+}
+
+/** Replace a file only once its whole replacement is safely on disk. */
+static esp_err_t tas57xx_write_atomic(const char *path, const void *data,
+                                      size_t len) {
+  char tmp[sizeof(((tas57xx_dev_t *)0)->hf_path) + 8];
+  snprintf(tmp, sizeof(tmp), "%s.new", path);
+
+  FILE *f = fopen(tmp, "wb");
+  if (!f) {
+    ESP_LOGE(TAG, "Cannot create %s", tmp);
+    return ESP_FAIL;
+  }
+  size_t written = fwrite(data, 1, len, f);
+  bool ok = (written == len) && (fflush(f) == 0);
+  fclose(f);
+  if (!ok) {
+    remove(tmp);
+    ESP_LOGE(TAG, "Short write to %s (%zu/%zu)", tmp, written, len);
+    return ESP_FAIL;
+  }
+  remove(path);
+  if (rename(tmp, path) != 0) {
+    remove(tmp);
+    ESP_LOGE(TAG, "Cannot rename %s to %s", tmp, path);
+    return ESP_FAIL;
+  }
+  return ESP_OK;
+}
+
+esp_err_t dac_tas57xx_hf1_commit(void) {
+  if (s_dac_mutex == NULL) {
+    return ESP_ERR_INVALID_STATE;
+  }
+  xSemaphoreTake(s_dac_mutex, portMAX_DELAY);
+  tas57xx_hf1_load_config_locked();
+
+  tas57xx_dev_t *d = tas57xx_hf1_dev();
+  if (d == NULL || d->hf_path[0] == '\0') {
+    xSemaphoreGive(s_dac_mutex);
+    return ESP_ERR_NOT_SUPPORTED;
+  }
+
+  // Patch a copy, so a rejected parameter cannot leave the resident flow
+  // half-rewritten.
+  uint8_t *img = malloc((size_t)d->hf_size);
+  if (img == NULL) {
+    xSemaphoreGive(s_dac_mutex);
+    return ESP_ERR_NO_MEM;
+  }
+  memcpy(img, d->hf_buf, (size_t)d->hf_size);
+
+  tas57xx_cram_sink_t sink = {.image = img, .image_size = (size_t)d->hf_size};
+  esp_err_t err = tas57xx_hf1_apply(&sink, &s_hf1);
+  if (err == ESP_OK) {
+    err = tas57xx_write_atomic(d->hf_path, img, (size_t)d->hf_size);
+  }
+  if (err == ESP_OK) {
+    err = tas57xx_write_atomic(HF1_CONFIG_PATH, &s_hf1, sizeof(s_hf1));
+  }
+  if (err == ESP_OK) {
+    free(d->hf_buf);
+    d->hf_buf = img;
+    ESP_LOGI(TAG, "Committed HF1 tuning to %s", d->hf_path);
+  } else {
+    free(img);
+  }
+  xSemaphoreGive(s_dac_mutex);
+  return err;
+}
+
+esp_err_t dac_tas57xx_hf1_revert(void) {
+  if (s_dac_mutex == NULL) {
+    return ESP_ERR_INVALID_STATE;
+  }
+  xSemaphoreTake(s_dac_mutex, portMAX_DELAY);
+  tas57xx_dev_t *d = tas57xx_hf1_dev();
+  if (d == NULL || d->hf_path[0] == '\0') {
+    xSemaphoreGive(s_dac_mutex);
+    return ESP_ERR_NOT_SUPPORTED;
+  }
+
+  esp_err_t err = ESP_OK;
+  FILE *f = fopen(d->hf_path, "rb");
+  if (!f) {
+    err = ESP_ERR_NOT_FOUND;
+  } else {
+    fseek(f, 0, SEEK_END);
+    long size = ftell(f);
+    fseek(f, 0, SEEK_SET);
+    uint8_t *buf = size >= 2 ? malloc((size_t)size) : NULL;
+    if (buf && fread(buf, 1, (size_t)size, f) == (size_t)size) {
+      free(d->hf_buf);
+      d->hf_buf = buf;
+      d->hf_size = size;
+    } else {
+      free(buf);
+      err = ESP_FAIL;
+    }
+    fclose(f);
+  }
+
+  if (err == ESP_OK) {
+    s_hf1_ready = false;
+    tas57xx_hf1_load_config_locked();
+    if (s_i2s_running && s_power_state != DAC_POWER_OFF) {
+      tas57xx_enable_speaker(false);
+      tas57xx_reprogram_locked();
+      if (s_power_state == DAC_POWER_ON) {
+        for (int i = 0; i < s_dev_count; i++) {
+          write_cmd(s_devs[i].handle, TAS57XX_ACTIVE);
+        }
+        vTaskDelay(pdMS_TO_TICKS(50));
+        for (int i = 0; i < s_dev_count; i++) {
+          write_cmd(s_devs[i].handle, TAS57XX_UNMUTE);
+        }
+        tas57xx_enable_speaker(true);
+      }
+    }
+  }
+  xSemaphoreGive(s_dac_mutex);
+  return err;
 }
 
 static esp_err_t tas57xx_init(void *i2c_bus) {
