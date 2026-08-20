@@ -1778,9 +1778,9 @@ static void hf3_config_from_json(const cJSON *root, tas57xx_hf3_config_t *cfg) {
   hf1_num_from_json(root, "smooth_clip", &cfg->smooth_clip_db);
 }
 
-/* The same page as /hf1: it asks which flow is loaded and shows that one. A
- * board can only ever be running one of them, so there is nothing to choose
- * between and no reason to ship the machinery twice. */
+/* The same page as /hf1: it asks which flow is loaded and shows that one, and
+ * offers to swap between them when both bases are present. A board only ever
+ * runs one at a time, so there is no reason to ship the machinery twice. */
 static esp_err_t hf3_page_handler(httpd_req_t *req) {
   return serve_spiffs_file(req, "/spiffs/www/hf.html", "text/html");
 }
@@ -1828,6 +1828,52 @@ static esp_err_t hf3_commit_handler(httpd_req_t *req) {
 
 static esp_err_t hf3_revert_handler(httpd_req_t *req) {
   return hf1_send_result(req, dac_tas57xx_hf3_revert());
+}
+
+/* ---- Flow selection --------------------------------------------------- */
+
+static esp_err_t hf_flow_get_handler(httpd_req_t *req) {
+  cJSON *root = cJSON_CreateObject();
+  cJSON_AddNumberToObject(root, "active", dac_tas57xx_active_flow());
+  cJSON_AddNumberToObject(root, "sample_rate", dac_tas57xx_flow_sample_rate());
+  cJSON *avail = cJSON_AddArrayToObject(root, "available");
+  for (int flow = 1; flow <= 3; flow += 2) {
+    if (dac_tas57xx_flow_base_available(flow)) {
+      cJSON_AddItemToArray(avail, cJSON_CreateNumber(flow));
+    }
+  }
+  cJSON_AddBoolToObject(root, "success", true);
+  char *s = cJSON_PrintUnformatted(root);
+  httpd_resp_set_type(req, "application/json");
+  httpd_resp_send(req, s, HTTPD_RESP_USE_STRLEN);
+  free(s);
+  cJSON_Delete(root);
+  return ESP_OK;
+}
+
+static esp_err_t hf_flow_post_handler(httpd_req_t *req) {
+  char *body = recv_body(req, 128);
+  if (body == NULL) {
+    httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Invalid body");
+    return ESP_FAIL;
+  }
+  cJSON *root = cJSON_Parse(body);
+  free(body);
+  cJSON *flow = root ? cJSON_GetObjectItem(root, "flow") : NULL;
+  int want = cJSON_IsNumber(flow) ? flow->valueint : 0;
+  cJSON_Delete(root);
+  if (want != 1 && want != 3) {
+    httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Expected flow 1 or 3");
+    return ESP_FAIL;
+  }
+
+  /* Bi-amp hands the two amplifier outputs to a woofer and a tweeter, so the
+   * first sound after a switch may be going somewhere it should not. Turn the
+   * volume down and leave it down until whoever asked has checked. */
+  if (want != dac_tas57xx_active_flow()) {
+    settings_set_volume(VOLUME_UI_MIN_DB);
+  }
+  return hf1_send_result(req, dac_tas57xx_select_flow(want));
 }
 
 #endif /* CONFIG_DAC_TAS57XX */
@@ -2195,6 +2241,16 @@ esp_err_t web_server_start(uint16_t port) {
                                 .method = HTTP_POST,
                                 .handler = hf3_revert_handler};
   httpd_register_uri_handler(s_server, &hf3_revert_uri);
+
+  httpd_uri_t hf_flow_get_uri = {.uri = "/api/hf/flow",
+                                 .method = HTTP_GET,
+                                 .handler = hf_flow_get_handler};
+  httpd_register_uri_handler(s_server, &hf_flow_get_uri);
+
+  httpd_uri_t hf_flow_post_uri = {.uri = "/api/hf/flow",
+                                  .method = HTTP_POST,
+                                  .handler = hf_flow_post_handler};
+  httpd_register_uri_handler(s_server, &hf_flow_post_uri);
 #endif
 
   log_stream_register(s_server);
