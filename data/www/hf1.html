@@ -42,6 +42,7 @@ input:disabled{opacity:0.3}
 .plot.sm{height:170px}
 .plot.sq{height:auto;aspect-ratio:1040/1032;max-width:520px}
 .plot.drag{cursor:ew-resize;touch-action:none}
+.plot{cursor:crosshair}
 .plotrow{display:flex;gap:18px;align-items:stretch;margin-bottom:14px}
 .plotrow .plot{flex:1;min-width:0;width:auto;margin-bottom:0}
 .vsl{display:flex;gap:20px}
@@ -141,6 +142,9 @@ level, and PBE last. Each stage assumes the ones before it are settled.</p>
 <div class='fld'><label>Bands to use</label><input type='number' id='aeq-n' min='1' max='10' step='1' value='10'></div>
 <div class='fld'><label>Max total boost (dB)</label><input type='number' id='aeq-up' min='0' max='12' step='0.5' value='6'></div>
 <div class='fld'><label>Max total cut (dB)</label><input type='number' id='aeq-dn' min='0' max='15' step='0.5' value='12'></div>
+<div class='fld'><label>Shelves</label>
+<label class='hint' style='margin:0'><input type='checkbox' id='aeq-shelf' checked>
+use bass/treble shelves too</label></div>
 </div>
 <div class='actions' style='margin-top:10px'>
 <button class='btn btn-secondary' id='aeq-run' onclick='aeqRun()' disabled>Fit filters</button>
@@ -698,6 +702,9 @@ function sweep(secs,fs,fn,unwrap,lo,hi){
 var TRACE=[['#e94560','rgba(233,69,96,0.25)'],['#4ecca3','rgba(78,204,163,0.25)']];
 function drawGraph(cv,sweeps,lo,hi,step,fmt,cols,extras){
   var g=cv.getContext('2d'),W=cv.width,H=cv.height;
+  /* Any mark drawn on top of this canvas afterwards belongs in the readout's
+     clean copy too, so drop it here and let the first hover take a fresh one. */
+  cv._snap=null;
   var PL=54,PR=12,PT=12,PB=26,PW=W-PL-PR,PH=H-PT-PB,i,k,d,f;
   var f0=sweeps[0].f0,f1=sweeps[0].f1,N=sweeps[0].n;
   function x(f){return PL+PW*Math.log(f/f0)/Math.log(f1/f0);}
@@ -740,16 +747,90 @@ function drawGraph(cv,sweeps,lo,hi,step,fmt,cols,extras){
   if(extras)for(var x2=0;x2<extras.length;x2++)
     trace(extras[x2].v,extras[x2].c,extras[x2].w);
   g.restore();
+  var series=[];
+  for(k=0;k<sweeps.length;k++)
+    if(sweeps[k].total)
+      series.push({v:sweeps[k].total,c:pal[k%pal.length][0],n:sweeps[k].name||''});
+  if(extras)for(k=0;k<extras.length;k++)
+    series.push({v:extras[k].v,c:extras[k].c,n:extras[k].name||''});
+  cv._rd={f0:f0,f1:f1,N:N,lo:lo,hi:hi,PL:PL,PW:PW,PT:PT,PH:PH,
+          fmt:fmt,series:series};
+  hoverInit(cv);
+}
+/* Readout under the pointer. The graphs are redrawn wholesale from data that
+   is not kept, so the drawn image is snapshotted and restored before each
+   crosshair rather than re-running the sweeps on every mouse move. */
+function hoverAt(cv,px){
+  var d=cv._rd,g=cv.getContext('2d'),W=cv.width,H=cv.height,k,v;
+  if(!d)return;
+  if(!cv._snap){
+    var s=document.createElement('canvas');
+    s.width=W;s.height=H;s.getContext('2d').drawImage(cv,0,0);
+    cv._snap=s;
+  }
+  g.clearRect(0,0,W,H);g.drawImage(cv._snap,0,0);
+  var t=(px-d.PL)/d.PW;
+  if(t<0||t>1)return;
+  /* Snap to a swept point so the value shown is one that was computed. */
+  var i=Math.round(t*d.N),f=d.f0*Math.pow(d.f1/d.f0,i/d.N);
+  var x=d.PL+d.PW*i/d.N;
+  g.save();
+  g.strokeStyle='rgba(255,255,255,0.35)';g.lineWidth=2;
+  g.beginPath();g.moveTo(x,d.PT);g.lineTo(x,d.PT+d.PH);g.stroke();
+  g.font='20px sans-serif';g.textBaseline='middle';g.textAlign='left';
+  var rows=[];
+  for(k=0;k<d.series.length;k++){
+    v=d.series[k].v[i];
+    if(v===null||v===undefined||!isFinite(v))continue;
+    rows.push({c:d.series[k].c,
+               t:(d.series[k].n?d.series[k].n+'  ':'')+d.fmt(Math.round(v*10)/10)});
+    g.fillStyle=d.series[k].c;
+    g.beginPath();
+    g.arc(x,d.PT+d.PH*(d.hi-v)/(d.hi-d.lo),6,0,6.2832);
+    g.fill();
+  }
+  var head=f<1000?Math.round(f)+' Hz':(f/1000).toFixed(f<10000?2:1)+' kHz';
+  var LH=26,PX=10,PY=8,SW=14,wm=g.measureText(head).width;
+  for(k=0;k<rows.length;k++)
+    wm=Math.max(wm,SW+8+g.measureText(rows[k].t).width);
+  var bw=wm+PX*2,bh=PY*2+LH*(rows.length+1),bx=x+14,by=d.PT+10;
+  if(bx+bw>d.PL+d.PW)bx=x-14-bw;
+  g.fillStyle='rgba(16,20,28,0.88)';
+  g.strokeStyle='rgba(255,255,255,0.18)';g.lineWidth=2;
+  g.beginPath();g.rect(bx,by,bw,bh);g.fill();g.stroke();
+  g.fillStyle='#cfd6e4';g.fillText(head,bx+PX,by+PY+LH/2);
+  for(k=0;k<rows.length;k++){
+    var ry=by+PY+LH*(k+1)+LH/2;
+    g.fillStyle=rows[k].c;g.fillRect(bx+PX,ry-5,SW,10);
+    g.fillStyle='#cfd6e4';g.fillText(rows[k].t,bx+PX+SW+8,ry);
+  }
+  g.restore();
+}
+function hoverOff(cv){
+  if(!cv._snap)return;
+  var g=cv.getContext('2d');
+  g.clearRect(0,0,cv.width,cv.height);g.drawImage(cv._snap,0,0);
+}
+function hoverInit(cv){
+  if(cv._hov)return;
+  cv._hov=1;
+  cv.addEventListener('pointermove',function(ev){
+    if(ev.pointerType!=='mouse')return;
+    var r=cv.getBoundingClientRect();
+    hoverAt(cv,(ev.clientX-r.left)*cv.width/r.width);
+  });
+  cv.addEventListener('pointerleave',function(){hoverOff(cv);});
 }
 /* Draws one magnitude and one phase graph for a set of section groups, which
    share a vertical range so the groups can be compared directly. */
-function drawPair(magId,phaseId,groups,fs,extras){
+function drawPair(magId,phaseId,groups,fs,extras,names){
   var mag=[],ph=[],lim=0,k,i;
   for(k=0;k<groups.length;k++){
     mag.push(sweep(groups[k],fs,magDb,false));
     var p=sweep(groups[k],fs,phaseDeg,true);
     for(i=0;i<=p.n;i++)lim=Math.max(lim,Math.abs(p.total[i]));
     ph.push(p);
+    if(names&&names[k]){mag[k].name=names[k];p.name=names[k];}
   }
   /* An overlaid measurement swings well past the usual +/-18 dB. Scaled to
      what it does inside the fit range where a curve says so, so that a
@@ -802,7 +883,8 @@ function drcBands(fs){
     out[3].push(dbOf(sr,si));
   }
   var sw=[];
-  for(b=0;b<4;b++)sw.push({n:N,f0:F0,f1:F1,curves:[],total:out[b]});
+  for(b=0;b<4;b++)sw.push({n:N,f0:F0,f1:F1,curves:[],total:out[b],
+                           name:['Low','Mid','High','Sum'][b]});
   return sw;
 }
 /* Breakpoints of the level map, quietest first. The slopes and corners are
@@ -973,12 +1055,13 @@ function drawMix(cv,m){
   trace(function(db){return 1-m.f(db);},'#4ecca3');
   g.restore();
 }
-function plotBand(id,groups,fs,lo,hi,ylo,yhi){
+function plotBand(id,groups,fs,lo,hi,ylo,yhi,names){
   var sw=[],k,s;
   for(k=0;k<groups.length;k++){
     s=sweep(groups[k]||[],fs,magDb,false,lo,hi);
     // An empty group would otherwise sum to a convincing flat 0 dB line.
     if(!groups[k])s.total=null;
+    if(names&&names[k])s.name=names[k];
     sw.push(s);
   }
   drawGraph($(id),sw,ylo,yhi,6,function(d){return d>0?'+'+d:''+d;});
@@ -987,13 +1070,15 @@ function plot(){
   var mag=$('plot');
   if(!mag||!mag.getContext||!$('eq0-t')||!$('dl1-t')||!$('r0-m'))return;
   var fs=(cfg&&cfg.sample_rate)||44100;
-  drawPair('plot','phase',[sections('eq',10,fs)],fs,measCurves(fs));
-  drawPair('dbe-plot','dbe-phase',[sections('dh',2,fs),sections('dl',2,fs)],fs);
-  plotBand('pbe-plot',[pbeExtract(fs),pbeEffect(fs)],fs,PBE_LO,PBE_HI,-30,18);
+  drawPair('plot','phase',[sections('eq',10,fs)],fs,measCurves(fs),['EQ']);
+  drawPair('dbe-plot','dbe-phase',[sections('dh',2,fs),sections('dl',2,fs)],fs,
+           null,['High','Low']);
+  plotBand('pbe-plot',[pbeExtract(fs),pbeEffect(fs)],fs,PBE_LO,PBE_HI,-30,18,
+           ['Extraction','Effect']);
   drawPbeMark($('pbe-plot'),num('pbe-hpf'));
   $('pbe-harm-v').textContent=$('pbe-harm').value;
   $('pbe-eff-v').textContent=$('pbe-eff').value;
-  plotBand('dbe-sense',[senseSections(fs)],fs,PBE_LO,PBE_HI,-30,6);
+  plotBand('dbe-sense',[senseSections(fs)],fs,PBE_LO,PBE_HI,-30,6,['Sensing']);
   drawMix($('dbe-mix'),dbeMix());
   var bands=drcBands(fs);
   if(bands)
@@ -1149,8 +1234,8 @@ function aeqEval(b,fs,ph,sm,base,w,opt){
   for(i=0;i<ph.length;i++)sum.push(base[i]+m[i]);
   return {score:fitScore(sm,sum,w,opt),mag:m};
 }
-function aeqBand(f,q,gain){
-  return {type:1,sub:0,freq:f,q:q,gain:gain,coeff:null};
+function aeqBand(f,q,gain,type){
+  return {type:type||1,sub:0,freq:f,q:q,gain:gain,coeff:null};
 }
 /* From AutoEq: a peaking filter's steepest slope runs past 18 dB/octave once
    the gain outruns the Q, and it starts to ring. This is the gain that just
@@ -1163,9 +1248,15 @@ function aeqGainLimit(q){return 20.575/q-0.095;}
    below unity, so clamping each band to the total as well would forbid that
    for no reason and is what made a cuts-only target fit badly. */
 function aeqClamp(b,fs,opt){
-  var q=Math.min(Math.max(b.q,AEQ_QMIN),AEQ_QMAX),gl=aeqGainLimit(q);
+  /* A shelf has no ringing to limit - its slope is set by the Q the part caps
+     at 1 - so the peaking sharpness rule does not apply to it. */
+  var sh=(b.type===T_LOSHELF||b.type===T_HISHELF),q,gl;
+  q=sh?Math.min(Math.max(b.q,0.1),SHELF_Q_MAX)
+     :Math.min(Math.max(b.q,AEQ_QMIN),AEQ_QMAX);
+  gl=sh?GAIN_MAX:aeqGainLimit(q);
   return aeqBand(Math.min(Math.max(b.freq,20),Math.min(20000,fs*0.49)),q,
-    Math.min(Math.max(b.gain,Math.max(GAIN_MIN,-gl)),Math.min(GAIN_MAX,gl)));
+    Math.min(Math.max(b.gain,Math.max(GAIN_MIN,-gl)),Math.min(GAIN_MAX,gl)),
+    b.type);
 }
 /* Coordinate descent on frequency, Q and gain with a halving step. Scoring
    through designBq means the fit sees the filter the part will actually run,
@@ -1179,7 +1270,7 @@ function aeqRefine(b,fs,ph,sm,base,w,opt){
   for(it=0;it<6;it++){
     for(k=0;k<3;k++){
       for(d=-1;d<=1;d+=2){
-        c=aeqBand(b.freq,b.q,b.gain);
+        c=aeqBand(b.freq,b.q,b.gain,b.type);
         if(k===0)c.freq=b.freq*Math.pow(2,d*sf);
         else if(k===1)c.q=b.q*Math.pow(2,d*sq);
         else c.gain=b.gain+d*sg;
@@ -1207,9 +1298,31 @@ function aeqSum(mags,skip,n){
    deep notch, which is usually a measurement artefact. Ranking on raw depth
    alone parks every filter on the deepest roll-off, exactly where the boost
    limit means none of them can help, and leaves the midrange untouched. */
+/* A shelf pays where a tilt runs off the end of the fit range: one of them
+   does what two or three peaking filters would, and it keeps working past the
+   edge instead of turning back over. Seeded on the same-sign run that touches
+   the edge, cornered at the inner end of that run. */
+function aeqShelf(g,need,gain,pm,lo0,hi0,type){
+  var j,s=0,n=0,st,oct;
+  if(type===T_LOSHELF){
+    if(!pm[lo0])return null;
+    st=need[lo0]>0?1:-1;
+    for(j=lo0;j<=hi0&&pm[j]&&(need[j]>0?1:-1)===st;j++){s+=gain[j];n++;}
+    j--;oct=Math.log2(g[j]/g[lo0]);
+  }else{
+    if(!pm[hi0])return null;
+    st=need[hi0]>0?1:-1;
+    for(j=hi0;j>=lo0&&pm[j]&&(need[j]>0?1:-1)===st;j--){s+=gain[j];n++;}
+    j++;oct=Math.log2(g[hi0]/g[j]);
+  }
+  /* Narrower than this is a bump, not a tilt, and a peaking filter fits it
+     better without moving everything beyond the corner too. */
+  if(n<2||oct<0.5)return null;
+  return aeqBand(g[j],0.707,s/n,type);
+}
 function aeqSeed(g,sm,eq,w,opt){
   var c=fitLevel(sm,eq,w),i,j,need=[],gain=[],pm=[],avail;
-  if(c===null)return null;
+  if(c===null)return [];
   for(i=0;i<g.length;i++){
     need.push(w[i]?c-sm[i]-eq[i]:0);
     avail=need[i]>0?opt.gmax-eq[i]:eq[i]-opt.gmin;
@@ -1217,7 +1330,7 @@ function aeqSeed(g,sm,eq,w,opt){
     gain.push(Math.abs(need[i])<avail?need[i]:(need[i]>0?avail:-avail));
     pm.push(w[i]*Math.abs(gain[i])*(2*Math.abs(need[i])-Math.abs(gain[i])));
   }
-  var bs=0,bi=-1,bj=-1,sg,run;
+  var bs=0,bi=-1,bj=-1,sg,run,out=[];
   for(i=0;i<g.length;){
     if(!pm[i]){i++;continue;}
     sg=need[i]>0?1:-1;run=0;
@@ -1225,12 +1338,32 @@ function aeqSeed(g,sm,eq,w,opt){
     if(run>bs){bs=run;bi=i;bj=j-1;}
     i=j;
   }
-  if(bi<0)return null;
+  if(bi<0)return [];
   /* Centre on the deepest point of the run, Q from how wide the run is. */
   var ci=bi;
   for(i=bi;i<=bj;i++)if(Math.abs(gain[i])>Math.abs(gain[ci]))ci=i;
   var bw=Math.log2(g[bj]/g[bi]),oc=Math.pow(2,bw);
-  return aeqBand(g[ci],bw>0.05?Math.sqrt(oc)/(oc-1):2,gain[ci]);
+  out.push(aeqBand(g[ci],bw>0.05?Math.sqrt(oc)/(oc-1):2,gain[ci]));
+  if(opt.shelf){
+    var lo0=-1,hi0=-1,s;
+    for(i=0;i<g.length;i++)if(w[i]){if(lo0<0)lo0=i;hi0=i;}
+    if(lo0>=0){
+      s=aeqShelf(g,need,gain,pm,lo0,hi0,T_LOSHELF);if(s)out.push(s);
+      s=aeqShelf(g,need,gain,pm,lo0,hi0,T_HISHELF);if(s)out.push(s);
+    }
+  }
+  return out;
+}
+/* Refine every candidate for the slot and keep whichever ends up best: a shelf
+   and a peaking filter are worth different amounts at different stages, and
+   only refining tells them apart. */
+function aeqBest(cand,fs,ph,sm,base,w,opt){
+  var best=null,i,r;
+  for(i=0;i<cand.length;i++){
+    r=aeqRefine(cand[i],fs,ph,sm,base,w,opt);
+    if(!best||r.score<best.score)best=r;
+  }
+  return best;
 }
 /* Each filter re-fitted against the sum of the others until that stops paying.
    AutoEq gets a better version of this by handing every filter to a
@@ -1249,16 +1382,33 @@ function aeqPolish(bands,mags,fs,ph,g,sm,w,opt,cur,lim){
   }
   return cur;
 }
-function aeqFit(fs,opt){
-  /* The budget is on the SUMMED response, not on any one filter, so a boost
-     stacked on a deeper cut is fine. Derived here rather than at the call site
-     so no caller can leave them undefined. */
-  opt.gmax=opt.boost;opt.gmin=-opt.cut;
-  var g=gridHz(fs),ph=gridPhi(g,fs),sm=smoothOnto(meas,g,opt.oct);
-  var w=fitWeights(g,sm,opt.lo,opt.hi),i,k;
-  var eq=[],bands=[],mags=[];
+/* A shelf can score best at the moment it is placed and turn out worse once
+   the others have moved around it. Re-try each band as the other types it could
+   plausibly be, so offering shelves can only help. Shelves are only considered
+   within two octaves of the fit edge, where a shelf is the shape that fits. */
+function aeqRetype(bands,mags,fs,ph,g,sm,w,opt,cur){
+  var k,t,b,r,alt,i,lo=-1,hi=-1;
+  for(i=0;i<g.length;i++)if(w[i]){if(lo<0)lo=i;hi=i;}
+  if(lo<0)return cur;
+  for(k=0;k<bands.length;k++){
+    b=bands[k];alt=[];
+    if(b.type!==1)alt.push(1);
+    if(opt.shelf){
+      if(b.type!==T_LOSHELF&&b.freq<g[lo]*4)alt.push(T_LOSHELF);
+      if(b.type!==T_HISHELF&&b.freq>g[hi]/4)alt.push(T_HISHELF);
+    }
+    for(t=0;t<alt.length;t++){
+      r=aeqRefine(aeqBand(b.freq,b.q,b.gain,alt[t]),fs,ph,sm,
+                  aeqSum(mags,k,g.length),w,opt);
+      if(r.score<cur){cur=r.score;bands[k]=r.band;mags[k]=r.mag;b=r.band;}
+    }
+  }
+  return cur;
+}
+/* One greedy pass and its repairs, from an empty set to a pruned one. */
+function aeqCore(fs,opt,g,ph,sm,w){
+  var eq=[],bands=[],mags=[],i,k;
   for(i=0;i<g.length;i++)eq.push(0);
-  var before=fitDev(sm,eq,w);
   /* Place every filter that was asked for, judging none of them yet: one that
      looks worthless while the others are still sat on their seeds can be worth
      a lot once they have all moved. AutoEq does the same - greedy init of the
@@ -1266,8 +1416,8 @@ function aeqFit(fs,opt){
      left most of the bands unused and the midrange uncorrected. */
   for(k=0;k<opt.n;k++){
     var seed=aeqSeed(g,sm,eq,w,opt);
-    if(!seed)break;
-    var r=aeqRefine(seed,fs,ph,sm,eq,w,opt);
+    if(!seed.length)break;
+    var r=aeqBest(seed,fs,ph,sm,eq,w,opt);
     bands.push(r.band);mags.push(r.mag);
     eq=aeqSum(mags,-1,g.length);
   }
@@ -1285,19 +1435,46 @@ function aeqFit(fs,opt){
     }
     if(idle<0)break;
     var base=aeqSum(mags,idle,g.length),s2=aeqSeed(g,sm,base,w,opt);
-    if(!s2)break;
-    var r2=aeqRefine(s2,fs,ph,sm,base,w,opt);
+    if(!s2.length)break;
+    var r2=aeqBest(s2,fs,ph,sm,base,w,opt);
     if(r2.score>=cur-0.001)break;
     bands[idle]=r2.band;mags[idle]=r2.mag;
     /* Only one filter moved, so the rest need a nudge rather than a rebuild. */
     cur=aeqPolish(bands,mags,fs,ph,g,sm,w,opt,r2.score,3);
   }
+  cur=aeqRetype(bands,mags,fs,ph,g,sm,w,opt,cur);
+  cur=aeqPolish(bands,mags,fs,ph,g,sm,w,opt,cur,3);
   /* Now judge them: a filter the fit would barely miss is a filter better left
      bypassed, both for headroom and for the phase it would cost. */
   for(k=bands.length-1;k>=0;k--){
-    var without=aeqSum(mags,k,g.length),sc=fitScore(sm,without,w,opt);
-    if(sc<cur+0.02){bands.splice(k,1);mags.splice(k,1);cur=sc;}
+    var without=aeqSum(mags,k,g.length),sc2=fitScore(sm,without,w,opt);
+    if(sc2<cur+0.02){bands.splice(k,1);mags.splice(k,1);cur=sc2;}
   }
+  return {bands:bands,cur:cur};
+}
+function aeqFit(fs,opt){
+  /* The budget is on the SUMMED response, not on any one filter, so a boost
+     stacked on a deeper cut is fine. Derived here rather than at the call site
+     so no caller can leave them undefined. */
+  opt.gmax=opt.boost;opt.gmin=-opt.cut;
+  var g=gridHz(fs),ph=gridPhi(g,fs),sm=smoothOnto(meas,g,opt.oct);
+  var w=fitWeights(g,sm,opt.lo,opt.hi),i,k;
+  var zero=[];
+  for(i=0;i<g.length;i++)zero.push(0);
+  var before=fitDev(sm,zero,w);
+  /* Shelves are offered, not imposed: one that scores best at the moment it is
+     placed can send the greedy path somewhere worse overall, which no local
+     repair recovers. So fit without them, fit with them, keep the better. */
+  var want=opt.shelf;
+  opt.shelf=false;
+  var best=aeqCore(fs,opt,g,ph,sm,w);
+  if(want){
+    opt.shelf=true;
+    var alt=aeqCore(fs,opt,g,ph,sm,w);
+    if(alt.cur<best.cur)best=alt;
+    opt.shelf=want;
+  }
+  var bands=best.bands;
   /* Cuts into the early slots, boosts into the late ones - a boost that clips
      early would be copied by every section after it. Rounding to the steps the
      row inputs use, and dropping anything that rounds away to nothing, so what
@@ -1362,7 +1539,8 @@ function measCurves(fs){
     if(sm[i]===null||!w[i])continue;
     pr=Math.max(pr,Math.abs(raw[i]));pf=Math.max(pf,Math.abs(fix[i]));
   }
-  return [{v:raw,c:'#8a94a6',w:3,pk:pr},{v:fix,c:'#f5b301',w:3,pk:pf}];
+  return [{v:raw,c:'#8a94a6',w:3,pk:pr,name:'Measured'},
+          {v:fix,c:'#f5b301',w:3,pk:pf,name:'Corrected'}];
 }
 /* Where the driver gives up. Below this the fit can only spend boost, headroom
    and excursion on ground it cannot win, so it is worth saying out loud rather
@@ -1416,7 +1594,8 @@ function aeqRun(){
   var opt={lo:num('aeq-lo'),hi:num('aeq-hi'),oct:num('aeq-sm'),
            n:Math.round(num('aeq-n')),
            boost:Math.min(num('aeq-up'),GAIN_MAX),
-           cut:Math.min(num('aeq-dn'),-GAIN_MIN)};
+           cut:Math.min(num('aeq-dn'),-GAIN_MIN),
+           shelf:$('aeq-shelf').checked};
   if(!(opt.lo>0)||!(opt.hi>opt.lo*1.2)||!(opt.oct>=1)||!(opt.n>=1)||
      !(opt.boost>=0)||!(opt.cut>=0)){
     $('aeq-msg').textContent='Check the fit settings.';
