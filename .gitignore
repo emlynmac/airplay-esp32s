@@ -21,4 +21,5 @@ user_platformio.ini
 components/dac_tas57xx/hybridflows/tools/hf1read
 components/dac_tas57xx/hybridflows/tools/hf3read
 components/dac_tas57xx/hybridflows/tools/hf3test
+components/dac_tas57xx/hybridflows/tools/pbetest
 components/dac_tas57xx/hybridflows/tools/__pycache__/

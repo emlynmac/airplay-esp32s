@@ -11,6 +11,7 @@ static const char *TAG = "tas57xx_hf1";
 #define HF1_PBE_HARMONIC_WORD 151
 /** First word of the effect-intensity shelf, stored denominator-first. */
 #define HF1_PBE_EFFECT_WORD 157
+#define HF1_PBE_MIX_WORD    209
 /** Reciprocal of the energy estimator's averaging window, in samples. */
 #define HF1_ENERGY_WINDOW_WORD 145
 /** DBE crossfade: lower threshold, then the reciprocal of the span. */
@@ -194,6 +195,14 @@ esp_err_t tas57xx_hf1_set_pbe(const tas57xx_cram_sink_t *sink,
   ESP_LOGD(TAG, "PBE: hpf %.1f Hz, harmonic %d, effect %d", pbe->hpf_hz,
            pbe->harmonic, pbe->effect);
   return ESP_OK;
+}
+
+esp_err_t tas57xx_hf1_set_pbe_enabled(const tas57xx_cram_sink_t *sink,
+                                      bool enabled) {
+  // A crossfade, not a flag: 209 carries the processed path, 210 the dry one.
+  int32_t w[2] = {hf1_q23_unit(enabled ? 1.0f : 0.0f),
+                  hf1_q23_unit(enabled ? 0.0f : 1.0f)};
+  return tas57xx_cram_write(sink, HF1_PBE_MIX_WORD, w, 2);
 }
 
 esp_err_t tas57xx_hf1_set_dbe_hl_eq_band(const tas57xx_cram_sink_t *sink,
@@ -419,6 +428,7 @@ void tas57xx_hf1_defaults(tas57xx_hf1_config_t *cfg) {
   cfg->pbe.hpf_hz = 80.0f;
   cfg->pbe.harmonic = 0;
   cfg->pbe.effect = 3;
+  cfg->pbe_enabled = true;
 
   cfg->dbe_lower_db = -40.0f;
   cfg->dbe_upper_db = -20.0f;
@@ -579,6 +589,9 @@ static void hf1_read_pbe(const uint8_t *img, size_t size,
     }
     cfg->pbe.harmonic = h;
   }
+  if (tas57xx_cram_read_image(img, size, HF1_PBE_MIX_WORD, &w, 1) == ESP_OK) {
+    cfg->pbe_enabled = hf1_unq23_unit(w) >= 0.5f;
+  }
 }
 
 esp_err_t tas57xx_hf1_read(const uint8_t *img, size_t size,
@@ -725,6 +738,8 @@ esp_err_t tas57xx_hf1_apply(tas57xx_cram_sink_t *sink,
     hf1_keep(&first, tas57xx_hf1_set_eq_band(sink, i, &cfg->eq[i], fs), "EQ");
   }
   hf1_keep(&first, tas57xx_hf1_set_pbe(sink, &cfg->pbe, fs), "PBE");
+  hf1_keep(&first, tas57xx_hf1_set_pbe_enabled(sink, cfg->pbe_enabled),
+           "PBE enable");
 
   for (int i = 0; i < TAS57XX_HF1_DBE_EQ_BANDS; i++) {
     hf1_keep(&first,

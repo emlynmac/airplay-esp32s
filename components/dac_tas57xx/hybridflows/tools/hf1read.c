@@ -43,8 +43,9 @@ int main(int argc, char **argv) {
     printf("  eq%-2d         f0 %8.2f Hz  Q %8.4f\n", i + 1, cfg.eq[i].freq_hz,
            cfg.eq[i].q);
   }
-  printf("  pbe          %.2f Hz  effect %d  harmonic %d\n", cfg.pbe.hpf_hz,
-         cfg.pbe.effect, cfg.pbe.harmonic);
+  printf("  pbe          %.2f Hz  effect %d  harmonic %d  %s\n", cfg.pbe.hpf_hz,
+         cfg.pbe.effect, cfg.pbe.harmonic,
+         cfg.pbe_enabled ? "enabled" : "bypassed");
   for (int i = 0; i < TAS57XX_HF1_DBE_EQ_BANDS; i++) {
     printf("  dbe hi%d      f0 %8.2f Hz  Q %8.4f\n", i + 1,
            cfg.dbe_high[i].freq_hz, cfg.dbe_high[i].q);
@@ -56,8 +57,8 @@ int main(int argc, char **argv) {
   printf("  sensing      %.2f .. %.2f Hz  window %.2f ms\n", cfg.sense_lower_hz,
          cfg.sense_upper_hz, cfg.sense_window_ms);
   for (int i = 0; i < TAS57XX_HF1_DRC_CROSS_SECTIONS; i++) {
-    printf("  drc xover%d   f0 %8.2f Hz  Q %8.4f\n", i, cfg.drc_cross[i].freq_hz,
-           cfg.drc_cross[i].q);
+    printf("  drc xover%d   f0 %8.2f Hz  Q %8.4f\n", i,
+           cfg.drc_cross[i].freq_hz, cfg.drc_cross[i].q);
   }
   printf("  drc mix      %.4f %.4f %.4f\n", cfg.drc_mix[0], cfg.drc_mix[1],
          cfg.drc_mix[2]);

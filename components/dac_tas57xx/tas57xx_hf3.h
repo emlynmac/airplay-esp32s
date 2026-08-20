@@ -199,7 +199,7 @@ esp_err_t tas57xx_hf3_set_smooth_clip(const tas57xx_cram_sink_t *sink,
                                       float threshold_db);
 
 #define TAS57XX_HF3_CONFIG_MAGIC   0x48463345u /* "HF3E" */
-#define TAS57XX_HF3_CONFIG_VERSION 1u
+#define TAS57XX_HF3_CONFIG_VERSION 2u
 
 /**
  * Every tunable parameter of the flow, in one blob.
