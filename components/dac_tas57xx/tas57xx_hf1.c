@@ -389,10 +389,10 @@ esp_err_t tas57xx_hf1_set_dbe_mix(const tas57xx_cram_sink_t *sink,
       upper_db > 0.0f || upper_db - lower_db < 3.0f) {
     return ESP_ERR_INVALID_ARG;
   }
-  /* Both thresholds reach the mixer 4 dB below the entered value. Measured
-   * from captures at -10/-6 and -10/-7, which store exactly -14/-10 and
-   * -14/-11 dBFS. */
-  const float lower = powf(10.0f, (lower_db - 4.0f) / 20.0f);
+  /* The two thresholds reach the mixer at different offsets: 5 dB and 4 dB,
+   * the same pair HF3 uses. Measured from captures entered as -31/-10, which
+   * store exactly -36 and -14 dBFS. */
+  const float lower = powf(10.0f, (lower_db - 5.0f) / 20.0f);
   const float scale =
       0.03125f / (powf(10.0f, (upper_db - 4.0f) / 20.0f) - lower);
   if (scale > 1.0f) {
@@ -629,7 +629,7 @@ esp_err_t tas57xx_hf1_read(const uint8_t *img, size_t size,
     const float lower = -hf1_unq23(w[0]);
     const float scale = hf1_unq23(w[1]);
     if (lower > 0.0f && scale > 0.0f) {
-      cfg->dbe_lower_db = 20.0f * log10f(lower) + 4.0f;
+      cfg->dbe_lower_db = 20.0f * log10f(lower) + 5.0f;
       cfg->dbe_upper_db = 20.0f * log10f(lower + 0.03125f / scale) + 4.0f;
     }
   }
