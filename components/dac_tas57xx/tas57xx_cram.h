@@ -115,7 +115,7 @@ bool tas57xx_cram_addr(int word, uint8_t *page, uint8_t *reg);
  * A live device takes them over I2C and hears the change immediately. A flow
  * image takes them by rewriting the bytes the download would have sent, so the
  * tuning survives the next download instead of being overwritten by it.
- * Exactly one of the two must be set.
+ * Exactly one of the two must be set, unless dry_run discards them entirely.
  */
 typedef struct tas57xx_cram_batch tas57xx_cram_batch_t;
 
@@ -123,6 +123,7 @@ typedef struct {
   i2c_master_dev_handle_t handle;
   uint8_t *image;
   size_t image_size;
+  bool dry_run;                /**< run the checks, write nothing */
   tas57xx_cram_batch_t *batch; // set by tas57xx_cram_begin()
 } tas57xx_cram_sink_t;
 

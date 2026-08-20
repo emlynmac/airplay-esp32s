@@ -17,12 +17,16 @@ static const char *TAG = "tas57xx_hf1";
 #define HF1_DBE_MIX_WORD 143
 /** Bandpass the energy estimator listens through. */
 #define HF1_SENSING_BAND_WORD 146
+/** Compander band mixer gains, low first; the flow ships the mid at -1. */
+#define HF1_DRC_MIX_WORD 0
 /** Compander detectors: 3 bands x (energy, attack, decay), each a word pair. */
 #define HF1_DRC_TIMING_WORD 5
 /** Compander curve: 3 region slopes, then the 2 thresholds splitting them. */
 #define HF1_DRC_CURVE_WORD 23
 /** Output limiter threshold, stored with a 1/2 headroom pad. */
 #define HF1_SMOOTH_CLIP_WORD 251
+/** Flow-internal volume trim, distinct from the part's volume registers. */
+#define HF1_FINE_VOLUME_WORD 255
 
 #define Q23_ONE 8388607.0f
 
@@ -32,17 +36,12 @@ static const int hf1_eq_slots[TAS57XX_HF1_EQ_BANDS] = {83,  88,  93,  98,  103,
 static const int hf1_dbe_eq_slots[TAS57XX_HF1_DBE_EQ_BANDS] = {177, 182};
 static const int hf1_dbe_ll_eq_slots[TAS57XX_HF1_DBE_EQ_BANDS] = {133, 138};
 
-/** Compander crossover: low lowpass, high highpass, then the mid band's pair.
- */
-static const struct {
-  int word;
-  tas57xx_bq_type_t type;
-  bool upper_corner;
-} hf1_drc_cross[] = {
-    {189, TAS57XX_BQ_LOWPASS, false},
-    {194, TAS57XX_BQ_HIGHPASS, true},
-    {199, TAS57XX_BQ_LOWPASS, true},
-    {204, TAS57XX_BQ_HIGHPASS, false},
+/** Compander band-split slots, in the order the config lists them. */
+static const int hf1_drc_cross_slots[TAS57XX_HF1_DRC_CROSS_SECTIONS] = {
+    189, /* low  */
+    199, /* mid A */
+    204, /* mid B */
+    194, /* high */
 };
 
 /**
@@ -249,32 +248,39 @@ esp_err_t tas57xx_hf1_set_energy_window(const tas57xx_cram_sink_t *sink,
   return tas57xx_cram_write(sink, HF1_ENERGY_WINDOW_WORD, &word, 1);
 }
 
-esp_err_t tas57xx_hf1_set_drc_crossover(const tas57xx_cram_sink_t *sink,
-                                        float low_hz, float high_hz,
-                                        uint32_t sample_rate_hz) {
-  const float nyquist = (float)sample_rate_hz / 2.0f;
-  if (low_hz < 20.0f || high_hz <= low_hz || high_hz > nyquist * 0.9f) {
+esp_err_t tas57xx_hf1_set_drc_crossover(
+    const tas57xx_cram_sink_t *sink,
+    const tas57xx_bq_t sections[TAS57XX_HF1_DRC_CROSS_SECTIONS],
+    uint32_t sample_rate_hz) {
+  if (!sections) {
     return ESP_ERR_INVALID_ARG;
   }
-  for (size_t i = 0; i < sizeof(hf1_drc_cross) / sizeof(hf1_drc_cross[0]);
-       i++) {
-    /* Linkwitz-Riley 2nd order is exactly an RBJ section at Q = 1/2. */
-    const tas57xx_bq_t bq = {
-        .type = hf1_drc_cross[i].type,
-        .freq_hz = hf1_drc_cross[i].upper_corner ? high_hz : low_hz,
-        .q = 0.5f,
-        .gain_db = 0.0f,
-    };
+  for (int i = 0; i < TAS57XX_HF1_DRC_CROSS_SECTIONS; i++) {
     int32_t c[TAS57XX_BQ_WORDS];
-    tas57xx_bq_pack(&bq, sample_rate_hz, TAS57XX_BQ_NUM_FIRST, c);
+    tas57xx_bq_pack(&sections[i], sample_rate_hz, TAS57XX_BQ_NUM_FIRST, c);
     esp_err_t err =
-        tas57xx_cram_write(sink, hf1_drc_cross[i].word, c, TAS57XX_BQ_WORDS);
+        tas57xx_cram_write(sink, hf1_drc_cross_slots[i], c, TAS57XX_BQ_WORDS);
     if (err != ESP_OK) {
       return err;
     }
   }
-  ESP_LOGI(TAG, "DRC crossover %.0f/%.0f Hz", low_hz, high_hz);
   return ESP_OK;
+}
+
+esp_err_t tas57xx_hf1_set_drc_mix(const tas57xx_cram_sink_t *sink,
+                                  const float gain[TAS57XX_HF1_DRC_BANDS]) {
+  if (!gain) {
+    return ESP_ERR_INVALID_ARG;
+  }
+  int32_t w[TAS57XX_HF1_DRC_BANDS];
+  for (int i = 0; i < TAS57XX_HF1_DRC_BANDS; i++) {
+    if (!(gain[i] >= TAS57XX_HF1_DRC_MIX_MIN &&
+          gain[i] <= TAS57XX_HF1_DRC_MIX_MAX)) {
+      return ESP_ERR_INVALID_ARG;
+    }
+    w[i] = hf1_q23(gain[i]);
+  }
+  return tas57xx_cram_write(sink, HF1_DRC_MIX_WORD, w, TAS57XX_HF1_DRC_BANDS);
 }
 
 /**
@@ -357,14 +363,27 @@ esp_err_t tas57xx_hf1_set_smooth_clip(const tas57xx_cram_sink_t *sink,
   return tas57xx_cram_write(sink, HF1_SMOOTH_CLIP_WORD, w, 2);
 }
 
-esp_err_t tas57xx_hf1_set_dbe_mix(const tas57xx_cram_sink_t *sink,
-                                  float lower_db, float upper_db) {
-  if (lower_db < -96.0f || upper_db > 0.0f || upper_db <= lower_db) {
+esp_err_t tas57xx_hf1_set_fine_volume(const tas57xx_cram_sink_t *sink,
+                                      float gain_db) {
+  if (gain_db < TAS57XX_HF1_FINE_VOL_MIN_DB ||
+      gain_db > TAS57XX_HF1_FINE_VOL_MAX_DB) {
     return ESP_ERR_INVALID_ARG;
   }
-  /* The upper threshold is skewed 1 dB relative to the lower one, which keeps
-   * the span non-zero when both sliders meet. Not a typo. */
-  const float lower = powf(10.0f, (lower_db - 5.0f) / 20.0f);
+  /* Padded by 1/2, the same way the smooth-clip threshold is. */
+  int32_t w = hf1_q23(powf(10.0f, gain_db / 20.0f) / 2.0f);
+  return tas57xx_cram_write(sink, HF1_FINE_VOLUME_WORD, &w, 1);
+}
+
+esp_err_t tas57xx_hf1_set_dbe_mix(const tas57xx_cram_sink_t *sink,
+                                  float lower_db, float upper_db) {
+  if (lower_db < -60.0f || lower_db > -10.0f || upper_db < -24.0f ||
+      upper_db > 0.0f || upper_db - lower_db < 3.0f) {
+    return ESP_ERR_INVALID_ARG;
+  }
+  /* Both thresholds reach the mixer 4 dB below the entered value. Measured
+   * from captures at -10/-6 and -10/-7, which store exactly -14/-10 and
+   * -14/-11 dBFS. */
+  const float lower = powf(10.0f, (lower_db - 4.0f) / 20.0f);
   const float scale =
       0.03125f / (powf(10.0f, (upper_db - 4.0f) / 20.0f) - lower);
   if (scale > 1.0f) {
@@ -407,22 +426,55 @@ void tas57xx_hf1_defaults(tas57xx_hf1_config_t *cfg) {
   cfg->sense_upper_hz = 200.0f;
   cfg->sense_window_ms = 100.0f;
 
-  cfg->drc_low_hz = 500.0f;
-  cfg->drc_high_hz = 3000.0f;
+  /* Complementary Linkwitz-Riley at the band edges SLAU577A 12.5.3 asks for
+   * (low below 300 Hz, mid to 5 kHz, high above): with the mid inverted by the
+   * mixer this sums back to flat. */
+  const tas57xx_bq_t cross[TAS57XX_HF1_DRC_CROSS_SECTIONS] = {
+      {.type = TAS57XX_BQ_LOWPASS,
+       .subtype = TAS57XX_BQ_SUB_LINKWITZ_RILEY_2,
+       .freq_hz = 300.0f,
+       .q = 0.5f},
+      {.type = TAS57XX_BQ_LOWPASS,
+       .subtype = TAS57XX_BQ_SUB_LINKWITZ_RILEY_2,
+       .freq_hz = 5000.0f,
+       .q = 0.5f},
+      {.type = TAS57XX_BQ_HIGHPASS,
+       .subtype = TAS57XX_BQ_SUB_LINKWITZ_RILEY_2,
+       .freq_hz = 300.0f,
+       .q = 0.5f},
+      {.type = TAS57XX_BQ_HIGHPASS,
+       .subtype = TAS57XX_BQ_SUB_LINKWITZ_RILEY_2,
+       .freq_hz = 5000.0f,
+       .q = 0.5f},
+  };
+  memcpy(cfg->drc_cross, cross, sizeof(cross));
+  cfg->drc_mix[TAS57XX_HF1_DRC_LOW] = 1.0f;
+  cfg->drc_mix[TAS57XX_HF1_DRC_MID] = -1.0f;
+  cfg->drc_mix[TAS57XX_HF1_DRC_HIGH] = 1.0f;
+  /* SLAU577A Table 3, "fast" column, against each band's lowest frequency:
+   * energy 5/fmin, attack 2/fmin, decay 10/fmin, with fmin 20 Hz, 300 Hz and
+   * 5 kHz. */
   const tas57xx_hf1_drc_timing_t timing[TAS57XX_HF1_DRC_BANDS] = {
-      {100.0f, 100.0f, 200.0f},
-      {40.0f, 20.0f, 60.0f},
-      {5.0f, 2.5f, 7.5f},
+      {250.0f, 100.0f, 500.0f},
+      {16.7f, 6.7f, 33.3f},
+      {1.0f, 0.4f, 2.0f},
   };
   memcpy(cfg->drc_timing, timing, sizeof(timing));
-  for (int i = 0; i < TAS57XX_HF1_DRC_REGIONS; i++) {
-    cfg->drc_region[i].mode = TAS57XX_HF1_DRC_COMPRESS;
-    cfg->drc_region[i].ratio = 1.0f;
-  }
-  cfg->drc_thresh1_db = -80.0f;
-  cfg->drc_thresh2_db = -20.0f;
+  /* SLAU577A 12.5.1 soft power limit: 1:1 until a little under the rated
+   * level, a mild ratio to it, then as hard a one as this flow can express
+   * (TI asks for 25:1 or more; the coefficient stops at 5:1). Full scale is
+   * assumed to be the rated level, which is only true at maximum volume. */
+  cfg->drc_region[0].mode = TAS57XX_HF1_DRC_COMPRESS;
+  cfg->drc_region[0].ratio = 1.0f;
+  cfg->drc_region[1].mode = TAS57XX_HF1_DRC_COMPRESS;
+  cfg->drc_region[1].ratio = 2.0f;
+  cfg->drc_region[2].mode = TAS57XX_HF1_DRC_COMPRESS;
+  cfg->drc_region[2].ratio = 5.0f;
+  cfg->drc_thresh1_db = -2.0f;
+  cfg->drc_thresh2_db = -1.0f;
 
   cfg->smooth_clip_db = 0.0f;
+  cfg->fine_volume_db = 0.0f;
 }
 
 /** Keep the first failure but let the rest of the chain be programmed. */
@@ -433,6 +485,11 @@ static void hf1_keep(esp_err_t *first, esp_err_t err, const char *what) {
       *first = err;
     }
   }
+}
+
+esp_err_t tas57xx_hf1_validate(const tas57xx_hf1_config_t *cfg) {
+  tas57xx_cram_sink_t sink = {.dry_run = true};
+  return tas57xx_hf1_apply(&sink, cfg);
 }
 
 esp_err_t tas57xx_hf1_apply(tas57xx_cram_sink_t *sink,
@@ -474,10 +531,9 @@ esp_err_t tas57xx_hf1_apply(tas57xx_cram_sink_t *sink,
            tas57xx_hf1_set_energy_window(sink, cfg->sense_window_ms, fs),
            "energy window");
 
-  hf1_keep(&first,
-           tas57xx_hf1_set_drc_crossover(sink, cfg->drc_low_hz,
-                                         cfg->drc_high_hz, fs),
+  hf1_keep(&first, tas57xx_hf1_set_drc_crossover(sink, cfg->drc_cross, fs),
            "DRC crossover");
+  hf1_keep(&first, tas57xx_hf1_set_drc_mix(sink, cfg->drc_mix), "DRC mix");
   for (int i = 0; i < TAS57XX_HF1_DRC_BANDS; i++) {
     hf1_keep(&first,
              tas57xx_hf1_set_drc_timing(sink, i, &cfg->drc_timing[i], fs),
@@ -490,6 +546,8 @@ esp_err_t tas57xx_hf1_apply(tas57xx_cram_sink_t *sink,
 
   hf1_keep(&first, tas57xx_hf1_set_smooth_clip(sink, cfg->smooth_clip_db),
            "smooth clip");
+  hf1_keep(&first, tas57xx_hf1_set_fine_volume(sink, cfg->fine_volume_db),
+           "fine volume");
 
   // A half-written tuning is worse than none: one swap, or nothing.
   if (first != ESP_OK) {
