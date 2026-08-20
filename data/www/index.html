@@ -261,7 +261,7 @@ async function loadInfo(){
       document.getElementById('info-phy').textContent=i.wifi_phy||'-';
       document.getElementById('info-bssid').textContent=i.wifi_bssid||'-';
       if(i.eq_supported||i.sub_supported){document.getElementById('eq-link').style.display='';}
-      if(i.hf1_supported){document.getElementById('hf1-link').style.display='';}
+      if(i.hf1_supported||i.hf3_supported){document.getElementById('hf1-link').style.display='';}
       /* Only a TAS58xx build registers /api/audio/dual; asking anyway logs a
          warning on the device for every page load. */
       if(i.dual_supported&&!dualLoaded){dualLoaded=true;loadDual();}

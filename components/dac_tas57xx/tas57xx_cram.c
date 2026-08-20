@@ -53,6 +53,69 @@ void tas57xx_bq_unity(tas57xx_bq_layout_t layout,
   }
 }
 
+void tas57xx_bq_unpack(const int32_t c[TAS57XX_BQ_WORDS],
+                       tas57xx_bq_layout_t layout, uint32_t sample_rate_hz,
+                       tas57xx_bq_t *bq) {
+  if (!c || !bq) {
+    return;
+  }
+  double b0, b1, b2, a1, a2;
+  if (layout == TAS57XX_BQ_DEN_FIRST) {
+    a1 = -2.0 * c[0] / Q23_ONE;
+    a2 = -c[1] / Q23_ONE;
+    b0 = 2.0 * c[2] / Q23_ONE;
+    b1 = 4.0 * c[3] / Q23_ONE;
+    b2 = 2.0 * c[4] / Q23_ONE;
+  } else {
+    b0 = c[0] / Q23_ONE;
+    b1 = 2.0 * c[1] / Q23_ONE;
+    b2 = c[2] / Q23_ONE;
+    a1 = -2.0 * c[3] / Q23_ONE;
+    a2 = -c[4] / Q23_ONE;
+  }
+
+  memset(bq, 0, sizeof(*bq));
+  bq->type = TAS57XX_BQ_CUSTOM;
+  bq->coeff[0] = (float)b0;
+  bq->coeff[1] = (float)b1;
+  bq->coeff[2] = (float)b2;
+  bq->coeff[3] = (float)a1;
+  bq->coeff[4] = (float)a2;
+
+  /* An untouched slot is a pure gain of one. Left as CUSTOM it would go
+   * through the first-order branch below and be reported as a filter at a
+   * quarter of the sample rate, which is how most of a flow would look. */
+  if (fabs(b0 - 1.0) < 1e-5 && fabs(b1) < 1e-5 && fabs(b2) < 1e-5 &&
+      fabs(a1) < 1e-5 && fabs(a2) < 1e-5) {
+    bq->type = TAS57XX_BQ_BYPASS;
+    bq->subtype = TAS57XX_BQ_SUB_BUTTERWORTH_2;
+    bq->freq_hz = 1000.0f;
+    bq->q = 0.707f;
+    return;
+  }
+
+  /* A first-order section has no pole pair to solve for, and putting it
+   * through the biquad inversion lands the corner near Nyquist. Crossovers are
+   * routinely first order, so this is a common case rather than an edge one. */
+  if (fabs(a2) < 1e-5 && fabs(b2) < 1e-5) {
+    bq->freq_hz =
+        (float)(sample_rate_hz / M_PI * atan((1.0 + a1) / (1.0 - a1)));
+    bq->q = 0.0f;
+    return;
+  }
+
+  const double alpha = (1.0 + a2) != 0.0 ? (1.0 - a2) / (1.0 + a2) : 0.0;
+  double cw = (1.0 + a2) != 0.0 ? -a1 / (1.0 + a2) : 1.0;
+  if (cw > 1.0) {
+    cw = 1.0;
+  } else if (cw < -1.0) {
+    cw = -1.0;
+  }
+  const double w0 = acos(cw);
+  bq->freq_hz = (float)(w0 * sample_rate_hz / (2.0 * M_PI));
+  bq->q = alpha > 1e-9 ? (float)(sin(w0) / (2.0 * alpha)) : 0.0f;
+}
+
 /** Q implied by a low-pass or high-pass alignment. */
 static double subtype_q(tas57xx_bq_subtype_t subtype, double q) {
   switch (subtype) {
@@ -343,6 +406,48 @@ static esp_err_t cram_patch_image(uint8_t *img, size_t size, int word,
     pos += 2 + (size_t)len;
   }
   return found ? ESP_OK : ESP_ERR_NOT_FOUND;
+}
+
+static bool cram_read_word(const uint8_t *img, size_t size, int word,
+                           int32_t *out) {
+  uint8_t page, reg;
+  if (!tas57xx_cram_addr(word, &page, &reg)) {
+    return false;
+  }
+  bool found = false;
+  size_t pos = 0;
+  int cur = -1;
+  while (pos + 1 < size && !(img[pos] == 0xFF && img[pos + 1] == 0xFF)) {
+    const int r = img[pos];
+    const int len = img[pos + 1];
+    if (pos + 2 + (size_t)len > size) {
+      break;
+    }
+    if (r == REG_PAGE && len == 1) {
+      cur = img[pos + 2];
+    } else if ((cur == page || cur == page + CRAM_BANK_B_OFFSET) && reg >= r &&
+               reg + 4 <= r + len) {
+      const uint8_t *p = &img[pos + 2 + (reg - r)];
+      int32_t v = ((int32_t)p[0] << 16) | ((int32_t)p[1] << 8) | p[2];
+      *out = v & 0x800000 ? v - 0x1000000 : v; // 24-bit two's complement
+      found = true;
+    }
+    pos += 2 + (size_t)len;
+  }
+  return found;
+}
+
+esp_err_t tas57xx_cram_read_image(const uint8_t *img, size_t size, int word,
+                                  int32_t *out, int count) {
+  if (!img || !out || count < 1 || word < 0) {
+    return ESP_ERR_INVALID_ARG;
+  }
+  for (int i = 0; i < count; i++) {
+    if (!cram_read_word(img, size, word + i, &out[i])) {
+      return ESP_ERR_NOT_FOUND;
+    }
+  }
+  return ESP_OK;
 }
 
 static esp_err_t cram_write_i2c(i2c_master_dev_handle_t handle, int word,
