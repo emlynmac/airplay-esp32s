@@ -41,8 +41,8 @@ def load_bin(path):
     return mem
 
 
-def load_cfg(path):
-    """PPC2 log lines: w <dev> <reg> <bytes...>; only the DAC at 0x98."""
+def load_cfg(path, dev_want=0x98):
+    """PPC2 log lines: w <dev> <reg> <bytes...>; some flows drive 0x9a."""
     mem, page = {}, 0
     for line in open(path):
         t = line.split()
@@ -53,7 +53,7 @@ def load_cfg(path):
         except ValueError:
             continue
         dev, reg, payload = vals[0], vals[1], vals[2:]
-        if dev != 0x98 or not payload:
+        if dev != dev_want or not payload:
             continue
         if reg == 0x00 and len(payload) == 1:
             page = payload[0]
@@ -99,17 +99,27 @@ def write_bin(mem, out):
 
 
 def main():
-    if sys.argv[1] == '--to-bin':
-        src, out = sys.argv[2], sys.argv[3]
-        write_bin((load_bin if src.endswith('.bin') else load_cfg)(src), out)
+    argv = sys.argv[1:]
+    dev = 0x98
+    if '--dev' in argv:
+        i = argv.index('--dev')
+        dev = int(argv[i + 1], 16)
+        del argv[i:i + 2]
+
+    def load(p):
+        return load_bin(p) if p.endswith('.bin') else load_cfg(p, dev)
+
+    if argv[0] == '--to-bin':
+        src, out = argv[1], argv[2]
+        write_bin(load(src), out)
         return
-    spec = sys.argv[1]
+    spec = argv[0]
     if '-' in spec:
         lo, hi = (int(x) for x in spec.split('-'))
     else:
         lo = hi = int(spec)
-    for path in sys.argv[2:]:
-        mem = (load_bin if path.endswith('.bin') else load_cfg)(path)
+    for path in argv[1:]:
+        mem = load(path)
         print(f'== {os.path.basename(path)}')
         for w in range(lo, hi + 1):
             page, reg = loc(w)
