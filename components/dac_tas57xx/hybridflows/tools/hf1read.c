@@ -15,7 +15,7 @@
 
 int main(int argc, char **argv) {
   if (argc < 2) {
-    fprintf(stderr, "usage: %s <flow.bin>\n", argv[0]);
+    fprintf(stderr, "usage: %s <flow.bin> [sample_rate]\n", argv[0]);
     return 1;
   }
   FILE *f = fopen(argv[1], "rb");
@@ -33,7 +33,8 @@ int main(int argc, char **argv) {
   fclose(f);
 
   tas57xx_hf1_config_t cfg;
-  if (tas57xx_hf1_read(img, (size_t)size, 44100, &cfg) != ESP_OK) {
+  uint32_t fs = argc > 2 ? (uint32_t)strtoul(argv[2], NULL, 10) : 44100;
+  if (tas57xx_hf1_read(img, (size_t)size, fs, &cfg) != ESP_OK) {
     fprintf(stderr, "read failed\n");
     return 1;
   }
