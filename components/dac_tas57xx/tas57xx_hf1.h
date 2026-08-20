@@ -42,6 +42,10 @@ esp_err_t tas57xx_hf1_set_pbe(const tas57xx_cram_sink_t *sink,
                               const tas57xx_hf1_pbe_t *pbe,
                               uint32_t sample_rate_hz);
 
+/** Crossfade the bass enhancer in or out, leaving its tuning untouched. */
+esp_err_t tas57xx_hf1_set_pbe_enabled(const tas57xx_cram_sink_t *sink,
+                                      bool enabled);
+
 #define TAS57XX_HF1_DBE_EQ_BANDS 2
 
 /** Program one band of the DBE's high-level (loud path) EQ. */
@@ -178,7 +182,7 @@ esp_err_t tas57xx_hf1_set_fine_volume(const tas57xx_cram_sink_t *sink,
                                       float gain_db);
 
 #define TAS57XX_HF1_CONFIG_MAGIC   0x48463145u /* "HF1E" */
-#define TAS57XX_HF1_CONFIG_VERSION 1u
+#define TAS57XX_HF1_CONFIG_VERSION 2u
 
 /**
  * Every tunable parameter of the flow, in one blob.
@@ -195,6 +199,7 @@ typedef struct {
   tas57xx_bq_t eq[TAS57XX_HF1_EQ_BANDS];
 
   tas57xx_hf1_pbe_t pbe;
+  bool pbe_enabled;
 
   tas57xx_bq_t dbe_high[TAS57XX_HF1_DBE_EQ_BANDS];
   tas57xx_bq_t dbe_low[TAS57XX_HF1_DBE_EQ_BANDS];

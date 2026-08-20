@@ -12,7 +12,7 @@ static const char *TAG = "tas57xx_hf3";
 /** First word of the effect-intensity shelf, stored denominator-first. */
 #define HF3_PBE_EFFECT_WORD 8
 /** Bypass crossfade around the bass enhancer: dry gain, then wet. */
-#define HF3_PBE_BYPASS_WORD 227
+#define HF3_PBE_MIX_WORD 227
 /** Compander band-split filters: low-pass into the high band, then the mid. */
 #define HF3_DRC_SPLIT_HIGH_WORD 28
 #define HF3_DRC_SPLIT_MID_WORD  33
@@ -276,9 +276,10 @@ esp_err_t tas57xx_hf3_set_pbe(const tas57xx_cram_sink_t *sink,
 
 esp_err_t tas57xx_hf3_set_pbe_enabled(const tas57xx_cram_sink_t *sink,
                                       bool enabled) {
-  int32_t w[2] = {hf3_q23_unit(enabled ? 0.0f : 1.0f),
-                  hf3_q23_unit(enabled ? 1.0f : 0.0f)};
-  return tas57xx_cram_write(sink, HF3_PBE_BYPASS_WORD, w, 2);
+  // A crossfade, not a flag: 227 carries the processed path, 228 the dry one.
+  int32_t w[2] = {hf3_q23_unit(enabled ? 1.0f : 0.0f),
+                  hf3_q23_unit(enabled ? 0.0f : 1.0f)};
+  return tas57xx_cram_write(sink, HF3_PBE_MIX_WORD, w, 2);
 }
 
 esp_err_t tas57xx_hf3_set_dbe_hl_eq_band(const tas57xx_cram_sink_t *sink,
@@ -474,7 +475,7 @@ void tas57xx_hf3_defaults(tas57xx_hf3_config_t *cfg) {
   cfg->pbe.hpf_hz = 180.0f;
   cfg->pbe.harmonic = 0;
   cfg->pbe.effect = 1;
-  cfg->pbe_enabled = false;
+  cfg->pbe_enabled = true;
 
   for (int i = 0; i < TAS57XX_HF3_DBE_HL_BANDS; i++) {
     cfg->dbe_high[i].type = TAS57XX_BQ_BYPASS;
@@ -625,9 +626,8 @@ static void hf3_read_pbe(const uint8_t *img, size_t size,
       cfg->pbe.harmonic = TAS57XX_HF3_PBE_HARMONIC_MAX;
     }
   }
-  if (tas57xx_cram_read_image(img, size, HF3_PBE_BYPASS_WORD, &w, 1) ==
-      ESP_OK) {
-    cfg->pbe_enabled = hf3_unq23_unit(w) < 0.5f;
+  if (tas57xx_cram_read_image(img, size, HF3_PBE_MIX_WORD, &w, 1) == ESP_OK) {
+    cfg->pbe_enabled = hf3_unq23_unit(w) >= 0.5f;
   }
 }
 
