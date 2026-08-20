@@ -29,6 +29,8 @@ body{font-family:-apple-system,system-ui,sans-serif;background:linear-gradient(1
 .msg.info{background:rgba(15,52,96,0.5)}
 .hint{color:#888;font-size:12px;margin-top:8px;line-height:1.5}
 input[type=number],select{background:rgba(0,0,0,0.3);border:1px solid rgba(255,255,255,0.1);border-radius:6px;color:#fff;padding:7px 8px;font-size:12px;width:100%}
+input[type=file]{font-size:11px;color:#aaa;width:100%}
+input[type=file]::file-selector-button{background:rgba(255,255,255,0.1);border:none;border-radius:6px;color:#fff;padding:6px 10px;font-size:12px;margin-right:8px;cursor:pointer}
 select option{background:#16213e}
 input:disabled{opacity:0.3}
 .bq{display:grid;grid-template-columns:24px 1.4fr 1.3fr 0.9fr 0.9fr 0.9fr;gap:6px;align-items:center;margin-bottom:6px}
@@ -119,11 +121,53 @@ level, and PBE last. Each stage assumes the ones before it are settled.</p>
 
 <div class='card sect' id='sect-eq'><h2>Parametric EQ</h2>
 <div class='plotlab'>Magnitude</div>
+<div class='legend' id='aeq-legend' style='display:none'>
+<span><i style='background:#e94560'></i>EQ</span>
+<span><i style='background:#8a94a6'></i>Measured</span>
+<span><i style='background:#f5b301'></i>Corrected</span>
+</div>
 <canvas id='plot' class='plot' width='1640' height='460'></canvas>
 <div class='plotlab'>Phase</div>
 <canvas id='phase' class='plot sm' width='1640' height='340'></canvas>
 <div class='bqhead'><span></span><span>Type</span><span>Alignment</span><span>Freq Hz</span><span>Q / BW / Hz</span><span>Gain dB</span></div>
 <div id='eq-rows'></div>
+<h3>Fit to a measurement</h3>
+<div class='grid'>
+<div class='fld'><label>Response file</label>
+<input type='file' id='aeq-file' accept='.txt,.csv,.frd,.dat' onchange='aeqLoad(this)'></div>
+<div class='fld'><label>Fit from (Hz)</label><input type='number' id='aeq-lo' min='10' max='20000' step='1' value='20'></div>
+<div class='fld'><label>Fit to (Hz)</label><input type='number' id='aeq-hi' min='10' max='20000' step='1' value='20000'></div>
+<div class='fld'><label>Smoothing (1/N oct)</label><input type='number' id='aeq-sm' min='1' max='48' step='1' value='6' oninput='plot()'></div>
+<div class='fld'><label>Bands to use</label><input type='number' id='aeq-n' min='1' max='10' step='1' value='10'></div>
+<div class='fld'><label>Max total boost (dB)</label><input type='number' id='aeq-up' min='0' max='12' step='0.5' value='6'></div>
+<div class='fld'><label>Max total cut (dB)</label><input type='number' id='aeq-dn' min='0' max='15' step='0.5' value='12'></div>
+</div>
+<div class='actions' style='margin-top:10px'>
+<button class='btn btn-secondary' id='aeq-run' onclick='aeqRun()' disabled>Fit filters</button>
+<button class='btn btn-secondary' onclick='aeqClear()'>Clear measurement</button>
+<span id='aeq-msg' class='hint' style='margin:0'></span>
+</div>
+<p class='hint'>Load a frequency response export &mdash; REW text, or any file
+with a frequency and a level in the first two columns &mdash; and the fitter
+places peaking filters to flatten it. The measurement is band-averaged at the
+smoothing you pick, so narrow wiggles that are measurement artefacts rather
+than speaker behaviour are ignored; 1/6 octave is a reasonable start. Only the
+shape is fitted, never the level, and the filters are ordered cuts first so the
+boosts land in the later bands.</p>
+<p class='hint'>The two limits apply to the summed response, not to any one
+filter, so a boost stacked on a deeper cut is allowed as long as the total
+stays inside them. Setting <em>max total boost</em> to zero puts the whole
+correction at or below unity: it costs output level, since you have cut rather
+than boosted to get there, but it consumes none of the &plusmn;12 dB data-path
+headroom and cannot clip. Whatever the summed peak comes out at is how much
+you need to take off the output volume, and it is reported after each fit.</p>
+<p class='hint'>The fit range matters more than anything else here. A small
+speaker rolls off at both ends by more than the &plusmn;12 dB the data path
+has, so leaving the range wide spends filters fighting the roll-off and pulls
+the midrange down with it. Narrow it to the span the speaker can actually
+reproduce and the remaining bands go where they help. Max total boost is the
+one to keep honest: every dB of it is headroom, and the compressor and smooth
+clipper see the result.</p>
 <p class='hint'>Ten biquads in series ahead of the bass enhancer. The curves are the
 design response, before the headroom scaling a large boost needs. Alignment
 applies to the pass filters only. &ldquo;All pass&rdquo; here means unity, a
@@ -652,7 +696,7 @@ function sweep(secs,fs,fn,unwrap,lo,hi){
 }
 /* Bold colour for a group's summed response, faint for its individual sections. */
 var TRACE=[['#e94560','rgba(233,69,96,0.25)'],['#4ecca3','rgba(78,204,163,0.25)']];
-function drawGraph(cv,sweeps,lo,hi,step,fmt,cols){
+function drawGraph(cv,sweeps,lo,hi,step,fmt,cols,extras){
   var g=cv.getContext('2d'),W=cv.width,H=cv.height;
   var PL=54,PR=12,PT=12,PB=26,PW=W-PL-PR,PH=H-PT-PB,i,k,d,f;
   var f0=sweeps[0].f0,f1=sweeps[0].f1,N=sweeps[0].n;
@@ -676,10 +720,13 @@ function drawGraph(cv,sweeps,lo,hi,step,fmt,cols){
   }
   g.save();g.beginPath();g.rect(PL,PT,PW,PH);g.clip();
   function trace(vals,style,width){
+    var pen=false;
     g.strokeStyle=style;g.lineWidth=width;g.beginPath();
     for(i=0;i<=N;i++){
       f=f0*Math.pow(f1/f0,i/N);
-      if(i)g.lineTo(x(f),y(vals[i]));else g.moveTo(x(f),y(vals[i]));
+      /* An overlay can have gaps where the measurement does not reach. */
+      if(vals[i]===null||vals[i]===undefined){pen=false;continue;}
+      if(pen)g.lineTo(x(f),y(vals[i]));else{g.moveTo(x(f),y(vals[i]));pen=true;}
     }
     g.stroke();
   }
@@ -689,11 +736,14 @@ function drawGraph(cv,sweeps,lo,hi,step,fmt,cols){
     for(k=0;k<sweeps[s].curves.length;k++)trace(sweeps[s].curves[k],col[1],2);
     if(sweeps[s].total)trace(sweeps[s].total,col[0],4);
   }
+  /* Separate counter: trace() walks the shared `i`. */
+  if(extras)for(var x2=0;x2<extras.length;x2++)
+    trace(extras[x2].v,extras[x2].c,extras[x2].w);
   g.restore();
 }
 /* Draws one magnitude and one phase graph for a set of section groups, which
    share a vertical range so the groups can be compared directly. */
-function drawPair(magId,phaseId,groups,fs){
+function drawPair(magId,phaseId,groups,fs,extras){
   var mag=[],ph=[],lim=0,k,i;
   for(k=0;k<groups.length;k++){
     mag.push(sweep(groups[k],fs,magDb,false));
@@ -701,7 +751,19 @@ function drawPair(magId,phaseId,groups,fs){
     for(i=0;i<=p.n;i++)lim=Math.max(lim,Math.abs(p.total[i]));
     ph.push(p);
   }
-  drawGraph($(magId),mag,-18,18,6,function(d){return d>0?'+'+d:''+d;});
+  /* An overlaid measurement swings well past the usual +/-18 dB. Scaled to
+     what it does inside the fit range where a curve says so, so that a
+     roll-off an octave below anything being corrected cannot flatten the part
+     actually being looked at. */
+  var span=18,peak=0;
+  if(extras)for(k=0;k<extras.length;k++){
+    if(extras[k].pk!==undefined){peak=Math.max(peak,extras[k].pk);continue;}
+    for(i=0;i<extras[k].v.length;i++)
+      if(extras[k].v[i]!==null)peak=Math.max(peak,Math.abs(extras[k].v[i]));
+  }
+  while(span<peak&&span<60)span+=6;
+  drawGraph($(magId),mag,-span,span,6,function(d){return d>0?'+'+d:''+d;},
+            null,extras);
   var range=180;
   while(range<lim&&range<1440)range*=2;
   drawGraph($(phaseId),ph,-range,range,range/2,function(d){return d+'\u00b0';});
@@ -925,7 +987,7 @@ function plot(){
   var mag=$('plot');
   if(!mag||!mag.getContext||!$('eq0-t')||!$('dl1-t')||!$('r0-m'))return;
   var fs=(cfg&&cfg.sample_rate)||44100;
-  drawPair('plot','phase',[sections('eq',10,fs)],fs);
+  drawPair('plot','phase',[sections('eq',10,fs)],fs,measCurves(fs));
   drawPair('dbe-plot','dbe-phase',[sections('dh',2,fs),sections('dl',2,fs)],fs);
   plotBand('pbe-plot',[pbeExtract(fs),pbeEffect(fs)],fs,PBE_LO,PBE_HI,-30,18);
   drawPbeMark($('pbe-plot'),num('pbe-hpf'));
@@ -939,6 +1001,438 @@ function plot(){
               function(d){return d>0?'+'+d:''+d;},DRCCOL);
   drawDrcCurve($('drc-curve'),drcCurve());
   drcSlopes();
+}
+
+/* ---- auto EQ from a measured response ---- */
+/* The fit runs on the same log grid the plots sweep, so the overlay lines up
+   with the filter curves and the score is taken on exactly what is drawn. */
+var AEQ_N=360,AEQ_QMIN=0.3,AEQ_QMAX=8,meas=null;
+function gridHz(fs){
+  var f0=20,f1=Math.min(20000,fs/2),g=[],i;
+  for(i=0;i<=AEQ_N;i++)g.push(f0*Math.pow(f1/f0,i/AEQ_N));
+  return g;
+}
+/* Frequency and level from the first two numeric columns; anything else on the
+   line, and any header or comment, is skipped. Covers REW text exports, FRD
+   and plain CSV without needing to know which it got. */
+function parseResponse(text){
+  var lines=text.split(/\r?\n/),pt=[],i,p,f,d,ln;
+  for(i=0;i<lines.length;i++){
+    ln=lines[i].trim();
+    if(!ln||'*#;%"\''.indexOf(ln.charAt(0))>=0)continue;
+    p=ln.split(/[\s,;]+/);
+    if(p.length<2)continue;
+    f=parseFloat(p[0]);d=parseFloat(p[1]);
+    if(!isFinite(f)||!isFinite(d)||f<=0)continue;
+    pt.push([f,d]);
+  }
+  if(pt.length<16)return null;
+  pt.sort(function(a,b){return a[0]-b[0];});
+  var m={f:[],db:[]};
+  for(i=0;i<pt.length;i++){m.f.push(pt[i][0]);m.db.push(pt[i][1]);}
+  return m;
+}
+/* Averages the points falling inside each grid bin. Band-averaging rather than
+   interpolating is what stops a 96 point/octave export aliasing onto the
+   coarser grid. Bins with no point in them interpolate; grid points outside
+   the measured span come back null and are left out of the fit. */
+function smoothOnto(m,grid,oct){
+  var half=Math.pow(2,1/(2*oct)),out=[],lo=0,hi=0,i,j,s,n,t;
+  for(i=0;i<grid.length;i++){
+    while(lo<m.f.length&&m.f[lo]<grid[i]/half)lo++;
+    while(hi<m.f.length&&m.f[hi]<=grid[i]*half)hi++;
+    if(grid[i]<m.f[0]||grid[i]>m.f[m.f.length-1]){out.push(null);continue;}
+    s=0;n=0;
+    for(j=lo;j<hi;j++){s+=m.db[j];n++;}
+    if(n){out.push(s/n);continue;}
+    j=Math.min(Math.max(lo,1),m.f.length-1);
+    t=Math.log(grid[i]/m.f[j-1])/Math.log(m.f[j]/m.f[j-1]);
+    out.push(m.db[j-1]+t*(m.db[j]-m.db[j-1]));
+  }
+  return out;
+}
+/* Full weight across the fit range, fading out over the half octave beyond
+   each edge so a filter sitting on the boundary is not free to do whatever it
+   likes just outside it. */
+function fitWeights(grid,sm,lo,hi){
+  var w=[],i,v;
+  for(i=0;i<grid.length;i++){
+    if(sm[i]===null){w.push(0);continue;}
+    v=Math.min(Math.log2(grid[i]/lo)/0.5+1,Math.log2(hi/grid[i])/0.5+1);
+    w.push(Math.max(0,Math.min(1,v)));
+  }
+  return w;
+}
+/* Reference level the fit measures against. Absolute level is the volume
+   control's job, so measuring against a free level keeps the fit on shape
+   alone instead of burning filters trying to move the whole curve. Found by
+   reweighting, so a roll-off the filters cannot reach does not drag it. */
+var AEQ_KNEE=6;
+function fitLevel(sm,eq,w){
+  var i,c=0,sw=0,a,ww,num,den,it;
+  for(i=0;i<w.length;i++){if(!w[i])continue;c+=w[i]*(sm[i]+eq[i]);sw+=w[i];}
+  if(!sw)return null;
+  c/=sw;
+  for(it=0;it<2;it++){
+    num=0;den=0;
+    for(i=0;i<w.length;i++){
+      if(!w[i])continue;
+      a=Math.abs(sm[i]+eq[i]-c);
+      ww=a>AEQ_KNEE?w[i]*AEQ_KNEE/a:w[i];
+      num+=ww*(sm[i]+eq[i]);den+=ww;
+    }
+    if(den)c=num/den;
+  }
+  return c;
+}
+/* The loss. Huber rather than plain squares: a roll-off the filters cannot
+   reach is often 15 dB out, and under squared error that one region swamps
+   every deviation that actually is correctable. */
+function fitRms(sm,eq,w){
+  var c=fitLevel(sm,eq,w),i,s=0,sw=0,a;
+  if(c===null)return 0;
+  for(i=0;i<w.length;i++){
+    if(!w[i])continue;
+    a=Math.abs(sm[i]+eq[i]-c);
+    s+=w[i]*(a<=AEQ_KNEE?a*a:AEQ_KNEE*(2*a-AEQ_KNEE));sw+=w[i];
+  }
+  return Math.sqrt(s/sw);
+}
+/* Plain weighted RMS about that same level, for the message only: the number
+   the user is shown should mean what it says. */
+function fitDev(sm,eq,w){
+  var c=fitLevel(sm,eq,w),i,s=0,sw=0,d;
+  if(c===null)return 0;
+  for(i=0;i<w.length;i++){if(!w[i])continue;d=sm[i]+eq[i]-c;s+=w[i]*d*d;sw+=w[i];}
+  return Math.sqrt(s/sw);
+}
+/* What the search actually minimises: the deviation above, plus a heavy term
+   for however far the SUMMED response breaks the gain limits. Without it the
+   fitter stacks filter on filter at one frequency, since each is inside its
+   own clamp while together they are nowhere near it. Worst point rather than
+   an average, or a narrow violation gets diluted across the grid, and linear
+   so there is still a gradient to follow back into range. */
+function fitScore(sm,eq,w,opt){
+  var i,ex=0,d;
+  for(i=0;i<eq.length;i++){
+    d=eq[i]>opt.gmax?eq[i]-opt.gmax:(eq[i]<opt.gmin?opt.gmin-eq[i]:0);
+    if(d>ex)ex=d;
+  }
+  return fitRms(sm,eq,w)+100*ex;
+}
+/* Biquad magnitude from phi = 4 sin^2(w/2) (the formulation AutoEq uses): the
+   only trig is one term per grid point, computed once for a whole fit, where
+   magDb needs four per filter per point. */
+function gridPhi(g,fs){
+  var p=[],i,s;
+  for(i=0;i<g.length;i++){s=Math.sin(Math.PI*g[i]/fs);p.push(4*s*s);}
+  return p;
+}
+function aeqMagDb(c,phi){
+  var bs=c.b0+c.b1+c.b2,as=1+c.a1+c.a2;
+  var n=bs*bs+(c.b0*c.b2*phi-(c.b1*(c.b0+c.b2)+4*c.b0*c.b2))*phi;
+  var d=as*as+(c.a2*phi-(c.a1*(1+c.a2)+4*c.a2))*phi;
+  if(!(n>1e-24)||!(d>1e-24))return -60;
+  return Math.max(-60,Math.min(60,10*Math.log10(n/d)));
+}
+function eqSum(secs,ph){
+  var out=[],i,k,v;
+  for(i=0;i<ph.length;i++){
+    v=0;
+    for(k=0;k<secs.length;k++)v+=aeqMagDb(secs[k],ph[i]);
+    out.push(v);
+  }
+  return out;
+}
+function aeqEval(b,fs,ph,sm,base,w,opt){
+  var m=eqSum([designBq(b,fs)],ph),sum=[],i;
+  for(i=0;i<ph.length;i++)sum.push(base[i]+m[i]);
+  return {score:fitScore(sm,sum,w,opt),mag:m};
+}
+function aeqBand(f,q,gain){
+  return {type:1,sub:0,freq:f,q:q,gain:gain,coeff:null};
+}
+/* From AutoEq: a peaking filter's steepest slope runs past 18 dB/octave once
+   the gain outruns the Q, and it starts to ring. This is the gain that just
+   reaches that limit, so Q and gain get held in a sane relationship instead of
+   each being clamped on its own. */
+function aeqGainLimit(q){return 20.575/q-0.095;}
+/* One filter is limited only by what a row can hold and by the sharpness rule.
+   The budget the user set is on the SUMMED response, and fitScore enforces it
+   there: a +3 dB band sitting on top of a -6 dB one still leaves the total
+   below unity, so clamping each band to the total as well would forbid that
+   for no reason and is what made a cuts-only target fit badly. */
+function aeqClamp(b,fs,opt){
+  var q=Math.min(Math.max(b.q,AEQ_QMIN),AEQ_QMAX),gl=aeqGainLimit(q);
+  return aeqBand(Math.min(Math.max(b.freq,20),Math.min(20000,fs*0.49)),q,
+    Math.min(Math.max(b.gain,Math.max(GAIN_MIN,-gl)),Math.min(GAIN_MAX,gl)));
+}
+/* Coordinate descent on frequency, Q and gain with a halving step. Scoring
+   through designBq means the fit sees the filter the part will actually run,
+   alpha floor and gain clamp included. */
+function aeqRefine(b,fs,ph,sm,base,w,opt){
+  b=aeqClamp(b,fs,opt);
+  /* Half an octave of frequency travel, halved each pass, so a filter can
+     correct a mis-seed but cannot walk out of the deviation it was placed on
+     and leave that deviation for the next filter to be wasted on too. */
+  var best=aeqEval(b,fs,ph,sm,base,w,opt),sf=0.5,sq=1,sg=4,it,k,d,c,e;
+  for(it=0;it<6;it++){
+    for(k=0;k<3;k++){
+      for(d=-1;d<=1;d+=2){
+        c=aeqBand(b.freq,b.q,b.gain);
+        if(k===0)c.freq=b.freq*Math.pow(2,d*sf);
+        else if(k===1)c.q=b.q*Math.pow(2,d*sq);
+        else c.gain=b.gain+d*sg;
+        e=aeqEval(c=aeqClamp(c,fs,opt),fs,ph,sm,base,w,opt);
+        if(e.score<best.score-1e-9){best=e;b=c;}
+      }
+    }
+    sf/=2;sq/=2;sg/=2;
+  }
+  return {band:b,score:best.score,mag:best.mag};
+}
+function aeqSum(mags,skip,n){
+  var out=[],i,j,s;
+  for(i=0;i<n;i++){
+    s=0;
+    for(j=0;j<mags.length;j++)if(j!==skip)s+=mags[j][i];
+    out.push(s);
+  }
+  return out;
+}
+/* Where the next filter should go: the contiguous same-sign stretch of
+   residual worth the most, with what each point wants capped by the headroom
+   still left there. AutoEq ranks its candidate peaks by width AND height for
+   the same reason - a broad gentle excess deserves a filter more than a narrow
+   deep notch, which is usually a measurement artefact. Ranking on raw depth
+   alone parks every filter on the deepest roll-off, exactly where the boost
+   limit means none of them can help, and leaves the midrange untouched. */
+function aeqSeed(g,sm,eq,w,opt){
+  var c=fitLevel(sm,eq,w),i,j,need=[],gain=[],pm=[],avail;
+  if(c===null)return null;
+  for(i=0;i<g.length;i++){
+    need.push(w[i]?c-sm[i]-eq[i]:0);
+    avail=need[i]>0?opt.gmax-eq[i]:eq[i]-opt.gmin;
+    if(!w[i]||avail<=0){gain.push(0);pm.push(0);continue;}
+    gain.push(Math.abs(need[i])<avail?need[i]:(need[i]>0?avail:-avail));
+    pm.push(w[i]*Math.abs(gain[i])*(2*Math.abs(need[i])-Math.abs(gain[i])));
+  }
+  var bs=0,bi=-1,bj=-1,sg,run;
+  for(i=0;i<g.length;){
+    if(!pm[i]){i++;continue;}
+    sg=need[i]>0?1:-1;run=0;
+    for(j=i;j<g.length&&pm[j]&&(need[j]>0?1:-1)===sg;j++)run+=pm[j];
+    if(run>bs){bs=run;bi=i;bj=j-1;}
+    i=j;
+  }
+  if(bi<0)return null;
+  /* Centre on the deepest point of the run, Q from how wide the run is. */
+  var ci=bi;
+  for(i=bi;i<=bj;i++)if(Math.abs(gain[i])>Math.abs(gain[ci]))ci=i;
+  var bw=Math.log2(g[bj]/g[bi]),oc=Math.pow(2,bw);
+  return aeqBand(g[ci],bw>0.05?Math.sqrt(oc)/(oc-1):2,gain[ci]);
+}
+/* Each filter re-fitted against the sum of the others until that stops paying.
+   AutoEq gets a better version of this by handing every filter to a
+   constrained least-squares solver at once, which is not something to
+   reimplement in a settings page, but repeated sweeps get most of the way. */
+function aeqPolish(bands,mags,fs,ph,g,sm,w,opt,cur,lim){
+  var round,k,r;
+  for(round=0;round<lim;round++){
+    var moved=0;
+    for(k=0;k<bands.length;k++){
+      r=aeqRefine(bands[k],fs,ph,sm,aeqSum(mags,k,g.length),w,opt);
+      if(r.score<cur-0.001)moved=1;
+      if(r.score<=cur){cur=r.score;bands[k]=r.band;mags[k]=r.mag;}
+    }
+    if(!moved)break;
+  }
+  return cur;
+}
+function aeqFit(fs,opt){
+  /* The budget is on the SUMMED response, not on any one filter, so a boost
+     stacked on a deeper cut is fine. Derived here rather than at the call site
+     so no caller can leave them undefined. */
+  opt.gmax=opt.boost;opt.gmin=-opt.cut;
+  var g=gridHz(fs),ph=gridPhi(g,fs),sm=smoothOnto(meas,g,opt.oct);
+  var w=fitWeights(g,sm,opt.lo,opt.hi),i,k;
+  var eq=[],bands=[],mags=[];
+  for(i=0;i<g.length;i++)eq.push(0);
+  var before=fitDev(sm,eq,w);
+  /* Place every filter that was asked for, judging none of them yet: one that
+     looks worthless while the others are still sat on their seeds can be worth
+     a lot once they have all moved. AutoEq does the same - greedy init of the
+     whole set, then optimise it as a whole - and stopping early here was what
+     left most of the bands unused and the midrange uncorrected. */
+  for(k=0;k<opt.n;k++){
+    var seed=aeqSeed(g,sm,eq,w,opt);
+    if(!seed)break;
+    var r=aeqRefine(seed,fs,ph,sm,eq,w,opt);
+    bands.push(r.band);mags.push(r.mag);
+    eq=aeqSum(mags,-1,g.length);
+  }
+  var cur=aeqPolish(bands,mags,fs,ph,g,sm,w,opt,fitScore(sm,eq,w,opt),8);
+  /* A filter can settle on nothing because the deviation it was seeded on got
+     taken over by another one while both were still moving. Repeatedly lift
+     whichever one the fit would miss least and re-seed it on what is still
+     wrong, which is where it would have gone had it been placed after the
+     others had stopped. Kept only if it actually pays. */
+  for(var pass=0;pass<opt.n;pass++){
+    var idle=-1,cost=1e9,sc;
+    for(k=0;k<bands.length;k++){
+      sc=fitScore(sm,aeqSum(mags,k,g.length),w,opt)-cur;
+      if(sc<cost){cost=sc;idle=k;}
+    }
+    if(idle<0)break;
+    var base=aeqSum(mags,idle,g.length),s2=aeqSeed(g,sm,base,w,opt);
+    if(!s2)break;
+    var r2=aeqRefine(s2,fs,ph,sm,base,w,opt);
+    if(r2.score>=cur-0.001)break;
+    bands[idle]=r2.band;mags[idle]=r2.mag;
+    /* Only one filter moved, so the rest need a nudge rather than a rebuild. */
+    cur=aeqPolish(bands,mags,fs,ph,g,sm,w,opt,r2.score,3);
+  }
+  /* Now judge them: a filter the fit would barely miss is a filter better left
+     bypassed, both for headroom and for the phase it would cost. */
+  for(k=bands.length-1;k>=0;k--){
+    var without=aeqSum(mags,k,g.length),sc=fitScore(sm,without,w,opt);
+    if(sc<cur+0.02){bands.splice(k,1);mags.splice(k,1);cur=sc;}
+  }
+  /* Cuts into the early slots, boosts into the late ones - a boost that clips
+     early would be copied by every section after it. Rounding to the steps the
+     row inputs use, and dropping anything that rounds away to nothing, so what
+     is reported is what the rows will actually do. */
+  bands.sort(function(a,b){return a.gain-b.gain;});
+  var keep=[],secs=[];
+  for(k=0;k<bands.length;k++){
+    bands[k].freq=Math.round(bands[k].freq);
+    bands[k].q=Math.round(bands[k].q*100)/100;
+    bands[k].gain=Math.round(bands[k].gain*2)/2;
+    keep.push(bands[k]);secs.push(designBq(bands[k],fs));
+  }
+  /* Rounding to the 0.5 dB step the rows use happens after the fit, so the
+     rounded set can land a fraction outside the headroom the fit respected.
+     Walk it back a step at a time, off whichever filter is doing the most at
+     the frequency that is over, until it is inside. The limits are a promise
+     about clipping, not a preference. */
+  for(var guard=0;guard<40;guard++){
+    var tot=eqSum(secs,ph),pk=0,pi=-1,over;
+    for(i=0;i<tot.length;i++){
+      over=tot[i]>opt.gmax?tot[i]-opt.gmax:
+        (tot[i]<opt.gmin?opt.gmin-tot[i]:0);
+      if(over>pk){pk=over;pi=i;}
+    }
+    if(pi<0)break;
+    var sgn=tot[pi]>0?1:-1,wk=-1,wv=0,mv;
+    for(k=0;k<keep.length;k++){
+      mv=sgn*aeqMagDb(secs[k],ph[pi]);
+      if(mv>wv){wv=mv;wk=k;}
+    }
+    if(wk<0)break;
+    keep[wk].gain=Math.round((keep[wk].gain-sgn*0.5)*2)/2;
+    secs[wk]=designBq(keep[wk],fs);
+  }
+  var out=[],os=[];
+  for(k=0;k<keep.length;k++)
+    if(keep[k].gain){out.push(keep[k]);os.push(secs[k]);}
+  var fin=eqSum(os,ph),pk=0;
+  for(i=0;i<fin.length;i++)if(fin[i]>pk)pk=fin[i];
+  return {bands:out,before:before,after:fitDev(sm,fin,w),peak:pk};
+}
+/* Grey: the smoothed measurement. Amber: what it becomes with the EQ applied.
+   Both are drawn about the same level the fit measures against - weighted to
+   the fit range and found the same robust way - so what the curve shows and
+   what the deviation figure claims are the same thing. Centring them on a
+   plain average over the whole span instead makes an uncorrectable roll-off
+   pull the zero line down and puts a hump on the corrected trace that the
+   numbers say is not there. */
+function measCurves(fs){
+  if(!meas)return null;
+  var oct=num('aeq-sm'),g=gridHz(fs),ph=gridPhi(g,fs),i;
+  var sm=smoothOnto(meas,g,oct>0?oct:6),eq=eqSum(sections('eq',10,fs),ph);
+  var lo=num('aeq-lo'),hi=num('aeq-hi'),z=[],raw=[],fix=[];
+  for(i=0;i<g.length;i++)z.push(0);
+  var w=fitWeights(g,sm,lo>0?lo:20,hi>lo?hi:20000);
+  var cr=fitLevel(sm,z,w),cf=fitLevel(sm,eq,w);
+  if(cr===null||cf===null)return null;
+  var pr=0,pf=0;
+  for(i=0;i<g.length;i++){
+    raw.push(sm[i]===null?null:sm[i]-cr);
+    fix.push(sm[i]===null?null:sm[i]+eq[i]-cf);
+    if(sm[i]===null||!w[i])continue;
+    pr=Math.max(pr,Math.abs(raw[i]));pf=Math.max(pf,Math.abs(fix[i]));
+  }
+  return [{v:raw,c:'#8a94a6',w:3,pk:pr},{v:fix,c:'#f5b301',w:3,pk:pf}];
+}
+/* Where the driver gives up. Below this the fit can only spend boost, headroom
+   and excursion on ground it cannot win, so it is worth saying out loud rather
+   than letting it turn up later as a poor result and a wasted filter or two. */
+function aeqRolloff(m){
+  var i,s=0,n=0,ref;
+  for(i=0;i<m.f.length;i++)if(m.f[i]>=500&&m.f[i]<=2000){s+=m.db[i];n++;}
+  if(!n)return 0;
+  ref=s/n-10;
+  for(i=0;i<m.f.length;i++)if(m.f[i]>=1000)break;
+  for(i--;i>=0;i--)if(m.db[i]<ref)return m.f[i];
+  return 0;
+}
+function aeqLoad(input){
+  var file=input.files&&input.files[0];
+  if(!file)return;
+  var rd=new FileReader();
+  rd.onerror=function(){aeqClear();$('aeq-msg').textContent='Could not read that file.';};
+  rd.onload=function(){
+    meas=parseResponse(String(rd.result));
+    if(!meas){
+      aeqClear();
+      $('aeq-msg').textContent=
+        'No data found - expected lines with a frequency and a level.';
+      return;
+    }
+    $('aeq-run').disabled=false;
+    $('aeq-legend').style.display='flex';
+    var ro=aeqRolloff(meas),msg=meas.f.length+' points, '+
+      Math.round(meas.f[0])+' Hz to '+
+      Math.round(meas.f[meas.f.length-1])+' Hz.';
+    if(ro>meas.f[0]*1.05)
+      msg+=' Output is already 10 dB down by '+Math.round(ro)+
+        ' Hz; starting the fit at or above that stops filters and boost being'+
+        ' spent where the driver cannot follow.';
+    $('aeq-msg').textContent=msg;
+    plot();
+  };
+  rd.readAsText(file);
+}
+function aeqClear(){
+  meas=null;
+  $('aeq-file').value='';
+  $('aeq-run').disabled=true;
+  $('aeq-legend').style.display='none';
+  $('aeq-msg').textContent='';
+  plot();
+}
+function aeqRun(){
+  if(!meas)return;
+  var opt={lo:num('aeq-lo'),hi:num('aeq-hi'),oct:num('aeq-sm'),
+           n:Math.round(num('aeq-n')),
+           boost:Math.min(num('aeq-up'),GAIN_MAX),
+           cut:Math.min(num('aeq-dn'),-GAIN_MIN)};
+  if(!(opt.lo>0)||!(opt.hi>opt.lo*1.2)||!(opt.oct>=1)||!(opt.n>=1)||
+     !(opt.boost>=0)||!(opt.cut>=0)){
+    $('aeq-msg').textContent='Check the fit settings.';
+    return;
+  }
+  var fs=(cfg&&cfg.sample_rate)||44100,r=aeqFit(fs,opt),i;
+  for(i=0;i<10;i++)
+    bqSet('eq',i,i<r.bands.length?r.bands[i]:
+          {type:T_BYPASS,sub:0,freq:1000,q:0.707,gain:0,coeff:null});
+  touch();
+  $('aeq-msg').textContent=r.bands.length+' filter'+
+    (r.bands.length===1?'':'s')+', deviation '+r.before.toFixed(1)+
+    ' dB RMS before and '+r.after.toFixed(1)+' dB after. Summed EQ '+
+    r.peak.toFixed(1)+' dB at its highest'+
+    (r.peak>0.05?', so take that much off the output volume to keep the'+
+     ' headroom.':', so it costs no headroom.');
 }
 
 /* ---- build ---- */

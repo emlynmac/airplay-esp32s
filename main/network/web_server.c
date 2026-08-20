@@ -969,8 +969,13 @@ static esp_err_t fs_upload_handler(httpd_req_t *req) {
     return ESP_FAIL;
   }
 
-  if (req->content_len == 0 || req->content_len > (size_t)(64 * 1024)) {
-    httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Body required (max 64KB)");
+  /* The body is streamed to the file a chunk at a time and never held whole,
+   * so this is only here to keep a runaway request from filling the 1.9MB
+   * SPIFFS. It has to clear the largest asset we upload, which is the display
+   * background at ~110KB. */
+  if (req->content_len == 0 || req->content_len > (size_t)(256 * 1024)) {
+    httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST,
+                        "Body required (max 256KB)");
     return ESP_FAIL;
   }
 
