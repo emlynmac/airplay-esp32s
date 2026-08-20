@@ -1980,10 +1980,10 @@ function populate(c){
       for(i=0;i<c.ways[w].eq.length;i++)bqSet('w'+w+'e',i,c.ways[w].eq[i]);
     }
     $('w-delay').value=c.high_delay;
-    $('pbe-en').checked=!!c.pbe.enabled;
   }else{
     for(i=0;i<c.eq.length;i++)bqSet('eq',i,c.eq[i]);
   }
+  $('pbe-en').checked=!!c.pbe.enabled;
   $('pbe-hpf').value=c.pbe.hpf;
   $('pbe-harm').value=c.pbe.harmonic;
   $('pbe-eff').value=c.pbe.effect;
@@ -2038,7 +2038,6 @@ function collect(){
       c.ways.push(way);
     }
     c.high_delay=parseInt($('w-delay').value,10);
-    c.pbe.enabled=$('pbe-en').checked;
     c.drc.split_mid=bqGet('sm',0);
     c.drc.split_high=bqGet('sh',0);
     c.drc.mix_mid=num('mgm');
@@ -2050,6 +2049,7 @@ function collect(){
     c.drc.mix=[num('mg0'),num('mg1'),num('mg2')];
     c.fine_volume=num('fvol');
   }
+  c.pbe.enabled=$('pbe-en').checked;
   for(i=0;i<2;i++)c.dbe.high.push(bqGet('dh',i));
   for(i=0;i<DBE_LO_N;i++)c.dbe.low.push(bqGet('dl',i));
   for(i=0;i<3;i++){
@@ -2265,7 +2265,7 @@ function setFlow(n){
   $('drc-split1').style.display=n===3?'none':'block';
   $('drc-split3').style.display=n===3?'block':'none';
   $('fvol-fld').style.display=n===3?'none':'block';
-  $('pbe-en-fld').style.display=n===3?'block':'none';
+  $('pbe-en-fld').style.display='block';
   $('aeq-way-fld').style.display=n===3?'block':'none';
   $('aeq-n').max=n===3?4:10;
   $('aeq-n').value=n===3?4:10;

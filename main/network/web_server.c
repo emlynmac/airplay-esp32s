@@ -1225,6 +1225,7 @@ static cJSON *hf1_config_to_json(const tas57xx_hf1_config_t *cfg) {
   hf1_add_float(pbe, "hpf", cfg->pbe.hpf_hz);
   cJSON_AddNumberToObject(pbe, "harmonic", cfg->pbe.harmonic);
   cJSON_AddNumberToObject(pbe, "effect", cfg->pbe.effect);
+  cJSON_AddBoolToObject(pbe, "enabled", cfg->pbe_enabled);
 
   cJSON *dbe = cJSON_AddObjectToObject(root, "dbe");
   cJSON *hi = cJSON_AddArrayToObject(dbe, "high");
@@ -1299,6 +1300,10 @@ static void hf1_config_from_json(const cJSON *root, tas57xx_hf1_config_t *cfg) {
     if (json_int_in_range(v, TAS57XX_HF1_PBE_EFFECT_MIN,
                           TAS57XX_HF1_PBE_EFFECT_MAX)) {
       cfg->pbe.effect = v->valueint;
+    }
+    v = cJSON_GetObjectItem(pbe, "enabled");
+    if (cJSON_IsBool(v)) {
+      cfg->pbe_enabled = cJSON_IsTrue(v);
     }
   }
 
