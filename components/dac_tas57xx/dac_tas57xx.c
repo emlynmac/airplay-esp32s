@@ -6,6 +6,8 @@
 
 #include "dac_tas57xx.h"
 #include "board_utils.h"
+#include "sdkconfig.h"
+#include <inttypes.h>
 #include <math.h>
 #include <stdio.h>
 #include <string.h>
@@ -1109,6 +1111,164 @@ esp_err_t dac_tas57xx_hf3_revert(void) {
     tas57xx_redownload_locked();
   }
   xSemaphoreGive(s_dac_mutex);
+  return err;
+}
+
+/* ---- Flow selection ---------------------------------------------------- */
+
+/* Pristine per-rate bases, copied to the working flow rather than played from,
+ * so a tuning commit can never scribble on them. */
+#define HF_BASE_PATH_FMT "/spiffs/hf/base-hf%d-%" PRIu32 ".bin"
+
+uint32_t dac_tas57xx_flow_sample_rate(void) {
+  return CONFIG_OUTPUT_SAMPLE_RATE_HZ;
+}
+
+static void tas57xx_base_path(int flow, char *out, size_t len) {
+  snprintf(out, len, HF_BASE_PATH_FMT, flow, dac_tas57xx_flow_sample_rate());
+}
+
+static uint8_t *tas57xx_read_file(const char *path, long *out_size) {
+  FILE *f = fopen(path, "rb");
+  if (f == NULL) {
+    return NULL;
+  }
+  fseek(f, 0, SEEK_END);
+  long size = ftell(f);
+  fseek(f, 0, SEEK_SET);
+  uint8_t *buf = size >= 2 ? malloc((size_t)size) : NULL;
+  if (buf && fread(buf, 1, (size_t)size, f) != (size_t)size) {
+    free(buf);
+    buf = NULL;
+  }
+  fclose(f);
+  if (buf) {
+    *out_size = size;
+  }
+  return buf;
+}
+
+bool dac_tas57xx_flow_base_available(int flow) {
+  if (flow != 1 && flow != 3) {
+    return false;
+  }
+  char path[64];
+  tas57xx_base_path(flow, path, sizeof(path));
+  FILE *f = fopen(path, "rb");
+  if (f == NULL) {
+    return false;
+  }
+  fclose(f);
+  return true;
+}
+
+int dac_tas57xx_active_flow(void) {
+  if (s_dac_mutex == NULL) {
+    return 0;
+  }
+  xSemaphoreTake(s_dac_mutex, portMAX_DELAY);
+  int flow = 0;
+  if (s_dev_count > 0 && s_devs[0].hf_buf != NULL) {
+    flow = s_devs[0].is_biamp ? 3 : 1;
+  }
+  xSemaphoreGive(s_dac_mutex);
+  return flow;
+}
+
+/* A fresh base no longer reproduces the saved tuning, so the usual load path
+ * would discard it. Re-apply it here, which also puts the image back in step
+ * with the file. Caller holds the mutex. */
+static void tas57xx_reapply_saved_tuning_locked(tas57xx_dev_t *d, int flow) {
+  union {
+    tas57xx_hf1_config_t hf1;
+    tas57xx_hf3_config_t hf3;
+  } saved;
+  const char *path = flow == 3 ? HF3_CONFIG_PATH : HF1_CONFIG_PATH;
+  const size_t want = flow == 3 ? sizeof(saved.hf3) : sizeof(saved.hf1);
+
+  FILE *f = fopen(path, "rb");
+  if (f == NULL) {
+    return;
+  }
+  size_t n = fread(&saved, 1, sizeof(saved), f);
+  fclose(f);
+  const bool usable =
+      n == want &&
+      (flow == 3 ? saved.hf3.magic == TAS57XX_HF3_CONFIG_MAGIC &&
+                       saved.hf3.version == TAS57XX_HF3_CONFIG_VERSION
+                 : saved.hf1.magic == TAS57XX_HF1_CONFIG_MAGIC &&
+                       saved.hf1.version == TAS57XX_HF1_CONFIG_VERSION);
+  if (!usable) {
+    ESP_LOGW(TAG, "Ignoring unusable HF%d tuning at %s", flow, path);
+    return;
+  }
+
+  uint8_t *img = malloc((size_t)d->hf_size);
+  if (img == NULL) {
+    return;
+  }
+  memcpy(img, d->hf_buf, (size_t)d->hf_size);
+  tas57xx_cram_sink_t sink = {.image = img, .image_size = (size_t)d->hf_size};
+  esp_err_t err = flow == 3 ? tas57xx_hf3_apply(&sink, &saved.hf3)
+                            : tas57xx_hf1_apply(&sink, &saved.hf1);
+  if (err == ESP_OK) {
+    err = tas57xx_write_atomic(d->hf_path, img, (size_t)d->hf_size);
+  }
+  if (err == ESP_OK) {
+    free(d->hf_buf);
+    d->hf_buf = img;
+    ESP_LOGI(TAG, "Restored the saved HF%d tuning onto the base flow", flow);
+  } else {
+    free(img);
+    ESP_LOGW(TAG, "Could not restore the saved HF%d tuning", flow);
+  }
+}
+
+esp_err_t dac_tas57xx_select_flow(int flow) {
+  if (flow != 1 && flow != 3) {
+    return ESP_ERR_INVALID_ARG;
+  }
+  if (s_dac_mutex == NULL) {
+    return ESP_ERR_INVALID_STATE;
+  }
+
+  char path[64];
+  tas57xx_base_path(flow, path, sizeof(path));
+  long size = 0;
+  uint8_t *base = tas57xx_read_file(path, &size);
+  if (base == NULL) {
+    ESP_LOGE(TAG, "No base flow at %s", path);
+    return ESP_ERR_NOT_FOUND;
+  }
+  // A mislabelled base would leave the editor tuning it through the wrong
+  // coefficient map, so settle it before anything is overwritten.
+  if ((tas57xx_flow_has_input_mix(base) ? 3 : 1) != flow) {
+    ESP_LOGE(TAG, "%s is not a HybridFlow %d image", path, flow);
+    free(base);
+    return ESP_ERR_INVALID_VERSION;
+  }
+
+  xSemaphoreTake(s_dac_mutex, portMAX_DELAY);
+  tas57xx_dev_t *d = s_dev_count > 0 ? &s_devs[0] : NULL;
+  esp_err_t err = d ? ESP_OK : ESP_ERR_INVALID_STATE;
+  if (err == ESP_OK && d->hf_path[0] == '\0') {
+    snprintf(d->hf_path, sizeof(d->hf_path), "/spiffs/hf/tas57xx_fw.bin");
+  }
+  if (err == ESP_OK) {
+    err = tas57xx_write_atomic(d->hf_path, base, (size_t)size);
+  }
+  if (err == ESP_OK) {
+    err = tas57xx_reload_flow_locked(d);
+  }
+  if (err == ESP_OK) {
+    tas57xx_reapply_saved_tuning_locked(d, flow);
+    s_hf1_ready = false;
+    s_hf3_ready = false;
+    tas57xx_redownload_locked();
+    ESP_LOGI(TAG, "Selected HybridFlow %d from %s", flow, path);
+  }
+  xSemaphoreGive(s_dac_mutex);
+  free(base);
   return err;
 }
 

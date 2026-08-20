@@ -89,6 +89,25 @@ esp_err_t dac_tas57xx_hf1_commit(void);
  * uncommitted tuning. */
 esp_err_t dac_tas57xx_hf1_revert(void);
 
+/* ---- Flow selection --------------------------------------------------- */
+
+/** The rate the base flows are chosen for. */
+uint32_t dac_tas57xx_flow_sample_rate(void);
+
+/** 1 or 3 for the flow currently loaded, 0 when there is none. */
+int dac_tas57xx_active_flow(void);
+
+/** True when a base flow for this type exists in SPIFFS at the current rate. */
+bool dac_tas57xx_flow_base_available(int flow);
+
+/**
+ * Install the base flow for `flow` (1 or 3) and re-download it, then re-apply
+ * that flow's saved tuning if there is one. Bi-amp and stereo drive the two
+ * amplifier outputs completely differently, so callers must confirm the
+ * speaker is wired for it first.
+ */
+esp_err_t dac_tas57xx_select_flow(int flow);
+
 /** True when a bi-amp flow is loaded and its tuning can be edited. */
 bool dac_tas57xx_hf3_available(void);
 
