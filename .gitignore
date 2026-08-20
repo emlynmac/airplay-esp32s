@@ -16,3 +16,9 @@ user_platformio.ini
 # macOS metadata
 .DS_Store
 **/.DS_Store
+
+# Host-side hybrid flow harnesses (compiled locally)
+components/dac_tas57xx/hybridflows/tools/hf1read
+components/dac_tas57xx/hybridflows/tools/hf3read
+components/dac_tas57xx/hybridflows/tools/hf3test
+components/dac_tas57xx/hybridflows/tools/__pycache__/

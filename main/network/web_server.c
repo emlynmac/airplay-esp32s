@@ -1069,8 +1069,10 @@ static esp_err_t system_info_handler(httpd_req_t *req) {
 #endif
 #ifdef CONFIG_DAC_TAS57XX
   cJSON_AddBoolToObject(info, "hf1_supported", dac_tas57xx_hf1_available());
+  cJSON_AddBoolToObject(info, "hf3_supported", dac_tas57xx_hf3_available());
 #else
   cJSON_AddBoolToObject(info, "hf1_supported", false);
+  cJSON_AddBoolToObject(info, "hf3_supported", false);
 #endif
 
   cJSON_AddItemToObject(json, "info", info);
@@ -1218,6 +1220,44 @@ static esp_err_t fs_delete_handler(httpd_req_t *req) {
   httpd_resp_send(req, json_str, HTTPD_RESP_USE_STRLEN);
   free(json_str);
   cJSON_Delete(json);
+  return ESP_OK;
+}
+
+/* Pulling a file back off the device is the only way to take an exact copy of
+ * a tuned hybrid flow, whose committed coefficients live nowhere else. */
+static esp_err_t fs_download_handler(httpd_req_t *req) {
+  char query[128] = {0};
+  char path[64] = {0};
+
+  if (httpd_req_get_url_query_str(req, query, sizeof(query)) != ESP_OK ||
+      httpd_query_key_value(query, "path", path, sizeof(path)) != ESP_OK) {
+    httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST,
+                        "Missing 'path' query parameter");
+    return ESP_FAIL;
+  }
+
+  if (!is_path_allowed(path)) {
+    httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Path not allowed");
+    return ESP_FAIL;
+  }
+
+  FILE *f = fopen(path, "rb");
+  if (!f) {
+    httpd_resp_send_err(req, HTTPD_404_NOT_FOUND, "File not found");
+    return ESP_FAIL;
+  }
+
+  httpd_resp_set_type(req, "application/octet-stream");
+  char buf[SPIFFS_CHUNK_SIZE];
+  size_t n;
+  while ((n = fread(buf, 1, sizeof(buf), f)) > 0) {
+    if (httpd_resp_send_chunk(req, buf, (ssize_t)n) != ESP_OK) {
+      fclose(f);
+      return ESP_FAIL;
+    }
+  }
+  fclose(f);
+  httpd_resp_send_chunk(req, NULL, 0);
   return ESP_OK;
 }
 
@@ -1515,7 +1555,7 @@ static esp_err_t hf1_send_result(httpd_req_t *req, esp_err_t err) {
 }
 
 static esp_err_t hf1_page_handler(httpd_req_t *req) {
-  return serve_spiffs_file(req, "/spiffs/www/hf1.html", "text/html");
+  return serve_spiffs_file(req, "/spiffs/www/hf.html", "text/html");
 }
 
 static esp_err_t hf1_get_handler(httpd_req_t *req) {
@@ -1561,6 +1601,228 @@ static esp_err_t hf1_commit_handler(httpd_req_t *req) {
 
 static esp_err_t hf1_revert_handler(httpd_req_t *req) {
   return hf1_send_result(req, dac_tas57xx_hf1_revert());
+}
+
+/* HF3 reuses the hf1_* JSON helpers above: a biquad is a biquad, and the two
+ * flows differ only in how many of them there are and what they feed. */
+
+static cJSON *hf3_way_to_json(const tas57xx_hf3_config_t *cfg, int w) {
+  cJSON *o = cJSON_CreateObject();
+  cJSON_AddItemToObject(o, "crossover", hf1_bq_to_json(&cfg->crossover[w]));
+  cJSON *eq = cJSON_AddArrayToObject(o, "eq");
+  for (int i = 0; i < TAS57XX_HF3_EQ_BANDS; i++) {
+    cJSON_AddItemToArray(eq, hf1_bq_to_json(&cfg->eq[w][i]));
+  }
+  return o;
+}
+
+static cJSON *hf3_config_to_json(const tas57xx_hf3_config_t *cfg) {
+  cJSON *root = cJSON_CreateObject();
+  cJSON_AddBoolToObject(root, "available", dac_tas57xx_hf3_available());
+  cJSON_AddNumberToObject(root, "sample_rate", (double)cfg->sample_rate_hz);
+
+  cJSON *ways = cJSON_AddArrayToObject(root, "ways");
+  for (int w = 0; w < TAS57XX_HF3_WAYS; w++) {
+    cJSON_AddItemToArray(ways, hf3_way_to_json(cfg, w));
+  }
+  cJSON_AddNumberToObject(root, "high_delay", cfg->high_delay_samples);
+
+  cJSON *pbe = cJSON_AddObjectToObject(root, "pbe");
+  hf1_add_float(pbe, "hpf", cfg->pbe.hpf_hz);
+  cJSON_AddNumberToObject(pbe, "harmonic", cfg->pbe.harmonic);
+  cJSON_AddNumberToObject(pbe, "effect", cfg->pbe.effect);
+  cJSON_AddBoolToObject(pbe, "enabled", cfg->pbe_enabled);
+
+  cJSON *dbe = cJSON_AddObjectToObject(root, "dbe");
+  cJSON *hi = cJSON_AddArrayToObject(dbe, "high");
+  for (int i = 0; i < TAS57XX_HF3_DBE_HL_BANDS; i++) {
+    cJSON_AddItemToArray(hi, hf1_bq_to_json(&cfg->dbe_high[i]));
+  }
+  cJSON *lo = cJSON_AddArrayToObject(dbe, "low");
+  for (int i = 0; i < TAS57XX_HF3_DBE_LL_BANDS; i++) {
+    cJSON_AddItemToArray(lo, hf1_bq_to_json(&cfg->dbe_low[i]));
+  }
+  hf1_add_float(dbe, "lower_db", cfg->dbe_lower_db);
+  hf1_add_float(dbe, "upper_db", cfg->dbe_upper_db);
+  hf1_add_float(dbe, "sense_lo", cfg->sense_lower_hz);
+  hf1_add_float(dbe, "sense_hi", cfg->sense_upper_hz);
+  hf1_add_float(dbe, "window_ms", cfg->sense_window_ms);
+
+  cJSON *drc = cJSON_AddObjectToObject(root, "drc");
+  cJSON_AddItemToObject(drc, "split_mid", hf1_bq_to_json(&cfg->drc_split_mid));
+  cJSON_AddItemToObject(drc, "split_high",
+                        hf1_bq_to_json(&cfg->drc_split_high));
+  hf1_add_float(drc, "mix_mid", cfg->drc_mix_mid);
+  hf1_add_float(drc, "mix_high", cfg->drc_mix_high);
+  cJSON *timing = cJSON_AddArrayToObject(drc, "timing");
+  for (int i = 0; i < TAS57XX_HF3_DRC_BANDS; i++) {
+    cJSON *t = cJSON_CreateObject();
+    hf1_add_float(t, "energy", cfg->drc_timing[i].energy_ms);
+    hf1_add_float(t, "attack", cfg->drc_timing[i].attack_ms);
+    hf1_add_float(t, "decay", cfg->drc_timing[i].decay_ms);
+    cJSON_AddItemToArray(timing, t);
+  }
+  cJSON *regions = cJSON_AddArrayToObject(drc, "regions");
+  for (int i = 0; i < TAS57XX_HF3_DRC_REGIONS; i++) {
+    cJSON *r = cJSON_CreateObject();
+    cJSON_AddNumberToObject(r, "mode", cfg->drc_region[i].mode);
+    hf1_add_float(r, "ratio", cfg->drc_region[i].ratio);
+    cJSON_AddItemToArray(regions, r);
+  }
+  hf1_add_float(drc, "thresh1", cfg->drc_thresh1_db);
+  hf1_add_float(drc, "thresh2", cfg->drc_thresh2_db);
+
+  hf1_add_float(root, "smooth_clip", cfg->smooth_clip_db);
+  return root;
+}
+
+/* Overlays whatever the body supplies onto the current tuning. The input mixer
+ * is deliberately absent: it selects which channel this speaker plays, and is
+ * owned by the channel-mode setting rather than by a tuning. */
+static void hf3_config_from_json(const cJSON *root, tas57xx_hf3_config_t *cfg) {
+  const cJSON *v = cJSON_GetObjectItem(root, "sample_rate");
+  if (json_int_in_range(v, 8000, 192000)) {
+    cfg->sample_rate_hz = (uint32_t)v->valueint;
+  }
+  v = cJSON_GetObjectItem(root, "high_delay");
+  if (json_int_in_range(v, 0, TAS57XX_HF3_DELAY_MAX)) {
+    cfg->high_delay_samples = v->valueint;
+  }
+
+  const cJSON *ways = cJSON_GetObjectItem(root, "ways");
+  for (int w = 0; cJSON_IsArray(ways) && w < TAS57XX_HF3_WAYS; w++) {
+    const cJSON *way = cJSON_GetArrayItem(ways, w);
+    if (!cJSON_IsObject(way)) {
+      continue;
+    }
+    hf1_bq_from_json(cJSON_GetObjectItem(way, "crossover"), &cfg->crossover[w]);
+    const cJSON *eq = cJSON_GetObjectItem(way, "eq");
+    for (int i = 0; cJSON_IsArray(eq) && i < TAS57XX_HF3_EQ_BANDS; i++) {
+      hf1_bq_from_json(cJSON_GetArrayItem(eq, i), &cfg->eq[w][i]);
+    }
+  }
+
+  const cJSON *pbe = cJSON_GetObjectItem(root, "pbe");
+  if (cJSON_IsObject(pbe)) {
+    hf1_num_from_json(pbe, "hpf", &cfg->pbe.hpf_hz);
+    v = cJSON_GetObjectItem(pbe, "harmonic");
+    if (json_int_in_range(v, 0, TAS57XX_HF3_PBE_HARMONIC_MAX)) {
+      cfg->pbe.harmonic = v->valueint;
+    }
+    v = cJSON_GetObjectItem(pbe, "effect");
+    if (json_int_in_range(v, TAS57XX_HF3_PBE_EFFECT_MIN,
+                          TAS57XX_HF3_PBE_EFFECT_MAX)) {
+      cfg->pbe.effect = v->valueint;
+    }
+    v = cJSON_GetObjectItem(pbe, "enabled");
+    if (cJSON_IsBool(v)) {
+      cfg->pbe_enabled = cJSON_IsTrue(v);
+    }
+  }
+
+  const cJSON *dbe = cJSON_GetObjectItem(root, "dbe");
+  if (cJSON_IsObject(dbe)) {
+    const cJSON *hi = cJSON_GetObjectItem(dbe, "high");
+    for (int i = 0; cJSON_IsArray(hi) && i < TAS57XX_HF3_DBE_HL_BANDS; i++) {
+      hf1_bq_from_json(cJSON_GetArrayItem(hi, i), &cfg->dbe_high[i]);
+    }
+    const cJSON *lo = cJSON_GetObjectItem(dbe, "low");
+    for (int i = 0; cJSON_IsArray(lo) && i < TAS57XX_HF3_DBE_LL_BANDS; i++) {
+      hf1_bq_from_json(cJSON_GetArrayItem(lo, i), &cfg->dbe_low[i]);
+    }
+    hf1_num_from_json(dbe, "lower_db", &cfg->dbe_lower_db);
+    hf1_num_from_json(dbe, "upper_db", &cfg->dbe_upper_db);
+    hf1_num_from_json(dbe, "sense_lo", &cfg->sense_lower_hz);
+    hf1_num_from_json(dbe, "sense_hi", &cfg->sense_upper_hz);
+    hf1_num_from_json(dbe, "window_ms", &cfg->sense_window_ms);
+  }
+
+  const cJSON *drc = cJSON_GetObjectItem(root, "drc");
+  if (cJSON_IsObject(drc)) {
+    hf1_bq_from_json(cJSON_GetObjectItem(drc, "split_mid"),
+                     &cfg->drc_split_mid);
+    hf1_bq_from_json(cJSON_GetObjectItem(drc, "split_high"),
+                     &cfg->drc_split_high);
+    hf1_num_from_json(drc, "mix_mid", &cfg->drc_mix_mid);
+    hf1_num_from_json(drc, "mix_high", &cfg->drc_mix_high);
+    const cJSON *timing = cJSON_GetObjectItem(drc, "timing");
+    for (int i = 0; cJSON_IsArray(timing) && i < TAS57XX_HF3_DRC_BANDS; i++) {
+      const cJSON *t = cJSON_GetArrayItem(timing, i);
+      if (cJSON_IsObject(t)) {
+        hf1_num_from_json(t, "energy", &cfg->drc_timing[i].energy_ms);
+        hf1_num_from_json(t, "attack", &cfg->drc_timing[i].attack_ms);
+        hf1_num_from_json(t, "decay", &cfg->drc_timing[i].decay_ms);
+      }
+    }
+    const cJSON *regions = cJSON_GetObjectItem(drc, "regions");
+    for (int i = 0; cJSON_IsArray(regions) && i < TAS57XX_HF3_DRC_REGIONS;
+         i++) {
+      const cJSON *r = cJSON_GetArrayItem(regions, i);
+      if (cJSON_IsObject(r)) {
+        v = cJSON_GetObjectItem(r, "mode");
+        if (json_int_in_range(v, 0, TAS57XX_HF3_DRC_EXPAND)) {
+          cfg->drc_region[i].mode = v->valueint;
+        }
+        hf1_num_from_json(r, "ratio", &cfg->drc_region[i].ratio);
+      }
+    }
+    hf1_num_from_json(drc, "thresh1", &cfg->drc_thresh1_db);
+    hf1_num_from_json(drc, "thresh2", &cfg->drc_thresh2_db);
+  }
+
+  hf1_num_from_json(root, "smooth_clip", &cfg->smooth_clip_db);
+}
+
+/* The same page as /hf1: it asks which flow is loaded and shows that one. A
+ * board can only ever be running one of them, so there is nothing to choose
+ * between and no reason to ship the machinery twice. */
+static esp_err_t hf3_page_handler(httpd_req_t *req) {
+  return serve_spiffs_file(req, "/spiffs/www/hf.html", "text/html");
+}
+
+static esp_err_t hf3_get_handler(httpd_req_t *req) {
+  tas57xx_hf3_config_t cfg;
+  if (dac_tas57xx_hf3_get(&cfg) != ESP_OK) {
+    return hf1_send_result(req, ESP_ERR_INVALID_STATE);
+  }
+  cJSON *root = hf3_config_to_json(&cfg);
+  char *s = cJSON_PrintUnformatted(root);
+  httpd_resp_set_type(req, "application/json");
+  httpd_resp_send(req, s, HTTPD_RESP_USE_STRLEN);
+  free(s);
+  cJSON_Delete(root);
+  return ESP_OK;
+}
+
+static esp_err_t hf3_post_handler(httpd_req_t *req) {
+  char *content = recv_body(req, 12288);
+  if (!content) {
+    httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Body required (max 12KB)");
+    return ESP_FAIL;
+  }
+  cJSON *root = cJSON_Parse(content);
+  free(content);
+  if (!root) {
+    httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Invalid JSON");
+    return ESP_FAIL;
+  }
+
+  tas57xx_hf3_config_t cfg;
+  esp_err_t err = dac_tas57xx_hf3_get(&cfg);
+  if (err == ESP_OK) {
+    hf3_config_from_json(root, &cfg);
+    err = dac_tas57xx_hf3_set(&cfg);
+  }
+  cJSON_Delete(root);
+  return hf1_send_result(req, err);
+}
+
+static esp_err_t hf3_commit_handler(httpd_req_t *req) {
+  return hf1_send_result(req, dac_tas57xx_hf3_commit());
+}
+
+static esp_err_t hf3_revert_handler(httpd_req_t *req) {
+  return hf1_send_result(req, dac_tas57xx_hf3_revert());
 }
 
 #endif /* CONFIG_DAC_TAS57XX */
@@ -1676,7 +1938,8 @@ esp_err_t web_server_start(uint16_t port) {
 #endif
   config.lru_purge_enable = true; // Reclaim stale sockets when all are in use
   config.max_uri_handlers =
-      30; // Room for captive portal + EQ + speedtest + brightness + channel
+      31; // Room for captive portal + EQ + speedtest + brightness + channel
+          // + file download
 #ifdef DAC_HAS_SUB_OFFSET
   config.max_uri_handlers += 2; // sub level get/post
 #endif
@@ -1686,6 +1949,7 @@ esp_err_t web_server_start(uint16_t port) {
 #endif
 #ifdef CONFIG_DAC_TAS57XX
   config.max_uri_handlers += 5; // HF1 page + get/post/commit/revert
+  config.max_uri_handlers += 5; // HF3 page + get/post/commit/revert
 #endif
   config.max_resp_headers = 8;
   config.stack_size = 8192;
@@ -1839,6 +2103,11 @@ esp_err_t web_server_start(uint16_t port) {
       .uri = "/api/fs/list", .method = HTTP_GET, .handler = fs_list_handler};
   httpd_register_uri_handler(s_server, &fs_list_uri);
 
+  httpd_uri_t fs_download_uri = {.uri = "/api/fs/download",
+                                 .method = HTTP_GET,
+                                 .handler = fs_download_handler};
+  httpd_register_uri_handler(s_server, &fs_download_uri);
+
   // Captive portal detection endpoints
   // Apple iOS/macOS
   httpd_uri_t apple_captive1 = {.uri = "/hotspot-detect.html",
@@ -1899,6 +2168,28 @@ esp_err_t web_server_start(uint16_t port) {
                                 .method = HTTP_POST,
                                 .handler = hf1_revert_handler};
   httpd_register_uri_handler(s_server, &hf1_revert_uri);
+
+  httpd_uri_t hf3_page_uri = {
+      .uri = "/hf3", .method = HTTP_GET, .handler = hf3_page_handler};
+  httpd_register_uri_handler(s_server, &hf3_page_uri);
+
+  httpd_uri_t hf3_get_uri = {
+      .uri = "/api/hf3", .method = HTTP_GET, .handler = hf3_get_handler};
+  httpd_register_uri_handler(s_server, &hf3_get_uri);
+
+  httpd_uri_t hf3_post_uri = {
+      .uri = "/api/hf3", .method = HTTP_POST, .handler = hf3_post_handler};
+  httpd_register_uri_handler(s_server, &hf3_post_uri);
+
+  httpd_uri_t hf3_commit_uri = {.uri = "/api/hf3/commit",
+                                .method = HTTP_POST,
+                                .handler = hf3_commit_handler};
+  httpd_register_uri_handler(s_server, &hf3_commit_uri);
+
+  httpd_uri_t hf3_revert_uri = {.uri = "/api/hf3/revert",
+                                .method = HTTP_POST,
+                                .handler = hf3_revert_handler};
+  httpd_register_uri_handler(s_server, &hf3_revert_uri);
 #endif
 
   log_stream_register(s_server);

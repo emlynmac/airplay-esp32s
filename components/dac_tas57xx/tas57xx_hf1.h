@@ -183,8 +183,9 @@ esp_err_t tas57xx_hf1_set_fine_volume(const tas57xx_cram_sink_t *sink,
 /**
  * Every tunable parameter of the flow, in one blob.
  *
- * Coefficient RAM cannot be read back while the DSP is running, so this struct
- * — not the device — is the source of truth for what the current tuning is.
+ * Coefficient RAM cannot be read back off a running DSP, so this struct is
+ * what the tuning is edited through. The flow image on flash is the fallback:
+ * see tas57xx_hf1_read().
  */
 typedef struct {
   uint32_t magic;
@@ -222,6 +223,17 @@ void tas57xx_hf1_defaults(tas57xx_hf1_config_t *cfg);
  * stored while the DSP is asleep and only turn out to be invalid later.
  */
 esp_err_t tas57xx_hf1_validate(const tas57xx_hf1_config_t *cfg);
+
+/**
+ * Recover the tuning a flow image is carrying, so the editor can open on what
+ * the speaker is actually running rather than on a set of defaults.
+ *
+ * Biquads come back as TAS57XX_BQ_CUSTOM: the response is exact, but the shape
+ * they were designed as is not stored and cannot be inferred. The sample rate
+ * is likewise absent from the image and is taken from the caller.
+ */
+esp_err_t tas57xx_hf1_read(const uint8_t *img, size_t size,
+                           uint32_t sample_rate_hz, tas57xx_hf1_config_t *cfg);
 
 /**
  * Write a whole tuning to a live device or into a flow image.

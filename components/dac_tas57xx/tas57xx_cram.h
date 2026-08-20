@@ -104,6 +104,18 @@ void tas57xx_bq_unity(tas57xx_bq_layout_t layout,
                       int32_t out[TAS57XX_BQ_WORDS]);
 
 /**
+ * Recover a biquad from packed coefficients.
+ *
+ * Comes back as TAS57XX_BQ_CUSTOM: a peaking filter and a shelf that happens
+ * to match it store the same five numbers, so the shape a section was designed
+ * as is not recoverable. The response is exact, and freq_hz and q are solved
+ * from the pole pair so there is still something meaningful to show.
+ */
+void tas57xx_bq_unpack(const int32_t c[TAS57XX_BQ_WORDS],
+                       tas57xx_bq_layout_t layout, uint32_t sample_rate_hz,
+                       tas57xx_bq_t *bq);
+
+/**
  * Map a coefficient RAM word index onto its page and register address.
  * Returns false if the index is outside bank A.
  */
@@ -157,6 +169,16 @@ void tas57xx_cram_abort(tas57xx_cram_sink_t *sink);
  */
 esp_err_t tas57xx_cram_write(const tas57xx_cram_sink_t *sink, int word,
                              const int32_t *words, int count);
+
+/**
+ * Read words back out of a flow image.
+ *
+ * A flow may write a slot more than once and carries both banks, so the last
+ * copy wins — that is what the DSP is left running. Returns ESP_ERR_NOT_FOUND
+ * if any requested word is absent from the image.
+ */
+esp_err_t tas57xx_cram_read_image(const uint8_t *img, size_t size, int word,
+                                  int32_t *out, int count);
 
 #ifdef __cplusplus
 }
