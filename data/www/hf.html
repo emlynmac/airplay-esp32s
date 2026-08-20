@@ -83,6 +83,14 @@ input:disabled{opacity:0.3}
 <div class='header'><h1>HybridFlow Tuning</h1><p id='sub'>TAS57xx on-chip DSP</p></div>
 <div class='nav'><a href='/'>&#8592; Back to Settings</a></div>
 
+<div id='flowcard' class='card' style='display:none'>
+<h2>Speaker configuration</h2>
+<div class='fld'><label>Processing</label>
+<select id='flowsel' onchange='onFlowChange()'></select></div>
+<p class='hint' id='flow-hint'></p>
+<div id='flow-msg'></div>
+</div>
+
 <div id='unavail' class='card' style='display:none'>
 <h2>Not available</h2>
 <p class='hint'>No hybrid flow is loaded. Upload a HybridFlow 1 or HybridFlow 3
@@ -2287,13 +2295,87 @@ function setFlow(n){
   pick(SECTS[0][0]);
   load();
 }
+/* ---- Which flow the amplifier runs ------------------------------------ */
+
+/* Both directions change what the two amplifier outputs carry, so neither is
+   safe to apply to whatever happens to be wired up. */
+var FLOW_WARN={
+ 3:'Switch to a bi-amp speaker?\n\n'+
+   'The two amplifier outputs stop being left and right. One drives a woofer '+
+   'and the other a tweeter, both fed from the same input.\n\n'+
+   'Unless this speaker is wired for bi-amping \u2014 one driver per output, '+
+   'with the passive crossover bypassed \u2014 it will not play correctly.\n\n'+
+   'Volume will be turned down to minimum before the change is applied.',
+ 1:'Switch away from a bi-amp speaker?\n\n'+
+   'Both amplifier outputs go back to carrying full-range stereo. A tweeter '+
+   'still wired directly to one of them will be sent bass at full power, '+
+   'which will destroy it.\n\n'+
+   'Disconnect the tweeter, or restore the passive crossover, before playing '+
+   'anything.\n\n'+
+   'Volume will be turned down to minimum before the change is applied.'};
+var FLOW_ACTIVE=0;
+function flowName(n){return n===3?'Bi-amp speaker':'EQ controls';}
+
+function loadFlowChoice(){
+  fetch('/api/hf/flow').then(function(r){return r.ok?r.json():null;})
+   .then(function(j){
+     if(!j)return;
+     FLOW_ACTIVE=j.active||0;
+     var opts=(j.available||[]).slice();
+     /* A flow whose base is missing is still what the amplifier is running,
+        so it has to appear or the control would misreport the device. */
+     if(FLOW_ACTIVE&&opts.indexOf(FLOW_ACTIVE)<0)opts.push(FLOW_ACTIVE);
+     opts.sort();
+     var sel=$('flowsel');
+     sel.innerHTML=(FLOW_ACTIVE?'':"<option value='0'>None loaded</option>")+
+       opts.map(function(n){
+         return "<option value='"+n+"'>"+flowName(n)+'</option>';}).join('');
+     sel.value=String(FLOW_ACTIVE);
+     var others=opts.filter(function(n){return n!==FLOW_ACTIVE;});
+     sel.disabled=others.length===0;
+     $('flow-hint').textContent=others.length?
+       'Each configuration keeps its own tuning, so switching back restores '+
+       'what was last saved for it.':
+       (FLOW_ACTIVE?
+        'Only this one is installed. Upload the other as /spiffs/hf/base-hf'+
+        (FLOW_ACTIVE===3?1:3)+'-'+j.sample_rate+'.bin to be able to switch.':
+        'No base flows are installed under /spiffs/hf.');
+     $('flowcard').style.display='block';
+   }).catch(function(){});
+}
+
+function onFlowChange(){
+  var sel=$('flowsel'),want=parseInt(sel.value,10);
+  if(want===FLOW_ACTIVE||!FLOW_WARN[want]){sel.value=String(FLOW_ACTIVE);return;}
+  if(!confirm(FLOW_WARN[want])){sel.value=String(FLOW_ACTIVE);return;}
+  sel.disabled=true;
+  show($('flow-msg'),'Reprogramming the DSP\u2026','');
+  fetch('/api/hf/flow',{method:'POST',
+        headers:{'Content-Type':'application/json'},
+        body:JSON.stringify({flow:want})})
+   .then(function(r){return r.json();})
+   .then(function(j){
+     if(!j.success)throw new Error(j.error||'rejected');
+     FLOW_ACTIVE=want;
+     show($('flow-msg'),'Now running '+flowName(want)+
+       '. Volume is at minimum \u2014 raise it once the wiring is right.','ok');
+     setFlow(want);
+   })
+   .catch(function(e){
+     sel.value=String(FLOW_ACTIVE);
+     show($('flow-msg'),'Could not switch: '+e.message,'err');
+   })
+   .then(function(){sel.disabled=false;});
+}
+
 /* HF3 is asked first because a board that has it says so plainly, and a build
    without it answers 404 rather than a config. */
 function boot(){
   fetch('/api/hf3')
     .then(function(r){return r.ok?r.json():null;})
     .then(function(j){setFlow(j&&j.available?3:1);})
-    .catch(function(){setFlow(1);});
+    .catch(function(){setFlow(1);})
+    .then(loadFlowChoice);
 }
 ['pbe-hpf','pbe-harm','pbe-eff','dbe-lower','dbe-upper','sense-lo','sense-hi',
  'sense-win','drc-t1','drc-t2','clip','mg0','mg1','mg2','mgm','mgh',
