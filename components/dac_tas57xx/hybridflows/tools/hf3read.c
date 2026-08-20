@@ -44,21 +44,25 @@ int main(int argc, char **argv) {
   printf("  input mix    low [%.4f %.4f]  high [%.4f %.4f]\n", cfg.mix[0][0],
          cfg.mix[0][1], cfg.mix[1][0], cfg.mix[1][1]);
   for (int w = 0; w < TAS57XX_HF3_WAYS; w++) {
-    printf("  way%d xover   f0 %8.2f Hz  Q %7.4f\n", w, cfg.crossover[w].freq_hz,
-           cfg.crossover[w].q);
+    printf("  way%d xover   f0 %8.2f Hz  Q %7.4f\n", w,
+           cfg.crossover[w].freq_hz, cfg.crossover[w].q);
     for (int b = 0; b < TAS57XX_HF3_EQ_BANDS; b++) {
       printf("    eq%d        f0 %8.2f Hz  Q %7.4f\n", b + 1,
              cfg.eq[w][b].freq_hz, cfg.eq[w][b].q);
     }
   }
   printf("  high delay   %d samples\n", cfg.high_delay_samples);
-  printf("  pbe          %.1f Hz  effect %d  harmonic %d  %s\n",
-         cfg.pbe.hpf_hz, cfg.pbe.effect, cfg.pbe.harmonic,
+  printf("  pbe          %.1f Hz  effect %d  harmonic %d  %s\n", cfg.pbe.hpf_hz,
+         cfg.pbe.effect, cfg.pbe.harmonic,
          cfg.pbe_enabled ? "enabled" : "bypassed");
   printf("  dbe mix      %.2f .. %.2f dB\n", cfg.dbe_lower_db,
          cfg.dbe_upper_db);
-  printf("  sensing      %.1f .. %.1f Hz  window %.1f ms\n",
-         cfg.sense_lower_hz, cfg.sense_upper_hz, cfg.sense_window_ms);
+  printf("  sensing      %.1f .. %.1f Hz  window %.1f ms\n", cfg.sense_lower_hz,
+         cfg.sense_upper_hz, cfg.sense_window_ms);
+  printf(
+      "  drc split    mid  f0 %8.2f Hz  Q %6.4f   high f0 %8.2f Hz  Q %6.4f\n",
+      cfg.drc_split_mid.freq_hz, cfg.drc_split_mid.q,
+      cfg.drc_split_high.freq_hz, cfg.drc_split_high.q);
   printf("  drc mix      mid %.4f  high %.4f\n", cfg.drc_mix_mid,
          cfg.drc_mix_high);
   for (int b = 0; b < TAS57XX_HF3_DRC_BANDS; b++) {
