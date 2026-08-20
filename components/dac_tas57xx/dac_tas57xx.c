@@ -129,6 +129,10 @@ static const struct tas57xx_cmd_s tas57xx_init_seq[] = {
 // Set once the I2S clocks are running. The miniDSP boots its program from BCK,
 // so a flow downloaded before then is never executed.
 static bool s_i2s_running = false;
+// The rate the clocks are actually running at, which decides which base flow
+// to load and how to read its coefficients back. Only a guess until
+// tas57xx_on_i2s_started() reports the real one.
+static uint32_t s_i2s_rate_hz = CONFIG_OUTPUT_SAMPLE_RATE_HZ;
 // Set once a flow has been downloaded with the clocks up, so the power-mode
 // and I2S-start paths do not each re-download it.
 static bool s_flow_resident = false;
@@ -725,6 +729,7 @@ static void tas57xx_hf1_load_config_locked(void) {
     return;
   }
   tas57xx_hf1_defaults(&s_hf1);
+  s_hf1.sample_rate_hz = s_i2s_rate_hz;
 
   tas57xx_dev_t *d = tas57xx_hf1_dev();
   if (d == NULL) {
@@ -963,6 +968,7 @@ static void tas57xx_hf3_load_config_locked(void) {
     return;
   }
   tas57xx_hf3_defaults(&s_hf3);
+  s_hf3.sample_rate_hz = s_i2s_rate_hz;
 
   tas57xx_dev_t *d = tas57xx_hf3_dev();
   if (d == NULL) {
@@ -1121,7 +1127,7 @@ esp_err_t dac_tas57xx_hf3_revert(void) {
 #define HF_BASE_PATH_FMT "/spiffs/hf/base-hf%d-%" PRIu32 ".bin"
 
 uint32_t dac_tas57xx_flow_sample_rate(void) {
-  return CONFIG_OUTPUT_SAMPLE_RATE_HZ;
+  return s_i2s_rate_hz;
 }
 
 static void tas57xx_base_path(int flow, char *out, size_t len) {
@@ -1224,6 +1230,49 @@ static void tas57xx_reapply_saved_tuning_locked(tas57xx_dev_t *d, int flow) {
   }
 }
 
+/* Caller holds the mutex. */
+static esp_err_t tas57xx_select_flow_locked(int flow, const uint8_t *base,
+                                            size_t size) {
+  tas57xx_dev_t *d = s_dev_count > 0 ? &s_devs[0] : NULL;
+  if (d == NULL) {
+    return ESP_ERR_INVALID_STATE;
+  }
+  if (d->hf_path[0] == '\0') {
+    snprintf(d->hf_path, sizeof(d->hf_path), "/spiffs/hf/tas57xx_fw.bin");
+  }
+
+  esp_err_t err = tas57xx_write_atomic(d->hf_path, base, size);
+  if (err == ESP_OK) {
+    err = tas57xx_reload_flow_locked(d);
+  }
+  if (err == ESP_OK) {
+    tas57xx_reapply_saved_tuning_locked(d, flow);
+    s_hf1_ready = false;
+    s_hf3_ready = false;
+    tas57xx_redownload_locked();
+  }
+  return err;
+}
+
+/* Loads the base for `flow` at the rate the clocks are currently running at.
+ * Caller holds the mutex. */
+static esp_err_t tas57xx_install_base_locked(int flow) {
+  char path[64];
+  tas57xx_base_path(flow, path, sizeof(path));
+  long size = 0;
+  uint8_t *base = tas57xx_read_file(path, &size);
+  if (base == NULL) {
+    ESP_LOGE(TAG, "No base flow at %s", path);
+    return ESP_ERR_NOT_FOUND;
+  }
+  esp_err_t err = tas57xx_select_flow_locked(flow, base, (size_t)size);
+  free(base);
+  if (err == ESP_OK) {
+    ESP_LOGI(TAG, "Selected HybridFlow %d from %s", flow, path);
+  }
+  return err;
+}
+
 esp_err_t dac_tas57xx_select_flow(int flow) {
   if (flow != 1 && flow != 3) {
     return ESP_ERR_INVALID_ARG;
@@ -1249,26 +1298,12 @@ esp_err_t dac_tas57xx_select_flow(int flow) {
   }
 
   xSemaphoreTake(s_dac_mutex, portMAX_DELAY);
-  tas57xx_dev_t *d = s_dev_count > 0 ? &s_devs[0] : NULL;
-  esp_err_t err = d ? ESP_OK : ESP_ERR_INVALID_STATE;
-  if (err == ESP_OK && d->hf_path[0] == '\0') {
-    snprintf(d->hf_path, sizeof(d->hf_path), "/spiffs/hf/tas57xx_fw.bin");
-  }
-  if (err == ESP_OK) {
-    err = tas57xx_write_atomic(d->hf_path, base, (size_t)size);
-  }
-  if (err == ESP_OK) {
-    err = tas57xx_reload_flow_locked(d);
-  }
-  if (err == ESP_OK) {
-    tas57xx_reapply_saved_tuning_locked(d, flow);
-    s_hf1_ready = false;
-    s_hf3_ready = false;
-    tas57xx_redownload_locked();
-    ESP_LOGI(TAG, "Selected HybridFlow %d from %s", flow, path);
-  }
+  esp_err_t err = tas57xx_select_flow_locked(flow, base, (size_t)size);
   xSemaphoreGive(s_dac_mutex);
   free(base);
+  if (err == ESP_OK) {
+    ESP_LOGI(TAG, "Selected HybridFlow %d from %s", flow, path);
+  }
   return err;
 }
 
@@ -1662,14 +1697,30 @@ static void tas57xx_enable_line_out(bool enable) {
  * dac_init() — before I2S is running — cannot take effect. Download it again
  * now that the clocks are up. A device still in powerdown is reprogrammed by
  * the next power-mode change instead.
+ *
+ * This is also the first point at which the output rate is known for certain,
+ * so a flow built for the wrong rate is swapped for its correct-rate twin here.
  */
-static void tas57xx_on_i2s_started(void) {
+static void tas57xx_on_i2s_started(uint32_t sample_rate_hz) {
   if (s_dac_mutex == NULL || s_dev_count == 0) {
     return;
   }
 
   xSemaphoreTake(s_dac_mutex, portMAX_DELAY);
   s_i2s_running = true;
+  const bool rate_changed =
+      sample_rate_hz != 0 && sample_rate_hz != s_i2s_rate_hz;
+  if (rate_changed) {
+    ESP_LOGI(TAG, "Output rate is %" PRIu32 " Hz, was %" PRIu32 " Hz",
+             sample_rate_hz, s_i2s_rate_hz);
+    s_i2s_rate_hz = sample_rate_hz;
+  }
+  // Base paths are rate-stamped, so this reloads the matching twin and replays
+  // the saved tuning onto it.
+  const int flow = s_devs[0].hf_buf != NULL ? (s_devs[0].is_biamp ? 3 : 1) : 0;
+  if (rate_changed && flow != 0) {
+    tas57xx_install_base_locked(flow);
+  }
   if (s_power_state != DAC_POWER_OFF && !s_flow_resident) {
     tas57xx_enable_speaker(false);
     tas57xx_reprogram_locked();
