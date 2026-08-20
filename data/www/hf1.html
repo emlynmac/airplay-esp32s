@@ -1,0 +1,1219 @@
+<!DOCTYPE html><html><head>
+<meta charset='UTF-8'>
+<meta name='viewport' content='width=device-width,initial-scale=1'>
+<title>HybridFlow - AirPlay Receiver</title>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:-apple-system,system-ui,sans-serif;background:linear-gradient(135deg,#1a1a2e 0%,#16213e 100%);min-height:100vh;padding:20px;color:#fff}
+.wrap{max-width:820px;margin:0 auto}
+.header{text-align:center;padding:20px 0}
+.header h1{font-size:24px;font-weight:600;margin-bottom:4px}
+.header p{color:#888;font-size:13px}
+.nav{text-align:center;margin-bottom:16px}
+.nav a{color:#e94560;text-decoration:none;font-size:13px}
+.card{background:rgba(255,255,255,0.05);border-radius:16px;padding:20px;margin-bottom:16px;border:1px solid rgba(255,255,255,0.1)}
+.card h2{font-size:16px;font-weight:600;margin-bottom:16px;color:#e94560}
+.card h3{font-size:13px;font-weight:600;margin:18px 0 8px;color:#aaa}
+.card h3:first-child{margin-top:0}
+.chainwrap{overflow-x:auto;margin-bottom:16px}
+.btn{display:inline-block;padding:10px 16px;border:none;border-radius:8px;font-size:13px;font-weight:500;cursor:pointer;transition:all 0.2s}
+.btn-primary{background:#e94560;color:#fff}
+.btn-primary:hover{background:#d63850}
+.btn-secondary{background:rgba(255,255,255,0.1);color:#fff}
+.btn-secondary:hover{background:rgba(255,255,255,0.2)}
+.btn:disabled{opacity:0.5;cursor:not-allowed}
+.actions{display:flex;gap:10px;flex-wrap:wrap;align-items:center}
+.msg{padding:8px;border-radius:6px;margin-top:10px;font-size:13px}
+.msg.ok{background:rgba(27,67,50,0.5)}
+.msg.err{background:rgba(92,26,26,0.5)}
+.msg.info{background:rgba(15,52,96,0.5)}
+.hint{color:#888;font-size:12px;margin-top:8px;line-height:1.5}
+input[type=number],select{background:rgba(0,0,0,0.3);border:1px solid rgba(255,255,255,0.1);border-radius:6px;color:#fff;padding:7px 8px;font-size:12px;width:100%}
+select option{background:#16213e}
+input:disabled{opacity:0.3}
+.bq{display:grid;grid-template-columns:24px 1.4fr 1.3fr 0.9fr 0.9fr 0.9fr;gap:6px;align-items:center;margin-bottom:6px}
+.bq .n{font-size:11px;color:#666;text-align:right}
+.bqhead{display:grid;grid-template-columns:24px 1.4fr 1.3fr 0.9fr 0.9fr 0.9fr;gap:6px;margin-bottom:6px;font-size:10px;color:#666;text-transform:uppercase;letter-spacing:0.5px}
+.bqc{display:none;grid-template-columns:24px repeat(5,1fr);gap:6px;align-items:center;margin:-2px 0 8px}
+.bqc .n{font-size:10px;color:#666;text-align:right}
+.plot{width:100%;height:230px;display:block;background:rgba(0,0,0,0.25);border:1px solid rgba(255,255,255,0.08);border-radius:10px;margin-bottom:14px}
+.plot.sm{height:170px}
+.plot.sq{height:auto;aspect-ratio:1040/1032;max-width:520px}
+.plot.drag{cursor:ew-resize;touch-action:none}
+.plotrow{display:flex;gap:18px;align-items:stretch;margin-bottom:14px}
+.plotrow .plot{flex:1;min-width:0;width:auto;margin-bottom:0}
+.vsl{display:flex;gap:20px}
+.vsl .vs{display:flex;flex-direction:column;align-items:center;gap:6px}
+.vsl label{font-size:10px;color:#888;text-transform:uppercase;letter-spacing:0.5px}
+.vsl output{font-size:13px;color:#e6e6e6}
+/* Both spellings are needed: WebKit before 125 honours only the appearance
+   keyword, everything current honours only writing-mode. */
+.vrange{-webkit-appearance:slider-vertical;appearance:slider-vertical;writing-mode:vertical-lr;direction:rtl;width:26px;flex:1;padding:0;margin:0;background:transparent;accent-color:#e94560}
+.plotlab{font-size:10px;color:#666;text-transform:uppercase;letter-spacing:0.5px;margin-bottom:4px}
+.k1{color:#e94560}.k2{color:#4ecca3}
+.legend{display:flex;gap:14px;flex-wrap:wrap;font-size:11px;color:#999;margin-bottom:6px}
+.legend span{display:flex;align-items:center;gap:5px}
+.legend i{width:11px;height:11px;border-radius:3px}
+.chain{width:100%;min-width:660px;height:auto;display:block}
+.chip rect{fill:rgba(255,255,255,0.06);stroke:#5a6478;stroke-width:1.5}
+.chip text{fill:#98a2b3}
+.chip.hit{cursor:pointer}
+.chip.hit:hover rect{stroke:#8b97ab;fill:rgba(255,255,255,0.11)}
+.chip.on rect{fill:rgba(233,69,96,0.2);stroke:#e94560;stroke-width:2.5}
+.chip.on text{fill:#fff}
+.chip.off rect{stroke-dasharray:4 4}
+.chip.off text{fill:#5f6875}
+.flow{width:100%;height:auto;display:block;margin-bottom:6px}
+.two{display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:16px}
+.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px}
+.fld label{display:block;font-size:11px;color:#888;margin-bottom:4px}
+.rowhead{display:grid;grid-template-columns:70px 1fr 1fr 1fr;gap:6px;margin-bottom:6px;font-size:10px;color:#666;text-transform:uppercase;letter-spacing:0.5px}
+.row3{display:grid;grid-template-columns:70px 1fr 1fr 1fr;gap:6px;align-items:center;margin-bottom:6px}
+.row3 .n{font-size:11px;color:#888}
+.bar{position:sticky;bottom:0;background:rgba(22,33,62,0.95);backdrop-filter:blur(10px);border:1px solid rgba(255,255,255,0.1);border-radius:16px;padding:16px;margin-top:16px}
+.dot{display:inline-block;width:8px;height:8px;border-radius:50%;background:#4a4;margin-right:6px}
+.dot.dirty{background:#e94560}
+</style></head><body>
+<div class='wrap'>
+<div class='header'><h1>HybridFlow Tuning</h1><p>TAS57xx on-chip DSP &mdash; HybridFlow 1</p></div>
+<div class='nav'><a href='/'>&#8592; Back to Settings</a></div>
+
+<div id='unavail' class='card' style='display:none'>
+<h2>Not available</h2>
+<p class='hint'>No hybrid flow is loaded. Upload a HybridFlow 1 binary as
+<code>/spiffs/hf/tas57xx_fw.bin</code> and reboot before tuning.</p>
+</div>
+
+<div id='ui' style='display:none'>
+<div class='chainwrap'>
+<svg class='chain' viewBox='0 0 784 56' preserveAspectRatio='xMidYMid meet'>
+<defs><marker id='arc' viewBox='0 0 8 8' refX='7' refY='4' markerWidth='5'
+ markerHeight='5' orient='auto'><path d='M0 0 L8 4 L0 8 z' fill='#5a6478'/></marker></defs>
+<g fill='none' stroke='#5a6478' stroke-width='1.5' marker-end='url(#arc)'>
+<path d='M66 28 H82'/><path d='M188 28 H204'/><path d='M270 28 H286'/>
+<path d='M352 28 H368'/><path d='M474 28 H490'/><path d='M576 28 H592'/>
+<path d='M698 28 H714'/>
+</g>
+<g font-size='12' text-anchor='middle'>
+<text x='34' y='32' fill='#5f6875'>In</text>
+<g class='chip hit' id='chip-eq' onclick='pick("eq")'>
+<rect x='84' y='8' width='104' height='40' rx='8'/><text x='136' y='32'>Biquad EQ</text></g>
+<g class='chip hit' id='chip-pbe' onclick='pick("pbe")'>
+<rect x='206' y='8' width='64' height='40' rx='8'/><text x='238' y='32'>PBE</text></g>
+<g class='chip hit' id='chip-dbe' onclick='pick("dbe")'>
+<rect x='288' y='8' width='64' height='40' rx='8'/><text x='320' y='32'>DBE</text></g>
+<g class='chip hit' id='chip-drc' onclick='pick("drc")'>
+<rect x='370' y='8' width='104' height='40' rx='8'/><text x='422' y='32'>Compander</text></g>
+<g class='chip hit' id='chip-vol' onclick='pick("vol")'>
+<rect x='492' y='8' width='84' height='40' rx='8'/><text x='534' y='32'>Volume</text></g>
+<g class='chip hit' id='chip-out' onclick='pick("out")'>
+<rect x='594' y='8' width='104' height='40' rx='8'/><text x='646' y='32'>Smooth clip</text></g>
+<text x='748' y='32' fill='#5f6875'>Out</text>
+</g>
+</svg>
+<p class='hint' style='margin:6px 0 0'>Tune in the order TI recommends: set the
+volume ceiling first, then the biquad EQ for the baseline response, then the
+compressor and smooth clipper for power limiting, then DBE low level, DBE high
+level, and PBE last. Each stage assumes the ones before it are settled.</p>
+</div>
+
+<div class='card sect' id='sect-eq'><h2>Parametric EQ</h2>
+<div class='plotlab'>Magnitude</div>
+<canvas id='plot' class='plot' width='1640' height='460'></canvas>
+<div class='plotlab'>Phase</div>
+<canvas id='phase' class='plot sm' width='1640' height='340'></canvas>
+<div class='bqhead'><span></span><span>Type</span><span>Alignment</span><span>Freq Hz</span><span>Q / BW / Hz</span><span>Gain dB</span></div>
+<div id='eq-rows'></div>
+<p class='hint'>Ten biquads in series ahead of the bass enhancer. The curves are the
+design response, before the headroom scaling a large boost needs. Alignment
+applies to the pass filters only. &ldquo;All pass&rdquo; here means unity, a
+section that does nothing &mdash; for a real all-pass, which shifts phase while
+leaving magnitude flat, choose Phase shift and read the phase graph. Chebyshev
+reads the frequency as the edge of the ripple band rather than the corner, so
+its pole sits about 23% past the number you type &mdash; below it for a
+high-pass, above it for a low-pass. The other alignments put the pole on the
+frequency itself.</p>
+<p class='hint'>TI's tuning guide asks for cuts before boosts &mdash; use bands
+1&ndash;5 to attenuate and 6&ndash;10 to lift. The sections run in series, so a
+boost early on can clip and every band after it then carries a copy of the
+clipped signal. The data path has +12 dB of headroom, which is why the boost
+control stops there; keep individual peaks to 9&ndash;10 dB, and remember that
+two peaking bands close together simply add, so a pair at +8 dB is a +16 dB
+problem. Aim for the fewest bands that get the finished response inside
+&plusmn;3 to &plusmn;5 dB. A deep, narrow null that refuses to fill in when you
+boost it is a room reflection rather than the speaker &mdash; leave it
+alone.</p>
+</div>
+
+<div class='card sect' id='sect-pbe'><h2>Psychoacoustic Bass (PBE)</h2>
+<div class='plotlab'>Response &mdash; <span class='k1'>extraction band</span> vs
+<span class='k2'>effect shaping</span></div>
+<div class='plotrow'>
+<canvas id='pbe-plot' class='plot drag' width='1640' height='460'></canvas>
+<div class='vsl'>
+<div class='vs'><label>Harmonic</label>
+<input type='range' class='vrange' id='pbe-harm' min='0' max='100' step='1'>
+<output id='pbe-harm-v'></output></div>
+<div class='vs'><label>Effect</label>
+<input type='range' class='vrange' id='pbe-eff' min='1' max='5' step='1'>
+<output id='pbe-eff-v'></output></div>
+</div>
+</div>
+<div class='grid' style='max-width:200px'>
+<div class='fld'><label>High-pass corner (Hz)</label><input type='number' id='pbe-hpf' min='50' max='300' step='1'></div>
+</div>
+<p class='hint'>Synthesises harmonics of the bass the speaker cannot reproduce.
+The corner sets the band that is analysed &mdash; drag the marker on the graph
+or type it &mdash; harmonic intensity sets how much synthetic content is
+generated, and effect intensity picks how sharply it is shaped. Harmonic
+intensity 0 disables the block. Both curves are driven entirely by the corner
+&mdash; every section in the extraction network is a fixed multiple of it
+&mdash; so the graph does not move when harmonic intensity changes, only the
+amount fed downstream does.</p>
+<p class='hint'>PBE only earns its keep at high output, so tune it last, after
+the compressor is settled, using material with real bass in it. Too much
+harmonic intensity turns into audible distortion. Whatever corner you land on,
+keep the DBE high-level high-pass at or below twice that frequency, or the
+bass enhancer removes the harmonics this block just synthesised. An occasional
+overflow at high output is normal; overflow that is constant, or that shows up
+at low output, means the path into this block is too hot and wants attenuating
+in the EQ.</p>
+</div>
+
+<div class='card sect' id='sect-dbe'><h2>Dynamic Bass (DBE)</h2>
+<div class='plotlab'>Magnitude &mdash; <span class='k1'>high level</span> vs <span class='k2'>low level</span></div>
+<canvas id='dbe-plot' class='plot' width='1640' height='460'></canvas>
+<div class='plotlab'>Phase</div>
+<canvas id='dbe-phase' class='plot sm' width='1640' height='340'></canvas>
+<h3>High-level EQ</h3>
+<div class='bqhead'><span></span><span>Type</span><span>Alignment</span><span>Freq Hz</span><span>Q / BW / Hz</span><span>Gain dB</span></div>
+<div id='dbe-hi-rows'></div>
+<h3>Low-level EQ</h3>
+<div class='bqhead'><span></span><span>Type</span><span>Alignment</span><span>Freq Hz</span><span>Q / BW / Hz</span><span>Gain dB</span></div>
+<div id='dbe-lo-rows'></div>
+<p class='hint'>The high-level pair is the protection curve: start with a
+fast-rolling high-pass at about 1.5&times; the driver's resonance, and if you
+need a steeper skirt add the second biquad an octave below that corner rather
+than raising the Q. The low-level pair is the bass lift. In a ported or
+passive-radiator box put the boost no lower than 0.85&times; the port tuning,
+ideally a little above it &mdash; further down and you are pumping the port
+rather than the cone.</p>
+<h3>Mixing thresholds</h3>
+<div class='grid'>
+<div class='fld'><label>Lower (dBFS)</label><input type='number' id='dbe-lower' min='-60' max='-10' step='0.5'></div>
+<div class='fld'><label>Upper (dBFS)</label><input type='number' id='dbe-upper' min='-24' max='0' step='0.5'></div>
+</div>
+<div class='plotlab' style='margin-top:12px'>Mix ratio vs level &mdash;
+<span class='k1'>high-level EQ</span> vs <span class='k2'>low-level EQ</span></div>
+<canvas id='dbe-mix' class='plot' width='1640' height='400'></canvas>
+<p class='hint'>Below the lower threshold only the low-level EQ is heard; above
+the upper threshold only the high-level EQ is. Between them the two are
+crossfaded. Lower runs &minus;60 to &minus;10 dBFS and upper &minus;24 to 0, and
+they must stay at least 3 dB apart. Below about &minus;18 dBFS a wider gap is
+needed, because the span is stored as a reciprocal: roughly 8 dB at &minus;30
+dBFS and 34 dB at &minus;60.</p>
+<p class='hint'>The blend is not a straight ramp between the two markers. Both
+stored coefficients are amplitudes, not decibels, so it is linear in amplitude
+and bows on a dB axis &mdash; most of the travel happens in the top few dB of the
+span. It also sits below the dashed markers: the hardware holds both thresholds
+4 dB down, so a &minus;30 / &minus;10 setting reaches the mixer as &minus;34 and
+&minus;14 dBFS.</p>
+<p class='hint'>There is no calculation that gives you the right pair &mdash;
+TI's guide says to find them by listening, on familiar material, at the volume
+the speaker will actually be used at.</p>
+<h3>Energy estimator</h3>
+<div class='grid'>
+<div class='fld'><label>Sensing low (Hz)</label><input type='number' id='sense-lo' min='10' max='20000' step='1'></div>
+<div class='fld'><label>Sensing high (Hz)</label><input type='number' id='sense-hi' min='10' max='20000' step='1'></div>
+<div class='fld'><label>Averaging window (ms)</label><input type='number' id='sense-win' min='1' max='10000' step='1'></div>
+</div>
+<div class='plotlab' style='margin-top:12px'>Sensing band</div>
+<canvas id='dbe-sense' class='plot' width='1640' height='400'></canvas>
+<p class='hint'>A band-pass listens to this range and averages its energy over
+the window to decide where the signal sits between the two thresholds. The
+curve is the real band-pass the firmware designs from the two boundaries
+(centre &radic;(low&middot;high), Q = centre / span), so its &minus;3 dB points
+sit close to but not exactly on the values you enter.</p>
+<p class='hint'>Set the low boundary from whatever DC-blocking high-pass you
+put in the main EQ, and the high boundary at 1.1 to 1.25&times; the high-level
+high-pass corner &mdash; the estimator should hear the band the enhancer is
+working on and nothing above it. The window trades responsiveness for
+steadiness; TI's starting point is ten cycles of 100 Hz, which is the 100 ms
+this ships with.</p>
+</div>
+
+<div class='card sect' id='sect-drc'><h2>Multiband Compressor</h2>
+<div class='plotlab'>Signal flow</div>
+<svg class='flow' viewBox='0 0 620 196' preserveAspectRatio='xMidYMid meet'>
+<defs><marker id='ar' viewBox='0 0 8 8' refX='7' refY='4' markerWidth='6'
+ markerHeight='6' orient='auto'><path d='M0 0 L8 4 L0 8 z' fill='#7a8699'/></marker></defs>
+<g fill='none' stroke='#7a8699' stroke-width='1.5' marker-end='url(#ar)'>
+<path d='M30 98 H56'/>
+<path d='M46 98 V42 H62'/><path d='M46 98 V154 H62'/><path d='M46 98 H62'/>
+<path d='M188 42 H210'/><path d='M188 98 H210'/><path d='M188 154 H210'/>
+<path d='M312 42 H340 V84'/><path d='M312 154 H340 V112'/><path d='M312 98 H340'/>
+<path d='M376 98 H408'/>
+</g>
+<circle cx='46' cy='98' r='3.5' fill='#7a8699'/>
+<circle cx='360' cy='98' r='16' fill='rgba(233,69,96,0.15)' stroke='#e94560' stroke-width='1.5'/>
+<text x='360' y='104' fill='#e94560' font-size='17' text-anchor='middle'>+</text>
+<g font-size='12' fill='#ddd' text-anchor='middle'>
+<rect x='62' y='26' width='126' height='32' rx='7' fill='rgba(78,204,163,0.13)' stroke='#4ecca3'/>
+<text x='125' y='46'>EQ low band</text>
+<rect x='62' y='82' width='126' height='32' rx='7' fill='rgba(77,157,224,0.13)' stroke='#4d9de0'/>
+<text x='125' y='102'>EQ mid band</text>
+<rect x='62' y='138' width='126' height='32' rx='7' fill='rgba(240,162,2,0.13)' stroke='#f0a202'/>
+<text x='125' y='158'>EQ high band</text>
+<rect x='210' y='26' width='102' height='32' rx='7' fill='rgba(255,255,255,0.07)' stroke='#7a8699'/>
+<text x='261' y='46'>DRC low</text>
+<rect x='210' y='82' width='102' height='32' rx='7' fill='rgba(255,255,255,0.07)' stroke='#7a8699'/>
+<text x='261' y='102'>DRC mid</text>
+<rect x='210' y='138' width='102' height='32' rx='7' fill='rgba(255,255,255,0.07)' stroke='#7a8699'/>
+<text x='261' y='158'>DRC high</text>
+</g>
+<g font-size='12' fill='#888'><text x='2' y='102'>In</text><text x='414' y='102'>Out</text>
+<text x='468' y='40' fill='#666' font-size='11'>Crossover splits the signal,</text>
+<text x='468' y='58' fill='#666' font-size='11'>each band is companded on</text>
+<text x='468' y='76' fill='#666' font-size='11'>its own detector, then the</text>
+<text x='468' y='94' fill='#666' font-size='11'>three are summed back.</text>
+<text x='468' y='124' fill='#666' font-size='11'>All three share one</text>
+<text x='468' y='142' fill='#666' font-size='11'>transfer curve; only the</text>
+<text x='468' y='160' fill='#666' font-size='11'>timing is per band.</text>
+</g>
+<g font-size='11' fill='#4ecca3' text-anchor='middle'>
+<text id='mix0' x='326' y='34'></text><text id='mix1' x='326' y='90'></text>
+<text id='mix2' x='326' y='146'></text>
+</g>
+</svg>
+
+<h3>Band split</h3>
+<div class='plotlab'>Low band</div>
+<div class='bqhead'><span></span><span>Type</span><span>Alignment</span><span>Freq Hz</span><span>Q / BW / Hz</span><span>Gain dB</span></div>
+<div id='drc-low-rows'></div>
+<div class='plotlab' style='margin-top:10px'>Mid band</div>
+<div class='bqhead'><span></span><span>Type</span><span>Alignment</span><span>Freq Hz</span><span>Q / BW / Hz</span><span>Gain dB</span></div>
+<div id='drc-mid-rows'></div>
+<div class='plotlab' style='margin-top:10px'>High band</div>
+<div class='bqhead'><span></span><span>Type</span><span>Alignment</span><span>Freq Hz</span><span>Q / BW / Hz</span><span>Gain dB</span></div>
+<div id='drc-high-rows'></div>
+<h3>Mixer gains</h3>
+<div class='grid'>
+<div class='fld'><label>Low</label><input type='number' id='mg0' min='-1' max='1' step='0.01'></div>
+<div class='fld'><label>Mid</label><input type='number' id='mg1' min='-1' max='1' step='0.01'></div>
+<div class='fld'><label>High</label><input type='number' id='mg2' min='-1' max='1' step='0.01'></div>
+</div>
+<p class='hint'>How much of each band is summed back, &minus;1 to +1. The flow
+ships with the <em>mid at &minus;1</em>: that inversion is exactly what makes
+the default Linkwitz-Riley split recombine flat, so if you change it the split
+will need rethinking too.</p>
+<div class='plotlab' style='margin-top:14px'>Band split</div>
+<div class='legend'>
+<span><i style='background:#4ecca3'></i>Low</span>
+<span><i style='background:#4d9de0'></i>Mid</span>
+<span><i style='background:#f0a202'></i>High</span>
+<span><i style='background:#e94560'></i>Composite</span>
+</div>
+<canvas id='drc-plot' class='plot' width='1640' height='460'></canvas>
+<p class='hint'>Four free biquads, not a fixed crossover: one section for the
+low band, two for the mid, one for the high. The defaults are a complementary
+Linkwitz-Riley pair, which is why they recombine flat, but nothing forces that
+&mdash; any alignment is allowed and the composite trace is how you judge it.</p>
+<p class='hint'>Linkwitz-Riley 2 is the recommended starting alignment because
+it is the one that sums to unity, and the two sections that bound a band must
+share a corner for that to hold &mdash; the mid's low-pass has to sit on the
+high band's high-pass, not near it. TI's suggested ranges are low up to about
+300 Hz, mid from there to 5 kHz and high above, which is what the defaults use.
+To hear one band on its own, zero the other two mixer gains.</p>
+<p class='hint'>Each band trace is scaled by the magnitude of its mixer gain, so
+a band turned down visibly drops out. The <em>sign</em> cannot show on a
+magnitude plot &mdash; it only affects the composite, which is where a wrong
+polarity shows up as a notch at the corner.</p>
+
+<h3>Transfer curve</h3>
+<div class='rowhead'><span>Region</span><span>Mode</span><span>Ratio</span><span>Slope</span></div>
+<div id='drc-regions'></div>
+<div class='grid' style='margin:10px 0 14px'>
+<div class='fld'><label>Threshold 1 (dBFS)</label><input type='number' id='drc-t1' min='-120' max='0' step='0.5'></div>
+<div class='fld'><label>Threshold 2 (dBFS)</label><input type='number' id='drc-t2' min='-120' max='0' step='0.5'></div>
+</div>
+<div class='legend'>
+<span><i style='background:#7a8699'></i>1:1</span>
+<span><i style='background:#e94560'></i>Threshold</span>
+<span><i style='background:#4ecca3'></i>Curve</span>
+</div>
+<canvas id='drc-curve' class='plot sq' width='1040' height='1032'></canvas>
+<p class='hint'>Region 1 is below threshold 1, region 2 sits between the two and
+region 3 is above threshold 2. Slope is the shown ratio inverted in compress
+mode, so a compress ratio under 1.0 in fact expands &mdash; watch the curve, not
+the label. Ratio 1.0 leaves a region untouched. Ratios are limited to
+0.2&ndash;5.0. The curve is drawn through unity at full scale: this flow has no
+working per-region output offset, so a region's gain is set by its ratio
+alone.</p>
+<p class='hint'>Two shapes are worth knowing. A <em>hard</em> power limit stays
+at 1:1 up to the level the speaker is rated for and then goes straight to a
+very steep ratio; it protects well but pumps, and it needs a fast attack. A
+<em>soft</em> limit &mdash; what the defaults set up &mdash; stays at 1:1 until
+0.85 to 0.9 of rated power, takes a mild ratio up to rated power, then clamps.
+TI asks for 25:1 or steeper on that last leg; this flow's coefficient stops at
+5:1, so the smooth clipper is doing the rest of the work.</p>
+<p class='hint'>Because the curve is pinned at full scale, compressing the top
+does not pull the peaks down, it lifts everything underneath: the defaults come
+out about 1.3 dB louder below &minus;2 dBFS. Where the curve is anchored in the
+DSP is not something the part will tell us, so treat that as the drawing's best
+guess. If you want a genuine power limit, take the same amount back out with
+master volume.</p>
+
+<h3>Detector timing (ms)</h3>
+<div class='rowhead'><span>Band</span><span>Energy</span><span>Attack</span><span>Decay</span></div>
+<div id='drc-timing'></div>
+<p class='hint'>Energy sets the level estimator's averaging window; attack and
+decay set how fast the gain follows it.</p>
+<p class='hint'>TI scales all three from the lowest frequency the band has to
+cope with. Taking <em>t</em> = 1/f<sub>min</sub>, a fast detector is 5<em>t</em>
+energy, 2<em>t</em> attack and 10<em>t</em> decay; a slow one is 15<em>t</em>,
+5<em>t</em> and 20<em>t</em>. The defaults are the fast set for f<sub>min</sub>
+of 20 Hz, 300 Hz and 5 kHz. Fast costs a little distortion; slow sounds cleaner
+but lets more energy through, which is then the smooth clipper's problem.</p>
+</div>
+
+<div class='card sect' id='sect-vol'><h2>Volume</h2>
+<div class='grid'>
+<div class='fld'><label>Master volume (dB)</label><input type='number' id='mvol' min='-30' max='0' step='0.5'></div>
+<div class='fld'><label>Fine volume trim (dB)</label><input type='number' id='fvol' min='-0.25' max='0.25' step='0.01'></div>
+</div>
+<div class='row' style='margin-top:8px'>
+<button class='btn btn-secondary' onclick='setVol(false)'>Set volume</button>
+<button class='btn btn-secondary' onclick='setVol(true)'>Set and save</button>
+<span id='vol-msg' class='hint' style='margin-left:10px'></span>
+</div>
+<p class='hint'>Master volume drives the part's own volume registers and is
+the same one AirPlay sets, so it applies the moment you press the button
+&mdash; it is not part of the Apply/Commit flow below, and the next volume
+change from a phone will overwrite it. <em>Set and save</em> also writes it to
+NVS so it survives a reboot.</p>
+<p class='hint'>The fine trim is a gain <em>inside</em> the flow, after the
+compander and before the smooth clipper, so it belongs to the tuning and is
+saved with it. Range is &plusmn;0.25 dB; the
+coefficient itself could reach +6.02 dB before its 1/2 headroom pad saturates.
+Use it to match levels between units, not as a volume control.</p>
+<p class='hint'>This is the first thing to settle. Everything downstream
+&mdash; the compressor thresholds, the smooth clip point, where DBE and PBE
+start working &mdash; is judged against the loudest the system will ever be
+asked to play, so decide that before tuning anything else.</p>
+</div>
+
+<div class='card sect' id='sect-out'><h2>Output</h2>
+<div class='grid'>
+<div class='fld'><label>Smooth clip threshold (dB)</label><input type='number' id='clip' min='-78' max='0' step='0.5'></div>
+<div class='fld'><label>Sample rate (Hz)</label><input type='number' id='fs' value='44100' disabled></div>
+</div>
+<p class='hint'>The smooth clipper rounds the transfer curve off as it
+approaches the threshold instead of hard-limiting. 0 dB leaves full scale
+available. Coefficients are designed for the sample rate shown; the flow is
+rebuilt when it changes.</p>
+<p class='hint'>To set it the way TI does, drive the amplifier into a resistor
+matching the speaker's impedance, feed a sine at the highest input level you
+expect, and sweep the threshold down at the frequency your EQ boosts most until
+THD+N is where you want it &mdash; then look at the whole spectrum again,
+because lowering it too far trades peak headroom for a wideband noise floor.
+Once the clipper is active the part reports Overflow in its audio data status;
+that is the clipper working, not a fault.</p>
+</div>
+
+<div class='bar'>
+<div class='actions'>
+<button class='btn btn-primary' id='apply-btn' onclick='doApply()'>Apply (live)</button>
+<button class='btn btn-secondary' id='commit-btn' onclick='doCommit()'>Commit to SPIFFS</button>
+<button class='btn btn-secondary' onclick='doRevert()'>Revert</button>
+<span id='state' class='hint' style='margin:0 0 0 auto'></span>
+</div>
+<div id='msg'></div>
+<p class='hint'>Apply is audible immediately but is lost on reboot or when the
+flow is re-downloaded. Commit bakes the tuning into the flow binary in SPIFFS
+so it survives both.</p>
+</div>
+</div></div>
+
+<script>
+var TYPES=['All pass','EQ (Q)','EQ (bandwidth)','Bass shelf','Treble shelf',
+           'Low pass','High pass','Band pass','Notch','Phase shift 1','Phase shift 2',
+           'Custom'];
+var SUBS=['Variable Q 2','Butterworth 1','Butterworth 2','Bessel 2','Chebyshev 2',
+          'Linkwitz-Riley 2'];
+var T_BYPASS=0,T_LOSHELF=3,T_HISHELF=4,T_LP=5,T_HP=6,T_NOTCH=8,T_CUSTOM=11;
+var GAIN_MIN=-15,GAIN_MAX=12,SHELF_Q_MAX=1;
+/* Fixed Q per alignment; null means the Q field is live. Mirrors subtype_q(). */
+var SUBQ=[null,null,0.707,0.58,0.8637210,0.5];
+/* Pole radius relative to the passband edge; only Chebyshev differs. */
+var SUBFS=[1,1,1,1,1.2313418,1];
+var HAS_SUB  =[0,0,0,0,0,1,1,0,0,0,0,0];
+var HAS_FREQ =[0,1,1,1,1,1,1,1,1,1,1,0];
+var HAS_Q    =[0,1,1,1,1,0,0,1,1,0,1,0];
+var HAS_GAIN =[0,1,1,1,1,0,0,0,0,0,0,0];
+/* What the Q column means per type: a Q, a bandwidth in octaves, or one in Hz. */
+var QUNIT    =['','Q','oct','Q','Q','Q','Q','Q','Hz','','oct',''];
+var BANDS=['Low','Mid','High'];
+var SECTS=[['eq','EQ'],['pbe','PBE'],['dbe','DBE'],['drc','Compressor'],
+           ['vol','Volume'],['out','Output']];
+var cfg=null,dirty=false;
+
+function $(id){return document.getElementById(id);}
+function num(id){return parseFloat($(id).value);}
+
+function show(el,text,cls){el.innerHTML=text?"<div class='msg "+cls+"'>"+text+'</div>':'';}
+function setDirty(d){
+  dirty=d;
+  $('state').innerHTML="<span class='dot"+(d?' dirty':'')+"'></span>"+
+    (d?'Uncommitted changes':'In sync with SPIFFS');
+}
+/* True when the Q field is meaningful: pass filters defer to their alignment. */
+function usesQ(t,sub){return HAS_SUB[t]?(SUBQ[sub]===null&&sub!==1):!!HAS_Q[t];}
+/* Range and default of the Q column, which changes unit with the type. */
+function qRange(t){
+  if(QUNIT[t]==='Hz')return {lo:1,hi:5000,step:1,dflt:100,label:'Bandwidth in Hz'};
+  if(QUNIT[t]==='oct')return {lo:0.05,hi:5,step:0.05,dflt:1,label:'Bandwidth in octaves'};
+  /* Shelves take no Q; above 1 they grow a peak. */
+  if(t===T_LOSHELF||t===T_HISHELF)
+    return {lo:0.1,hi:SHELF_Q_MAX,step:0.01,dflt:0.707,label:'Q'};
+  return {lo:0.1,hi:10,step:0.01,dflt:0.707,label:'Q'};
+}
+
+/* ---- biquad rows ---- */
+function bqRow(prefix,i){
+  var opts='',t;
+  for(t=0;t<TYPES.length;t++)opts+="<option value='"+t+"'>"+TYPES[t]+'</option>';
+  var subs='';
+  for(t=0;t<SUBS.length;t++)subs+="<option value='"+t+"'>"+SUBS[t]+'</option>';
+  var ch='',names=['b0','b1','b2','a1','a2'];
+  for(t=0;t<5;t++)
+    ch+="<input type='number' id='"+prefix+i+"-c"+t+"' step='0.000001' title='"+names[t]+
+        "' placeholder='"+names[t]+"' oninput='touch()'>";
+  var chg="bqSync(\""+prefix+"\","+i+');touch()';
+  return "<div class='bq'>"+
+    "<span class='n'>"+(i+1)+'</span>'+
+    "<select id='"+prefix+i+"-t' onchange='"+chg+"'>"+opts+'</select>'+
+    "<select id='"+prefix+i+"-s' onchange='"+chg+"'>"+subs+'</select>'+
+    "<input type='number' id='"+prefix+i+"-f' min='10' max='20000' step='1' oninput='touch()'>"+
+    "<input type='number' id='"+prefix+i+"-q' min='0.1' max='10' step='0.01' oninput='touch()'>"+
+    "<input type='number' id='"+prefix+i+"-g' min='"+GAIN_MIN+"' max='"+GAIN_MAX+"' step='0.5' oninput='touch()'>"+
+    "</div><div class='bqc' id='"+prefix+i+"-c'><span class='n'>coef</span>"+ch+'</div>';
+}
+function bqSync(prefix,i){
+  var t=parseInt($(prefix+i+'-t').value,10);
+  var sub=parseInt($(prefix+i+'-s').value,10);
+  var s=$(prefix+i+'-s'),q=$(prefix+i+'-q'),r=qRange(t);
+  s.style.visibility=HAS_SUB[t]?'visible':'hidden';
+  $(prefix+i+'-f').disabled=!HAS_FREQ[t];
+  q.disabled=!usesQ(t,sub);
+  q.min=r.lo;q.max=r.hi;q.step=r.step;q.title=r.label;
+  /* Switching unit leaves a value that means something else, so re-seed it. */
+  var v=parseFloat(q.value);
+  if(!q.disabled&&(isNaN(v)||v<r.lo||v>r.hi))q.value=r.dflt;
+  $(prefix+i+'-g').disabled=!HAS_GAIN[t];
+  $(prefix+i+'-c').style.display=(t===T_CUSTOM)?'grid':'none';
+  plot();
+}
+function bqSet(prefix,i,b){
+  $(prefix+i+'-t').value=b.type;
+  $(prefix+i+'-s').value=b.sub||0;
+  $(prefix+i+'-f').value=b.freq;
+  $(prefix+i+'-q').value=b.q;
+  $(prefix+i+'-g').value=b.gain;
+  for(var k=0;k<5;k++)$(prefix+i+'-c'+k).value=(b.coeff&&b.coeff[k]!==undefined)?b.coeff[k]:(k===0?1:0);
+  bqSync(prefix,i);
+}
+function bqGet(prefix,i){
+  var c=[];
+  for(var k=0;k<5;k++)c.push(num(prefix+i+'-c'+k));
+  return {type:parseInt($(prefix+i+'-t').value,10),
+          sub:parseInt($(prefix+i+'-s').value,10),
+          freq:num(prefix+i+'-f'),q:num(prefix+i+'-q'),gain:num(prefix+i+'-g'),coeff:c};
+}
+function fillBq(container,prefix,n){
+  var h='';
+  for(var i=0;i<n;i++)h+=bqRow(prefix,i);
+  $(container).innerHTML=h;
+}
+
+/* ---- response plot: mirrors design() in tas57xx_cram.c ---- */
+function designBq(b,fs){
+  var o={b0:1,b1:0,b2:0,a1:0,a2:0};
+  if(b.type===T_CUSTOM){
+    o.b0=b.coeff[0];o.b1=b.coeff[1];o.b2=b.coeff[2];o.a1=b.coeff[3];o.a2=b.coeff[4];
+    return o;
+  }
+  if(b.type===T_BYPASS)return o;
+  var isPass=(b.type===T_LP||b.type===T_HP),a0;
+  var fsc=(isPass&&SUBFS[b.sub])?SUBFS[b.sub]:1;
+  var f0=Math.min(Math.max(b.freq,1),fs*0.49);
+  if(fsc!==1){
+    /* The ratio scales the analog prototype, so it lands on the prewarped
+       frequency rather than the entered one. */
+    var k=Math.tan(Math.PI*f0/fs);
+    k=(b.type===T_LP)?k*fsc:k/fsc;
+    f0=Math.min(Math.atan(k)*fs/Math.PI,fs*0.49);
+  }
+  var w=2*Math.PI*f0/fs,cw=Math.cos(w),sw=Math.sin(w);
+  if(b.type===9||(isPass&&b.sub===1)){
+    var t=Math.tan(Math.PI*f0/fs),p=(1-t)/(1+t);
+    if(b.type===T_LP){o.b0=(1-p)/2;o.b1=o.b0;}
+    else if(b.type===T_HP){o.b0=(1+p)/2;o.b1=-o.b0;}
+    else{o.b0=-p;o.b1=1;}
+    o.a1=-p;return o;
+  }
+  var q=b.q>0.01?b.q:0.01;
+  if(isPass&&SUBQ[b.sub]!==null)q=SUBQ[b.sub];
+  else if(b.type===T_LOSHELF||b.type===T_HISHELF)q=Math.min(q,SHELF_Q_MAX);
+  else if(b.type===T_NOTCH)q=f0/q;
+  var alpha=QUNIT[b.type]==='oct'?sw*Math.sinh(Math.LN2/2*q*w/sw):sw/(2*q);
+  alpha=Math.max(alpha,sw/200);
+  var A=Math.pow(10,Math.max(GAIN_MIN,Math.min(GAIN_MAX,b.gain))/40);
+  switch(b.type){
+  case 1:case 2:
+    a0=1+alpha/A;
+    o.b0=(1+alpha*A)/a0;o.b1=-2*cw/a0;o.b2=(1-alpha*A)/a0;
+    o.a1=-2*cw/a0;o.a2=(1-alpha/A)/a0;break;
+  case 3:{
+    var s=2*Math.sqrt(A)*alpha;a0=(A+1)+(A-1)*cw+s;
+    o.b0=A*((A+1)-(A-1)*cw+s)/a0;o.b1=2*A*((A-1)-(A+1)*cw)/a0;
+    o.b2=A*((A+1)-(A-1)*cw-s)/a0;
+    o.a1=-2*((A-1)+(A+1)*cw)/a0;o.a2=((A+1)+(A-1)*cw-s)/a0;break;}
+  case 4:{
+    var s2=2*Math.sqrt(A)*alpha;a0=(A+1)-(A-1)*cw+s2;
+    o.b0=A*((A+1)+(A-1)*cw+s2)/a0;o.b1=-2*A*((A-1)+(A+1)*cw)/a0;
+    o.b2=A*((A+1)+(A-1)*cw-s2)/a0;
+    o.a1=2*((A-1)-(A+1)*cw)/a0;o.a2=((A+1)-(A-1)*cw-s2)/a0;break;}
+  case 5:
+    a0=1+alpha;o.b0=(1-cw)/2/a0;o.b1=(1-cw)/a0;o.b2=o.b0;
+    o.a1=-2*cw/a0;o.a2=(1-alpha)/a0;break;
+  case 6:
+    a0=1+alpha;o.b0=(1+cw)/2/a0;o.b1=-(1+cw)/a0;o.b2=o.b0;
+    o.a1=-2*cw/a0;o.a2=(1-alpha)/a0;break;
+  case 7:
+    a0=1+alpha;o.b0=alpha/a0;o.b1=0;o.b2=-alpha/a0;
+    o.a1=-2*cw/a0;o.a2=(1-alpha)/a0;break;
+  case 8:
+    a0=1+alpha;o.b0=1/a0;o.b1=-2*cw/a0;o.b2=o.b0;
+    o.a1=-2*cw/a0;o.a2=(1-alpha)/a0;break;
+  case 10:
+    a0=1+alpha;o.b0=(1-alpha)/a0;o.b1=-2*cw/a0;o.b2=1;
+    o.a1=-2*cw/a0;o.a2=(1-alpha)/a0;break;
+  }
+  return o;
+}
+/* Numerator and denominator of H(e^jw), shared by the two response curves. */
+function response(c,w){
+  var c1=Math.cos(w),s1=Math.sin(w),c2=Math.cos(2*w),s2=Math.sin(2*w);
+  return {nr:c.b0+c.b1*c1+c.b2*c2, ni:-(c.b1*s1+c.b2*s2),
+          dr:1+c.a1*c1+c.a2*c2,    di:-(c.a1*s1+c.a2*s2)};
+}
+function magDb(c,w){
+  var r=response(c,w);
+  var n=Math.sqrt(r.nr*r.nr+r.ni*r.ni),d=Math.sqrt(r.dr*r.dr+r.di*r.di);
+  if(!(d>1e-12)||!(n>1e-12))return -60;
+  return Math.max(-60,Math.min(60,20*Math.log10(n/d)));
+}
+function phaseDeg(c,w){
+  var r=response(c,w);
+  return Math.atan2(r.ni*r.dr-r.nr*r.di, r.nr*r.dr+r.ni*r.di)*180/Math.PI;
+}
+function sections(prefix,n,fs){
+  var secs=[];
+  for(var i=0;i<n;i++){
+    var b=bqGet(prefix,i);
+    if(b.type===T_BYPASS)continue;
+    if(b.type===T_CUSTOM){
+      if(b.coeff.some(function(v){return isNaN(v);}))continue;
+    }else if(isNaN(b.freq))continue;
+    secs.push(designBq(b,fs));
+  }
+  return secs;
+}
+/* Evaluates each section and their sum over a log sweep. Phase is unwrapped as
+   it goes, so a 2nd-order all-pass reads -360 rather than folding back to 0. */
+function sweep(secs,fs,fn,unwrap,lo,hi){
+  var N=360,F0=lo||20,F1=hi||Math.min(20000,fs/2),k;
+  var curves=[],prev=[],total=[];
+  for(k=0;k<secs.length;k++){curves.push([]);prev.push(0);}
+  for(var i=0;i<=N;i++){
+    var w=2*Math.PI*F0*Math.pow(F1/F0,i/N)/fs,sum=0;
+    for(k=0;k<secs.length;k++){
+      var v=fn(secs[k],w);
+      if(unwrap){
+        while(v-prev[k]>180)v-=360;
+        while(v-prev[k]<-180)v+=360;
+        prev[k]=v;
+      }
+      curves[k].push(v);sum+=v;
+    }
+    total.push(sum);
+  }
+  return {n:N,f0:F0,f1:F1,curves:curves,total:total};
+}
+/* Bold colour for a group's summed response, faint for its individual sections. */
+var TRACE=[['#e94560','rgba(233,69,96,0.25)'],['#4ecca3','rgba(78,204,163,0.25)']];
+function drawGraph(cv,sweeps,lo,hi,step,fmt,cols){
+  var g=cv.getContext('2d'),W=cv.width,H=cv.height;
+  var PL=54,PR=12,PT=12,PB=26,PW=W-PL-PR,PH=H-PT-PB,i,k,d,f;
+  var f0=sweeps[0].f0,f1=sweeps[0].f1,N=sweeps[0].n;
+  function x(f){return PL+PW*Math.log(f/f0)/Math.log(f1/f0);}
+  function y(v){return PT+PH*(hi-v)/(hi-lo);}
+  g.clearRect(0,0,W,H);
+  g.font='20px sans-serif';g.textBaseline='middle';g.lineWidth=2;
+  g.strokeStyle='rgba(255,255,255,0.09)';g.fillStyle='#777';g.textAlign='center';
+  var ticks=[10,20,50,100,200,500,1000,2000,5000,10000,20000];
+  for(i=0;i<ticks.length;i++){
+    f=ticks[i];if(f>f1)break;
+    if(f<f0)continue;
+    g.beginPath();g.moveTo(x(f),PT);g.lineTo(x(f),PT+PH);g.stroke();
+    g.fillText(f>=1000?(f/1000)+'k':''+f,x(f),H-12);
+  }
+  g.textAlign='right';
+  for(d=lo;d<=hi+1e-6;d+=step){
+    g.strokeStyle=d===0?'rgba(255,255,255,0.22)':'rgba(255,255,255,0.09)';
+    g.beginPath();g.moveTo(PL,y(d));g.lineTo(PL+PW,y(d));g.stroke();
+    g.fillText(fmt(d),PL-8,y(d));
+  }
+  g.save();g.beginPath();g.rect(PL,PT,PW,PH);g.clip();
+  function trace(vals,style,width){
+    g.strokeStyle=style;g.lineWidth=width;g.beginPath();
+    for(i=0;i<=N;i++){
+      f=f0*Math.pow(f1/f0,i/N);
+      if(i)g.lineTo(x(f),y(vals[i]));else g.moveTo(x(f),y(vals[i]));
+    }
+    g.stroke();
+  }
+  var pal=cols||TRACE;
+  for(var s=0;s<sweeps.length;s++){
+    var col=pal[s%pal.length];
+    for(k=0;k<sweeps[s].curves.length;k++)trace(sweeps[s].curves[k],col[1],2);
+    if(sweeps[s].total)trace(sweeps[s].total,col[0],4);
+  }
+  g.restore();
+}
+/* Draws one magnitude and one phase graph for a set of section groups, which
+   share a vertical range so the groups can be compared directly. */
+function drawPair(magId,phaseId,groups,fs){
+  var mag=[],ph=[],lim=0,k,i;
+  for(k=0;k<groups.length;k++){
+    mag.push(sweep(groups[k],fs,magDb,false));
+    var p=sweep(groups[k],fs,phaseDeg,true);
+    for(i=0;i<=p.n;i++)lim=Math.max(lim,Math.abs(p.total[i]));
+    ph.push(p);
+  }
+  drawGraph($(magId),mag,-18,18,6,function(d){return d>0?'+'+d:''+d;});
+  var range=180;
+  while(range<lim&&range<1440)range*=2;
+  drawGraph($(phaseId),ph,-range,range,range/2,function(d){return d+'\u00b0';});
+}
+
+/* ---- compressor plots ---- */
+var DRCCOL=[['#4ecca3','rgba(78,204,163,0.25)'],['#4d9de0','rgba(77,157,224,0.25)'],
+            ['#f0a202','rgba(240,162,2,0.25)'],['#e94560','rgba(233,69,96,0.25)']];
+function dbOf(re,im){
+  var m=Math.sqrt(re*re+im*im);
+  return m>1e-6?Math.max(-48,20*Math.log10(m)):-48;
+}
+/* The bands run in parallel, so they add as complex numbers rather than as the
+   dB sums a cascade uses. The mid ships at -1, which is what makes a
+   Linkwitz-Riley split recombine flat. */
+function drcBands(fs){
+  if(!$('xl0-t')||!$('mg0'))return null;
+  var band=[[designBq(bqGet('xl',0),fs)],
+            [designBq(bqGet('xm',0),fs),designBq(bqGet('xm',1),fs)],
+            [designBq(bqGet('xh',0),fs)]];
+  var g=[num('mg0'),num('mg1'),num('mg2')];
+  for(var m=0;m<3;m++)if(isNaN(g[m]))return null;
+  var N=360,F0=20,F1=Math.min(20000,fs/2),out=[[],[],[],[]],b,k,i;
+  for(i=0;i<=N;i++){
+    var w=2*Math.PI*F0*Math.pow(F1/F0,i/N)/fs,sr=0,si=0;
+    for(b=0;b<3;b++){
+      var re=1,im=0;
+      for(k=0;k<band[b].length;k++){
+        var r=response(band[b][k],w),dd=r.dr*r.dr+r.di*r.di;
+        var qr=(r.nr*r.dr+r.ni*r.di)/dd,qi=(r.ni*r.dr-r.nr*r.di)/dd;
+        var t=re*qr-im*qi;im=re*qi+im*qr;re=t;
+      }
+      var sg=g[b];sr+=sg*re;si+=sg*im;
+      out[b].push(dbOf(re*Math.abs(sg),im*Math.abs(sg)));
+    }
+    out[3].push(dbOf(sr,si));
+  }
+  var sw=[];
+  for(b=0;b<4;b++)sw.push({n:N,f0:F0,f1:F1,curves:[],total:out[b]});
+  return sw;
+}
+/* Breakpoints of the level map, quietest first. The slopes and corners are
+   exactly what the coefficients encode; the vertical anchor is not, so it is
+   pinned at unity full scale. */
+function drcCurve(){
+  var t1=num('drc-t1'),t2=num('drc-t2'),s=[],r,ratio;
+  if(isNaN(t1)||isNaN(t2)||t2<=t1)return null;
+  for(r=0;r<3;r++){
+    ratio=num('r'+r+'-r');
+    if(!(ratio>0))return null;
+    s.push(parseInt($('r'+r+'-m').value,10)===1?ratio:1/ratio);
+  }
+  var LO=-140,o2=s[2]*t2,o1=o2+s[1]*(t1-t2),o0=o1+s[0]*(LO-t1);
+  return {t1:t1,t2:t2,pts:[[LO,o0],[t1,o1],[t2,o2],[0,0]]};
+}
+function drawDrcCurve(cv,c){
+  var g=cv.getContext('2d'),W=cv.width,H=cv.height;
+  /* The axes share a scale so the 1:1 line reads at 45 degrees. */
+  var PL=52,PR=12,PT=12,PB=44,PW=W-PL-PR,PH=H-PT-PB,LO=-120,HI=0,d,i,p;
+  function X(v){return PL+PW*(v-LO)/(HI-LO);}
+  function Y(v){return PT+PH*(HI-v)/(HI-LO);}
+  g.clearRect(0,0,W,H);
+  g.font='20px sans-serif';g.textBaseline='middle';g.lineWidth=2;
+  g.strokeStyle='rgba(255,255,255,0.09)';
+  for(d=LO;d<=HI;d+=20){
+    g.beginPath();g.moveTo(X(d),PT);g.lineTo(X(d),PT+PH);g.stroke();
+    g.beginPath();g.moveTo(PL,Y(d));g.lineTo(PL+PW,Y(d));g.stroke();
+    g.fillStyle='#777';g.textAlign='center';g.fillText(''+d,X(d),H-26);
+    g.textAlign='right';g.fillText(''+d,PL-8,Y(d));
+  }
+  g.fillStyle='#666';g.textAlign='center';g.fillText('Input dBFS',PL+PW/2,H-8);
+  g.save();g.translate(16,PT+PH/2);g.rotate(-Math.PI/2);
+  g.fillText('Output dBFS',0,0);g.restore();
+  g.save();g.beginPath();g.rect(PL,PT,PW,PH);g.clip();
+  g.strokeStyle='#7a8699';g.lineWidth=3;
+  g.beginPath();g.moveTo(X(LO),Y(LO));g.lineTo(X(HI),Y(HI));g.stroke();
+  if(c){
+    g.strokeStyle='#e94560';g.lineWidth=2;
+    g.beginPath();g.moveTo(X(c.t1),PT);g.lineTo(X(c.t1),PT+PH);
+    g.moveTo(X(c.t2),PT);g.lineTo(X(c.t2),PT+PH);g.stroke();
+    g.strokeStyle='#4ecca3';g.lineWidth=5;g.beginPath();
+    for(i=0;i<c.pts.length;i++){
+      p=c.pts[i];
+      if(i)g.lineTo(X(p[0]),Y(p[1]));else g.moveTo(X(p[0]),Y(p[1]));
+    }
+    g.stroke();
+    g.fillStyle='#4ecca3';
+    for(i=1;i<3;i++){
+      g.beginPath();g.arc(X(c.pts[i][0]),Y(c.pts[i][1]),8,0,2*Math.PI);g.fill();
+    }
+    g.fillRect(X(0)-8,Y(0)-8,16,16);
+  }
+  g.restore();
+}
+function drcSlopes(){
+  for(var r=0;r<3;r++){
+    var el=$('r'+r+'-s'),ratio=num('r'+r+'-r');
+    if(!el)continue;
+    el.textContent=ratio>0?
+      (parseInt($('r'+r+'-m').value,10)===1?ratio:1/ratio).toFixed(2):'';
+  }
+  for(var m=0;m<3;m++){
+    var lab=$('mix'+m),v=num('mg'+m);
+    if(lab)lab.textContent=isNaN(v)?'':(v>0?'x+':'x')+v;
+  }
+}
+
+/* ---- PBE and DBE plots ---- */
+var PBE_LO=10,PBE_HI=2000,PBE_HPF_MIN=50,PBE_HPF_MAX=300;
+/* Every section of the extraction network is a fixed multiple of the corner;
+   the ratios are fitted to captures, not textbook, so keep them in step with
+   hf1_pbe_extract[] in tas57xx_hf1.c. */
+var PBE_EXTRACT=[[T_HP,0,0.19420,0.5693],[T_LP,0,0.59992,0.7054],
+                 [T_LP,0,1.20198,0.9994],[T_LP,1,1.20270,1.0]];
+var PBE_EFFECT=[[0.18901,0.5231,0.26710],[0.46708,1.1324,0.66942],
+                [0.48703,1.4195,0.90321],[0.49383,1.6511,1.08794],
+                [0.49600,1.8494,1.24322]];
+function pbeExtract(fs){
+  var f=num('pbe-hpf');
+  if(!(f>0))return null;
+  return PBE_EXTRACT.map(function(s){
+    return designBq({type:s[0],sub:s[1],freq:f*s[2],q:s[3],gain:0,coeff:[]},fs);
+  });
+}
+/* Mirrors hf1_write_pbe_effect(): a pole pair plus one zero at DC and one real
+   zero, both tracking the corner. */
+function pbeEffect(fs){
+  var f=num('pbe-hpf'),e=parseInt($('pbe-eff').value,10);
+  if(!(f>0)||!(e>=1&&e<=5))return null;
+  var t=PBE_EFFECT[e-1];
+  var w=2*Math.PI*t[0]*f/fs,alpha=Math.sin(w)/(2*t[1]),a0=1+alpha;
+  var b0=1/a0,b2=b0*Math.exp(-2*Math.PI*t[2]*f/fs);
+  return [{b0:b0,b1:-(b0+b2),b2:b2,a1:-2*Math.cos(w)/a0,a2:(1-alpha)/a0}];
+}
+function senseSections(fs){
+  var lo=num('sense-lo'),hi=num('sense-hi');
+  if(!(lo>0)||!(hi>lo))return null;
+  var f0=Math.sqrt(lo*hi);
+  return [designBq({type:7,sub:0,freq:f0,q:f0/(hi-lo),gain:0,coeff:[]},fs)];
+}
+/* The corner marker has to land on the same log axis drawGraph lays out, so the
+   padding is repeated here rather than shared through a redraw. */
+function pbeX(cv,f){
+  var PL=54,PW=cv.width-PL-12;
+  return PL+PW*Math.log(f/PBE_LO)/Math.log(PBE_HI/PBE_LO);
+}
+function pbeF(cv,x){
+  var PL=54,PW=cv.width-PL-12;
+  return PBE_LO*Math.pow(PBE_HI/PBE_LO,(x-PL)/PW);
+}
+function drawPbeMark(cv,f){
+  if(!(f>0))return;
+  var g=cv.getContext('2d'),PT=12,PH=cv.height-PT-26,x=pbeX(cv,f);
+  var flip=x>cv.width-300;
+  g.save();
+  g.strokeStyle='#f5b301';g.lineWidth=3;g.setLineDash([10,8]);
+  g.beginPath();g.moveTo(x,PT);g.lineTo(x,PT+PH);g.stroke();
+  g.setLineDash([]);g.fillStyle='#f5b301';
+  g.beginPath();g.arc(x,PT+PH/2,13,0,2*Math.PI);g.fill();
+  g.font='20px sans-serif';g.textBaseline='middle';
+  g.textAlign=flip?'right':'left';
+  g.fillText(Math.round(f)+' Hz',x+(flip?-22:22),PT+PH/2);
+  g.restore();
+}
+/* Both mixing words are amplitudes held 4 dB below the entered thresholds, so
+   the blend is linear in amplitude rather than in dB. */
+function dbeMix(){
+  var lo=num('dbe-lower'),hi=num('dbe-upper');
+  if(isNaN(lo)||isNaN(hi)||hi<=lo)return null;
+  var a=Math.pow(10,(lo-4)/20),b=Math.pow(10,(hi-4)/20);
+  return {lo:lo,hi:hi,f:function(db){
+    var m=(Math.pow(10,db/20)-a)/(b-a);
+    return m<0?0:m>1?1:m;}};
+}
+function drawMix(cv,m){
+  var g=cv.getContext('2d'),W=cv.width,H=cv.height;
+  var PL=54,PR=12,PT=12,PB=26,PW=W-PL-PR,PH=H-PT-PB,LO=-70,HI=0,d,i;
+  function X(v){return PL+PW*(v-LO)/(HI-LO);}
+  function Y(v){return PT+PH*(1-v);}
+  g.clearRect(0,0,W,H);
+  g.font='20px sans-serif';g.textBaseline='middle';g.lineWidth=2;
+  g.strokeStyle='rgba(255,255,255,0.09)';g.fillStyle='#777';
+  for(d=LO;d<=HI;d+=10){
+    g.beginPath();g.moveTo(X(d),PT);g.lineTo(X(d),PT+PH);g.stroke();
+    g.textAlign='center';g.fillText(''+d,X(d),H-12);
+  }
+  g.textAlign='right';
+  for(i=0;i<=4;i++){
+    g.beginPath();g.moveTo(PL,Y(i/4));g.lineTo(PL+PW,Y(i/4));g.stroke();
+    g.fillText((i/4).toFixed(2),PL-8,Y(i/4));
+  }
+  if(!m)return;
+  g.save();g.beginPath();g.rect(PL,PT,PW,PH);g.clip();
+  g.setLineDash([9,9]);g.strokeStyle='rgba(255,255,255,0.32)';
+  g.beginPath();g.moveTo(X(m.lo),PT);g.lineTo(X(m.lo),PT+PH);
+  g.moveTo(X(m.hi),PT);g.lineTo(X(m.hi),PT+PH);g.stroke();
+  g.setLineDash([]);
+  function trace(fn,style){
+    g.strokeStyle=style;g.lineWidth=4;g.beginPath();
+    for(var k=0;k<=300;k++){
+      var db=LO+(HI-LO)*k/300;
+      if(k)g.lineTo(X(db),Y(fn(db)));else g.moveTo(X(db),Y(fn(db)));
+    }
+    g.stroke();
+  }
+  trace(m.f,'#e94560');
+  trace(function(db){return 1-m.f(db);},'#4ecca3');
+  g.restore();
+}
+function plotBand(id,groups,fs,lo,hi,ylo,yhi){
+  var sw=[],k,s;
+  for(k=0;k<groups.length;k++){
+    s=sweep(groups[k]||[],fs,magDb,false,lo,hi);
+    // An empty group would otherwise sum to a convincing flat 0 dB line.
+    if(!groups[k])s.total=null;
+    sw.push(s);
+  }
+  drawGraph($(id),sw,ylo,yhi,6,function(d){return d>0?'+'+d:''+d;});
+}
+function plot(){
+  var mag=$('plot');
+  if(!mag||!mag.getContext||!$('eq0-t')||!$('dl1-t')||!$('r0-m'))return;
+  var fs=(cfg&&cfg.sample_rate)||44100;
+  drawPair('plot','phase',[sections('eq',10,fs)],fs);
+  drawPair('dbe-plot','dbe-phase',[sections('dh',2,fs),sections('dl',2,fs)],fs);
+  plotBand('pbe-plot',[pbeExtract(fs),pbeEffect(fs)],fs,PBE_LO,PBE_HI,-30,18);
+  drawPbeMark($('pbe-plot'),num('pbe-hpf'));
+  $('pbe-harm-v').textContent=$('pbe-harm').value;
+  $('pbe-eff-v').textContent=$('pbe-eff').value;
+  plotBand('dbe-sense',[senseSections(fs)],fs,PBE_LO,PBE_HI,-30,6);
+  drawMix($('dbe-mix'),dbeMix());
+  var bands=drcBands(fs);
+  if(bands)
+    drawGraph($('drc-plot'),bands,-30,6,6,
+              function(d){return d>0?'+'+d:''+d;},DRCCOL);
+  drawDrcCurve($('drc-curve'),drcCurve());
+  drcSlopes();
+}
+
+/* ---- build ---- */
+function pick(id){
+  for(var i=0;i<SECTS.length;i++){
+    var on=SECTS[i][0]===id,chip=$('chip-'+SECTS[i][0]);
+    $('sect-'+SECTS[i][0]).style.display=on?'block':'none';
+    if(chip)chip.classList.toggle('on',on);
+  }
+}
+function buildDrcRows(){
+  var h='';
+  for(var i=0;i<3;i++)
+    h+="<div class='row3'><span class='n'>"+BANDS[i]+'</span>'+
+       "<input type='number' id='t"+i+"-e' min='0.1' max='10000' step='0.1' oninput='touch()'>"+
+       "<input type='number' id='t"+i+"-a' min='0.1' max='10000' step='0.1' oninput='touch()'>"+
+       "<input type='number' id='t"+i+"-d' min='0.1' max='10000' step='0.1' oninput='touch()'></div>";
+  $('drc-timing').innerHTML=h;
+  h='';
+  for(var r=0;r<3;r++)
+    h+="<div class='row3'><span class='n'>Region "+(r+1)+'</span>'+
+       "<select id='r"+r+"-m' onchange='touch()'><option value='0'>Compress</option><option value='1'>Expand</option></select>"+
+       "<input type='number' id='r"+r+"-r' min='0.2' max='5' step='0.05' oninput='touch()'>"+
+       "<span class='n' id='r"+r+"-s'></span></div>";
+  $('drc-regions').innerHTML=h;
+}
+
+/* ---- transfer ---- */
+function populate(c){
+  var i;
+  for(i=0;i<c.eq.length;i++)bqSet('eq',i,c.eq[i]);
+  $('pbe-hpf').value=c.pbe.hpf;
+  $('pbe-harm').value=c.pbe.harmonic;
+  $('pbe-eff').value=c.pbe.effect;
+  for(i=0;i<c.dbe.high.length;i++)bqSet('dh',i,c.dbe.high[i]);
+  for(i=0;i<c.dbe.low.length;i++)bqSet('dl',i,c.dbe.low[i]);
+  $('dbe-lower').value=c.dbe.lower_db;
+  $('dbe-upper').value=c.dbe.upper_db;
+  $('sense-lo').value=c.dbe.sense_lo;
+  $('sense-hi').value=c.dbe.sense_hi;
+  $('sense-win').value=c.dbe.window_ms;
+  bqSet('xl',0,c.drc.cross[0]);
+  bqSet('xm',0,c.drc.cross[1]);
+  bqSet('xm',1,c.drc.cross[2]);
+  bqSet('xh',0,c.drc.cross[3]);
+  for(i=0;i<3;i++)$('mg'+i).value=c.drc.mix[i];
+  for(i=0;i<3;i++){
+    $('t'+i+'-e').value=c.drc.timing[i].energy;
+    $('t'+i+'-a').value=c.drc.timing[i].attack;
+    $('t'+i+'-d').value=c.drc.timing[i].decay;
+    $('r'+i+'-m').value=c.drc.regions[i].mode;
+    $('r'+i+'-r').value=c.drc.regions[i].ratio;
+  }
+  $('drc-t1').value=c.drc.thresh1;
+  $('drc-t2').value=c.drc.thresh2;
+  $('clip').value=c.smooth_clip;
+  $('fvol').value=c.fine_volume;
+  $('fs').value=c.sample_rate;
+  // bqSet redraws as it goes, but that is before the fields below are filled.
+  plot();
+}
+function collect(){
+  var i,c={sample_rate:cfg.sample_rate,eq:[],
+           pbe:{hpf:num('pbe-hpf'),harmonic:parseInt($('pbe-harm').value,10),
+                effect:parseInt($('pbe-eff').value,10)},
+           dbe:{high:[],low:[],lower_db:num('dbe-lower'),upper_db:num('dbe-upper'),
+                sense_lo:num('sense-lo'),sense_hi:num('sense-hi'),window_ms:num('sense-win')},
+           drc:{cross:[bqGet('xl',0),bqGet('xm',0),bqGet('xm',1),bqGet('xh',0)],
+                mix:[num('mg0'),num('mg1'),num('mg2')],
+                timing:[],regions:[],
+                thresh1:num('drc-t1'),thresh2:num('drc-t2')},
+           smooth_clip:num('clip'),fine_volume:num('fvol')};
+  for(i=0;i<10;i++)c.eq.push(bqGet('eq',i));
+  for(i=0;i<2;i++){c.dbe.high.push(bqGet('dh',i));c.dbe.low.push(bqGet('dl',i));}
+  for(i=0;i<3;i++){
+    c.drc.timing.push({energy:num('t'+i+'-e'),attack:num('t'+i+'-a'),decay:num('t'+i+'-d')});
+    c.drc.regions.push({mode:parseInt($('r'+i+'-m').value,10),ratio:num('r'+i+'-r')});
+  }
+  return c;
+}
+
+/* ---- validation: mirrors what the firmware rejects ---- */
+function rangeErr(v,lo,hi,what){
+  if(isNaN(v))return what+' is required';
+  if(v<lo||v>hi)return what+' must be between '+lo+' and '+hi;
+  return null;
+}
+function checkBq(b,what){
+  if(b.type===T_CUSTOM){
+    for(var k=0;k<5;k++)
+      if(isNaN(b.coeff[k]))return what+' coefficient '+['b0','b1','b2','a1','a2'][k]+' is required';
+    // Poles outside the unit circle run away; the DSP has no way to recover.
+    if(Math.abs(b.coeff[4])>=1||Math.abs(b.coeff[3])>=1+b.coeff[4])
+      return what+' coefficients are unstable (need |a2|<1 and |a1|<1+a2)';
+    return null;
+  }
+  var e=HAS_FREQ[b.type]?rangeErr(b.freq,10,20000,what+' frequency'):null;
+  if(e)return e;
+  if(usesQ(b.type,b.sub)){
+    var r=qRange(b.type);
+    e=rangeErr(b.q,r.lo,r.hi,what+' '+r.label.toLowerCase());if(e)return e;
+  }
+  if(HAS_GAIN[b.type]){e=rangeErr(b.gain,GAIN_MIN,GAIN_MAX,what+' gain');if(e)return e;}
+  return null;
+}
+/* Word 144 holds 1/32 divided by the span between the two thresholds, so a
+ * narrow span at a low level overflows the coefficient. */
+function minUpper(lower){
+  /* The span word holds 1/32 divided by the amplitude difference, so the two
+     thresholds have to be far enough apart for that quotient to stay under 1. */
+  var fit=20*Math.log(0.03125+Math.pow(10,(lower-4)/20))/Math.LN10+4;
+  return Math.max(lower+3,fit);
+}
+function validate(c){
+  var i,e;
+  for(i=0;i<c.eq.length;i++){e=checkBq(c.eq[i],'EQ band '+(i+1));if(e)return e;}
+  for(i=0;i<c.dbe.high.length;i++){
+    e=checkBq(c.dbe.high[i],'DBE high-level band '+(i+1));if(e)return e;
+    e=checkBq(c.dbe.low[i],'DBE low-level band '+(i+1));if(e)return e;
+  }
+  var XNAME=['Low band','Mid band section 1','Mid band section 2','High band'];
+  for(i=0;i<c.drc.cross.length;i++){
+    e=checkBq(c.drc.cross[i],XNAME[i]);if(e)return e;
+  }
+  for(i=0;i<c.drc.mix.length;i++){
+    e=rangeErr(c.drc.mix[i],-1,1,BANDS[i]+' band mixer gain');if(e)return e;
+  }
+  e=rangeErr(c.pbe.hpf,PBE_HPF_MIN,PBE_HPF_MAX,'PBE high-pass corner')||
+    rangeErr(c.pbe.harmonic,0,100,'PBE harmonic intensity')||
+    rangeErr(c.pbe.effect,1,5,'PBE effect intensity')||
+    rangeErr(c.dbe.lower_db,-60,-10,'DBE lower threshold')||
+    rangeErr(c.dbe.upper_db,-24,0,'DBE upper threshold')||
+    rangeErr(c.dbe.sense_lo,10,20000,'Sensing low frequency')||
+    rangeErr(c.dbe.sense_hi,10,20000,'Sensing high frequency')||
+    rangeErr(c.dbe.window_ms,1,10000,'Averaging window')||
+    rangeErr(c.drc.thresh1,-120,0,'Threshold 1')||
+    rangeErr(c.drc.thresh2,-120,0,'Threshold 2')||
+    rangeErr(c.smooth_clip,-78,0,'Smooth clip threshold')||
+    rangeErr(c.fine_volume,-0.25,0.25,'Fine volume trim');
+  if(e)return e;
+  if(c.dbe.sense_hi<=c.dbe.sense_lo)return 'Sensing high must be above sensing low';
+  if(c.drc.thresh2<=c.drc.thresh1)return 'Threshold 2 must be above threshold 1';
+  var need=minUpper(c.dbe.lower_db);
+  if(c.dbe.upper_db<need)
+    return 'DBE upper threshold must be at least '+(Math.ceil(need*2)/2).toFixed(1)+
+           ' dBFS for a lower threshold of '+c.dbe.lower_db.toFixed(1)+' dBFS';
+  for(i=0;i<3;i++){
+    var t=c.drc.timing[i],b=BANDS[i]+' band ';
+    e=rangeErr(t.energy,0.1,10000,b+'energy time')||
+      rangeErr(t.attack,0.1,10000,b+'attack time')||
+      rangeErr(t.decay,0.1,10000,b+'decay time')||
+      rangeErr(c.drc.regions[i].ratio,0.2,5,'Region '+(i+1)+' ratio');
+    if(e)return e;
+  }
+  return null;
+}
+
+/* ---- server ---- */
+function touch(){setDirty(true);show($('msg'),'','');plot();}
+function busy(on){$('apply-btn').disabled=on;$('commit-btn').disabled=on;}
+
+/* Master volume is a live device setting, not part of the tuning, so it stays
+   outside the dirty tracking and the Apply/Commit flow. */
+function loadVol(){
+  fetch('/api/audio/volume').then(function(r){return r.json();})
+    .then(function(j){
+      $('mvol').value=Math.round(j.volume_db*10)/10;
+      if(j.muted)$('vol-msg').textContent='Output is muted';
+    }).catch(function(){});
+}
+function setVol(persist){
+  var v=parseFloat($('mvol').value);
+  if(isNaN(v)||v<-30||v>0){
+    $('vol-msg').textContent='Master volume must be -30 to 0 dB';return;
+  }
+  fetch('/api/audio/volume',{method:'POST',
+        headers:{'Content-Type':'application/json'},
+        body:JSON.stringify({volume_db:v,persist:!!persist})})
+    .then(function(r){return r.json();})
+    .then(function(j){
+      $('vol-msg').textContent=j.success?
+        (persist?'Set and saved':'Set')+' at '+j.volume_db+' dB':'Rejected';
+    })
+    .catch(function(){$('vol-msg').textContent='Request failed';});
+}
+
+function load(){
+  fetch('/api/hf1').then(function(r){return r.json();}).then(function(c){
+    if(!c.available){$('unavail').style.display='block';$('ui').style.display='none';return;}
+    cfg=c;
+    $('unavail').style.display='none';
+    $('ui').style.display='block';
+    populate(c);
+    setDirty(false);
+    loadVol();
+  }).catch(function(){show($('msg'),'Could not read the current tuning','err');});
+}
+function post(url,body,okText){
+  busy(true);
+  fetch(url,{method:'POST',headers:{'Content-Type':'application/json'},
+             body:body?JSON.stringify(body):'{}'})
+    .then(function(r){return r.json();})
+    .then(function(j){
+      busy(false);
+      if(j.success){show($('msg'),okText,'ok');}
+      else{show($('msg'),'Rejected: '+(j.error||'unknown error'),'err');}
+      if(j.success&&url.indexOf('commit')>=0)setDirty(false);
+    })
+    .catch(function(){busy(false);show($('msg'),'Request failed','err');});
+}
+function doApply(){
+  var c=collect(),e=validate(c);
+  if(e){show($('msg'),e,'err');return;}
+  cfg=c;
+  post('/api/hf1',c,'Applied. Listen, then commit if you want to keep it.');
+}
+function doCommit(){
+  var c=collect(),e=validate(c);
+  if(e){show($('msg'),e,'err');return;}
+  cfg=c;
+  busy(true);
+  fetch('/api/hf1',{method:'POST',headers:{'Content-Type':'application/json'},
+                    body:JSON.stringify(c)})
+    .then(function(r){return r.json();})
+    .then(function(j){
+      if(!j.success)throw new Error(j.error||'rejected');
+      return fetch('/api/hf1/commit',{method:'POST'});
+    })
+    .then(function(r){return r.json();})
+    .then(function(j){
+      busy(false);
+      if(j.success){setDirty(false);show($('msg'),'Written to SPIFFS.','ok');}
+      else show($('msg'),'Commit failed: '+(j.error||'unknown error'),'err');
+    })
+    .catch(function(err){busy(false);show($('msg'),'Commit failed: '+err.message,'err');});
+}
+function doRevert(){
+  if(dirty&&!confirm('Discard the uncommitted tuning and reload from SPIFFS?'))return;
+  busy(true);
+  fetch('/api/hf1/revert',{method:'POST'})
+    .then(function(r){return r.json();})
+    .then(function(j){
+      busy(false);
+      if(j.success){show($('msg'),'Reloaded from SPIFFS.','ok');load();}
+      else show($('msg'),'Revert failed: '+(j.error||'unknown error'),'err');
+    })
+    .catch(function(){busy(false);show($('msg'),'Request failed','err');});
+}
+
+fillBq('eq-rows','eq',10);
+fillBq('dbe-hi-rows','dh',2);
+fillBq('dbe-lo-rows','dl',2);
+fillBq('drc-low-rows','xl',1);
+fillBq('drc-mid-rows','xm',2);
+fillBq('drc-high-rows','xh',1);
+buildDrcRows();
+pick('eq');
+['pbe-hpf','pbe-harm','pbe-eff','dbe-lower','dbe-upper','sense-lo','sense-hi',
+ 'sense-win','drc-t1','drc-t2','clip','mg0','mg1','mg2','fvol'].forEach(function(id){
+  $(id).addEventListener('input',touch);
+});
+(function(){
+  var cv=$('pbe-plot'),held=false;
+  function grab(ev){
+    var r=cv.getBoundingClientRect();
+    var f=Math.round(pbeF(cv,(ev.clientX-r.left)*cv.width/r.width));
+    f=Math.min(Math.max(f,PBE_HPF_MIN),PBE_HPF_MAX);
+    if(String(f)===$('pbe-hpf').value)return;
+    $('pbe-hpf').value=f;touch();
+  }
+  cv.addEventListener('pointerdown',function(ev){
+    held=true;cv.setPointerCapture(ev.pointerId);grab(ev);ev.preventDefault();});
+  cv.addEventListener('pointermove',function(ev){if(held)grab(ev);});
+  cv.addEventListener('pointerup',function(){held=false;});
+  cv.addEventListener('pointercancel',function(){held=false;});
+})();
+load();
+</script></body></html>

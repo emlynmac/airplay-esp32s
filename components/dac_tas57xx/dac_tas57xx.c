@@ -743,11 +743,14 @@ esp_err_t dac_tas57xx_hf1_set(const tas57xx_hf1_config_t *cfg) {
   if (!cfg || s_dac_mutex == NULL) {
     return ESP_ERR_INVALID_ARG;
   }
+  esp_err_t err = tas57xx_hf1_validate(cfg);
+  if (err != ESP_OK) {
+    return err;
+  }
   xSemaphoreTake(s_dac_mutex, portMAX_DELAY);
   tas57xx_hf1_load_config_locked();
 
   tas57xx_dev_t *d = tas57xx_hf1_dev();
-  esp_err_t err = ESP_OK;
   if (d == NULL) {
     err = ESP_ERR_NOT_SUPPORTED;
   } else if (!s_flow_resident) {
