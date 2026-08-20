@@ -165,7 +165,8 @@ typedef struct {
   long hf_size;
   char hf_path[48];   // where hf_buf was loaded from, for writing it back
   bool is_sub;        // true for index > 0 (sub / .1 channel)
-  bool has_input_mix; // flow carries a recognised bi-amp input mixer
+  bool is_biamp;      // loaded flow is bi-amp, whatever the power state
+  bool has_input_mix; // its input mixer is live in the DSP right now
 } tas57xx_dev_t;
 
 static tas57xx_dev_t s_devs[TAS57XX_MAX_DEVICES];
@@ -659,6 +660,9 @@ static void tas57xx_load_hf(int i, bool multi) {
     fclose(f);
     if (d->hf_buf) {
       snprintf(d->hf_path, sizeof(d->hf_path), "%s", path);
+      // Which tuning map applies is a property of the file, so settle it here
+      // rather than at download — the amp may never have been powered up.
+      d->is_biamp = tas57xx_flow_has_input_mix(d->hf_buf);
       return;
     }
   }
@@ -692,12 +696,25 @@ static void tas57xx_load_hf(int i, bool multi) {
 static tas57xx_hf1_config_t s_hf1;
 static bool s_hf1_ready = false;
 
-/** Device 0 carries the mains flow, which is the one HF1 describes. */
-static tas57xx_dev_t *tas57xx_hf1_dev(void) {
-  if (s_dev_count == 0 || s_devs[0].hf_buf == NULL) {
+/**
+ * Device 0 carries the mains flow. HF1 and HF3 map coefficient RAM completely
+ * differently, so the bi-amp input mixer decides which map applies — tuning a
+ * flow with the wrong one would scribble over unrelated coefficients.
+ */
+static tas57xx_dev_t *tas57xx_flow_dev(bool want_biamp) {
+  if (s_dev_count == 0 || s_devs[0].hf_buf == NULL ||
+      s_devs[0].is_biamp != want_biamp) {
     return NULL;
   }
   return &s_devs[0];
+}
+
+static tas57xx_dev_t *tas57xx_hf1_dev(void) {
+  return tas57xx_flow_dev(false);
+}
+
+static tas57xx_dev_t *tas57xx_hf3_dev(void) {
+  return tas57xx_flow_dev(true);
 }
 
 // Caller must hold s_dac_mutex.
@@ -706,21 +723,49 @@ static void tas57xx_hf1_load_config_locked(void) {
     return;
   }
   tas57xx_hf1_defaults(&s_hf1);
+
+  tas57xx_dev_t *d = tas57xx_hf1_dev();
+  if (d == NULL) {
+    return; // no flow loaded yet, so try again once there is one
+  }
   s_hf1_ready = true;
+  tas57xx_hf1_read(d->hf_buf, (size_t)d->hf_size, s_hf1.sample_rate_hz, &s_hf1);
 
   FILE *f = fopen(HF1_CONFIG_PATH, "rb");
   if (!f) {
     return;
   }
-  tas57xx_hf1_config_t on_disk;
-  size_t n = fread(&on_disk, 1, sizeof(on_disk), f);
+  tas57xx_hf1_config_t saved;
+  size_t n = fread(&saved, 1, sizeof(saved), f);
   fclose(f);
-  if (n == sizeof(on_disk) && on_disk.magic == TAS57XX_HF1_CONFIG_MAGIC &&
-      on_disk.version == TAS57XX_HF1_CONFIG_VERSION) {
-    s_hf1 = on_disk;
+  if (n != sizeof(saved) || saved.magic != TAS57XX_HF1_CONFIG_MAGIC ||
+      saved.version != TAS57XX_HF1_CONFIG_VERSION) {
+    ESP_LOGW(TAG, "Ignoring unusable HF1 tuning at %s", HF1_CONFIG_PATH);
+    return;
+  }
+
+  /* The saved tuning names the filter shapes the image cannot, so prefer it —
+   * but only while it still reproduces the flow. Anything else and the flow
+   * has been replaced since, and it is the flow that is playing. */
+  uint8_t *scratch = malloc((size_t)d->hf_size);
+  if (scratch == NULL) {
+    return;
+  }
+  memcpy(scratch, d->hf_buf, (size_t)d->hf_size);
+  tas57xx_cram_sink_t sink = {.image = scratch,
+                              .image_size = (size_t)d->hf_size};
+  bool same = tas57xx_hf1_apply(&sink, &saved) == ESP_OK &&
+              memcmp(scratch, d->hf_buf, (size_t)d->hf_size) == 0;
+  free(scratch);
+
+  if (same) {
+    s_hf1 = saved;
     ESP_LOGI(TAG, "Loaded HF1 tuning from %s", HF1_CONFIG_PATH);
   } else {
-    ESP_LOGW(TAG, "Ignoring unusable HF1 tuning at %s", HF1_CONFIG_PATH);
+    ESP_LOGW(TAG,
+             "HF1 tuning at %s no longer matches the flow — showing the "
+             "flow's own tuning",
+             HF1_CONFIG_PATH);
   }
 }
 
@@ -837,6 +882,51 @@ esp_err_t dac_tas57xx_hf1_commit(void) {
   return err;
 }
 
+/** Re-read a device's committed flow file into its cache. Caller holds mutex.
+ */
+static esp_err_t tas57xx_reload_flow_locked(tas57xx_dev_t *d) {
+  FILE *f = fopen(d->hf_path, "rb");
+  if (!f) {
+    return ESP_ERR_NOT_FOUND;
+  }
+  fseek(f, 0, SEEK_END);
+  long size = ftell(f);
+  fseek(f, 0, SEEK_SET);
+  uint8_t *buf = size >= 2 ? malloc((size_t)size) : NULL;
+  esp_err_t err = ESP_OK;
+  if (buf && fread(buf, 1, (size_t)size, f) == (size_t)size) {
+    free(d->hf_buf);
+    d->hf_buf = buf;
+    d->hf_size = size;
+    d->is_biamp = tas57xx_flow_has_input_mix(d->hf_buf);
+  } else {
+    free(buf);
+    err = ESP_FAIL;
+  }
+  fclose(f);
+  return err;
+}
+
+/** Push the cached flow back down to the amplifiers. Caller holds mutex. */
+static void tas57xx_redownload_locked(void) {
+  if (!s_i2s_running || s_power_state == DAC_POWER_OFF) {
+    return;
+  }
+  tas57xx_enable_speaker(false);
+  tas57xx_reprogram_locked();
+  if (s_power_state != DAC_POWER_ON) {
+    return;
+  }
+  for (int i = 0; i < s_dev_count; i++) {
+    write_cmd(s_devs[i].handle, TAS57XX_ACTIVE);
+  }
+  vTaskDelay(pdMS_TO_TICKS(50));
+  for (int i = 0; i < s_dev_count; i++) {
+    write_cmd(s_devs[i].handle, TAS57XX_UNMUTE);
+  }
+  tas57xx_enable_speaker(true);
+}
+
 esp_err_t dac_tas57xx_hf1_revert(void) {
   if (s_dac_mutex == NULL) {
     return ESP_ERR_INVALID_STATE;
@@ -848,43 +938,175 @@ esp_err_t dac_tas57xx_hf1_revert(void) {
     return ESP_ERR_NOT_SUPPORTED;
   }
 
-  esp_err_t err = ESP_OK;
-  FILE *f = fopen(d->hf_path, "rb");
-  if (!f) {
-    err = ESP_ERR_NOT_FOUND;
-  } else {
-    fseek(f, 0, SEEK_END);
-    long size = ftell(f);
-    fseek(f, 0, SEEK_SET);
-    uint8_t *buf = size >= 2 ? malloc((size_t)size) : NULL;
-    if (buf && fread(buf, 1, (size_t)size, f) == (size_t)size) {
-      free(d->hf_buf);
-      d->hf_buf = buf;
-      d->hf_size = size;
-    } else {
-      free(buf);
-      err = ESP_FAIL;
-    }
-    fclose(f);
-  }
-
+  esp_err_t err = tas57xx_reload_flow_locked(d);
   if (err == ESP_OK) {
     s_hf1_ready = false;
     tas57xx_hf1_load_config_locked();
-    if (s_i2s_running && s_power_state != DAC_POWER_OFF) {
-      tas57xx_enable_speaker(false);
-      tas57xx_reprogram_locked();
-      if (s_power_state == DAC_POWER_ON) {
-        for (int i = 0; i < s_dev_count; i++) {
-          write_cmd(s_devs[i].handle, TAS57XX_ACTIVE);
-        }
-        vTaskDelay(pdMS_TO_TICKS(50));
-        for (int i = 0; i < s_dev_count; i++) {
-          write_cmd(s_devs[i].handle, TAS57XX_UNMUTE);
-        }
-        tas57xx_enable_speaker(true);
-      }
+    tas57xx_redownload_locked();
+  }
+  xSemaphoreGive(s_dac_mutex);
+  return err;
+}
+
+/* ---- HybridFlow 3 (bi-amp) tuning ------------------------------------- */
+
+#define HF3_CONFIG_PATH "/spiffs/hf/hf3.cfg"
+
+static tas57xx_hf3_config_t s_hf3;
+static bool s_hf3_ready = false;
+
+// Caller must hold s_dac_mutex.
+static void tas57xx_hf3_load_config_locked(void) {
+  if (s_hf3_ready) {
+    return;
+  }
+  tas57xx_hf3_defaults(&s_hf3);
+
+  tas57xx_dev_t *d = tas57xx_hf3_dev();
+  if (d == NULL) {
+    return; // no flow loaded yet, so try again once there is one
+  }
+  s_hf3_ready = true;
+  tas57xx_hf3_read(d->hf_buf, (size_t)d->hf_size, s_hf3.sample_rate_hz, &s_hf3);
+
+  FILE *f = fopen(HF3_CONFIG_PATH, "rb");
+  if (!f) {
+    return;
+  }
+  tas57xx_hf3_config_t saved;
+  size_t n = fread(&saved, 1, sizeof(saved), f);
+  fclose(f);
+  if (n != sizeof(saved) || saved.magic != TAS57XX_HF3_CONFIG_MAGIC ||
+      saved.version != TAS57XX_HF3_CONFIG_VERSION) {
+    ESP_LOGW(TAG, "Ignoring unusable HF3 tuning at %s", HF3_CONFIG_PATH);
+    return;
+  }
+
+  /* The saved tuning names the filter shapes the image cannot, so prefer it —
+   * but only while it still reproduces the flow. Anything else and the flow
+   * has been replaced since, and it is the flow that is playing. */
+  uint8_t *scratch = malloc((size_t)d->hf_size);
+  if (scratch == NULL) {
+    return;
+  }
+  memcpy(scratch, d->hf_buf, (size_t)d->hf_size);
+  tas57xx_cram_sink_t sink = {.image = scratch,
+                              .image_size = (size_t)d->hf_size};
+  bool same = tas57xx_hf3_apply(&sink, &saved) == ESP_OK &&
+              memcmp(scratch, d->hf_buf, (size_t)d->hf_size) == 0;
+  free(scratch);
+
+  if (same) {
+    s_hf3 = saved;
+    ESP_LOGI(TAG, "Loaded HF3 tuning from %s", HF3_CONFIG_PATH);
+  } else {
+    ESP_LOGW(TAG,
+             "HF3 tuning at %s no longer matches the flow — showing the "
+             "flow's own tuning",
+             HF3_CONFIG_PATH);
+  }
+}
+
+bool dac_tas57xx_hf3_available(void) {
+  return tas57xx_hf3_dev() != NULL;
+}
+
+esp_err_t dac_tas57xx_hf3_get(tas57xx_hf3_config_t *cfg) {
+  if (!cfg || s_dac_mutex == NULL) {
+    return ESP_ERR_INVALID_ARG;
+  }
+  xSemaphoreTake(s_dac_mutex, portMAX_DELAY);
+  tas57xx_hf3_load_config_locked();
+  *cfg = s_hf3;
+  xSemaphoreGive(s_dac_mutex);
+  return ESP_OK;
+}
+
+esp_err_t dac_tas57xx_hf3_set(const tas57xx_hf3_config_t *cfg) {
+  if (!cfg || s_dac_mutex == NULL) {
+    return ESP_ERR_INVALID_ARG;
+  }
+  esp_err_t err = tas57xx_hf3_validate(cfg);
+  if (err != ESP_OK) {
+    return err;
+  }
+  xSemaphoreTake(s_dac_mutex, portMAX_DELAY);
+  tas57xx_hf3_load_config_locked();
+
+  tas57xx_dev_t *d = tas57xx_hf3_dev();
+  if (d == NULL) {
+    err = ESP_ERR_NOT_SUPPORTED;
+  } else if (!s_flow_resident) {
+    s_hf3 = *cfg;
+  } else {
+    tas57xx_cram_sink_t sink = {.handle = d->handle};
+    err = tas57xx_hf3_apply(&sink, cfg);
+    if (err == ESP_OK) {
+      // apply() rewrites the input mixer, which is the channel selection
+      // rather than part of the tuning.
+      tas57xx_write_input_mix(d);
+      s_hf3 = *cfg;
     }
+  }
+  xSemaphoreGive(s_dac_mutex);
+  return err;
+}
+
+esp_err_t dac_tas57xx_hf3_commit(void) {
+  if (s_dac_mutex == NULL) {
+    return ESP_ERR_INVALID_STATE;
+  }
+  xSemaphoreTake(s_dac_mutex, portMAX_DELAY);
+  tas57xx_hf3_load_config_locked();
+
+  tas57xx_dev_t *d = tas57xx_hf3_dev();
+  if (d == NULL || d->hf_path[0] == '\0') {
+    xSemaphoreGive(s_dac_mutex);
+    return ESP_ERR_NOT_SUPPORTED;
+  }
+
+  uint8_t *img = malloc((size_t)d->hf_size);
+  if (img == NULL) {
+    xSemaphoreGive(s_dac_mutex);
+    return ESP_ERR_NO_MEM;
+  }
+  memcpy(img, d->hf_buf, (size_t)d->hf_size);
+
+  tas57xx_cram_sink_t sink = {.image = img, .image_size = (size_t)d->hf_size};
+  esp_err_t err = tas57xx_hf3_apply(&sink, &s_hf3);
+  if (err == ESP_OK) {
+    err = tas57xx_write_atomic(d->hf_path, img, (size_t)d->hf_size);
+  }
+  if (err == ESP_OK) {
+    err = tas57xx_write_atomic(HF3_CONFIG_PATH, &s_hf3, sizeof(s_hf3));
+  }
+  if (err == ESP_OK) {
+    free(d->hf_buf);
+    d->hf_buf = img;
+    ESP_LOGI(TAG, "Committed HF3 tuning to %s", d->hf_path);
+  } else {
+    free(img);
+  }
+  xSemaphoreGive(s_dac_mutex);
+  return err;
+}
+
+esp_err_t dac_tas57xx_hf3_revert(void) {
+  if (s_dac_mutex == NULL) {
+    return ESP_ERR_INVALID_STATE;
+  }
+  xSemaphoreTake(s_dac_mutex, portMAX_DELAY);
+  tas57xx_dev_t *d = tas57xx_hf3_dev();
+  if (d == NULL || d->hf_path[0] == '\0') {
+    xSemaphoreGive(s_dac_mutex);
+    return ESP_ERR_NOT_SUPPORTED;
+  }
+
+  esp_err_t err = tas57xx_reload_flow_locked(d);
+  if (err == ESP_OK) {
+    s_hf3_ready = false;
+    tas57xx_hf3_load_config_locked();
+    tas57xx_redownload_locked();
   }
   xSemaphoreGive(s_dac_mutex);
   return err;

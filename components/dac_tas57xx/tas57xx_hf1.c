@@ -492,6 +492,220 @@ esp_err_t tas57xx_hf1_validate(const tas57xx_hf1_config_t *cfg) {
   return tas57xx_hf1_apply(&sink, cfg);
 }
 
+/* ---- reading a tuning back out of a flow image ------------------------ */
+
+static float hf1_unq23(int32_t w) {
+  return (float)w / Q23_ONE;
+}
+static float hf1_unq23_unit(int32_t w) {
+  return (float)w / 8388608.0f;
+}
+
+static void hf1_read_bq(const uint8_t *img, size_t size, int word,
+                        uint32_t sample_rate_hz, tas57xx_bq_t *bq) {
+  int32_t s[TAS57XX_BQ_WORDS];
+  if (tas57xx_cram_read_image(img, size, word, s, TAS57XX_BQ_WORDS) == ESP_OK) {
+    tas57xx_bq_unpack(s, TAS57XX_BQ_NUM_FIRST, sample_rate_hz, bq);
+  }
+}
+
+/** Invert the one-pole smoother back to a time constant in milliseconds. */
+static float hf1_read_time(int32_t w, int constants, uint32_t sample_rate_hz) {
+  const float y = hf1_unq23_unit(w);
+  if (!(y > 0.0f) || y >= 1.0f) {
+    return 0.0f;
+  }
+  const float n = -log1pf(-y);
+  return n > 0.0f ? (float)constants * 1000.0f / ((float)sample_rate_hz * n)
+                  : 0.0f;
+}
+
+/**
+ * The bass enhancer's corner is carried by every section it drives, so it is
+ * read from the extraction high-pass, whose alpha gives the design frequency
+ * directly. Effect intensity is then whichever tabulated pole ratio the shelf
+ * lands nearest.
+ */
+static void hf1_read_pbe(const uint8_t *img, size_t size,
+                         uint32_t sample_rate_hz, tas57xx_hf1_config_t *cfg) {
+  const float fs = (float)sample_rate_hz;
+  int32_t s[TAS57XX_BQ_WORDS];
+
+  if (tas57xx_cram_read_image(img, size, hf1_pbe_extract[0].word, s,
+                              TAS57XX_BQ_WORDS) == ESP_OK) {
+    const float a2 = -hf1_unq23(s[1]);
+    const float alpha = (1.0f + a2) != 0.0f ? (1.0f - a2) / (1.0f + a2) : 0.0f;
+    const float arg = 2.0f * hf1_pbe_extract[0].q * alpha;
+    if (arg > 0.0f && arg < 1.0f) {
+      const float f0 = asinf(arg) * fs / (2.0f * (float)M_PI);
+      /* The extraction ratios are fitted, not exact, so the inverse lands a
+       * few hundredths of a Hz off a corner that was entered as a whole
+       * number. Round to where the tuner would recognise it. */
+      cfg->pbe.hpf_hz = roundf(f0 / hf1_pbe_extract[0].ratio * 10.0f) / 10.0f;
+    }
+  }
+
+  if (tas57xx_cram_read_image(img, size, HF1_PBE_EFFECT_WORD, s,
+                              TAS57XX_BQ_WORDS) == ESP_OK &&
+      cfg->pbe.hpf_hz > 0.0f) {
+    const float a1 = -2.0f * hf1_unq23(s[0]);
+    const float a2 = -hf1_unq23(s[1]);
+    float cw = (1.0f + a2) != 0.0f ? -a1 / (1.0f + a2) : 1.0f;
+    if (cw > 1.0f) {
+      cw = 1.0f;
+    } else if (cw < -1.0f) {
+      cw = -1.0f;
+    }
+    const float ratio = acosf(cw) * fs / (2.0f * (float)M_PI) / cfg->pbe.hpf_hz;
+    float best = 1e9f;
+    for (int i = 0; i < TAS57XX_HF1_PBE_EFFECT_MAX; i++) {
+      const float d = fabsf(hf1_pbe_effect[i].pole_ratio - ratio);
+      if (d < best) {
+        best = d;
+        cfg->pbe.effect = i + TAS57XX_HF1_PBE_EFFECT_MIN;
+      }
+    }
+  }
+
+  int32_t w;
+  if (tas57xx_cram_read_image(img, size, HF1_PBE_HARMONIC_WORD, &w, 1) ==
+      ESP_OK) {
+    const float v = hf1_unq23(w);
+    int h = v > 0.0f ? (int)lrintf((20.0f * log10f(v) + 50.0f) / 0.5f) : 0;
+    if (h < 0) {
+      h = 0;
+    } else if (h > TAS57XX_HF1_PBE_HARMONIC_MAX) {
+      h = TAS57XX_HF1_PBE_HARMONIC_MAX;
+    }
+    cfg->pbe.harmonic = h;
+  }
+}
+
+esp_err_t tas57xx_hf1_read(const uint8_t *img, size_t size,
+                           uint32_t sample_rate_hz, tas57xx_hf1_config_t *cfg) {
+  if (!img || !cfg || size < 2) {
+    return ESP_ERR_INVALID_ARG;
+  }
+  tas57xx_hf1_defaults(cfg);
+  cfg->sample_rate_hz = sample_rate_hz;
+
+  for (int i = 0; i < TAS57XX_HF1_EQ_BANDS; i++) {
+    hf1_read_bq(img, size, hf1_eq_slots[i], sample_rate_hz, &cfg->eq[i]);
+  }
+  for (int i = 0; i < TAS57XX_HF1_DBE_EQ_BANDS; i++) {
+    hf1_read_bq(img, size, hf1_dbe_eq_slots[i], sample_rate_hz,
+                &cfg->dbe_high[i]);
+    hf1_read_bq(img, size, hf1_dbe_ll_eq_slots[i], sample_rate_hz,
+                &cfg->dbe_low[i]);
+  }
+  for (int i = 0; i < TAS57XX_HF1_DRC_CROSS_SECTIONS; i++) {
+    hf1_read_bq(img, size, hf1_drc_cross_slots[i], sample_rate_hz,
+                &cfg->drc_cross[i]);
+  }
+
+  hf1_read_pbe(img, size, sample_rate_hz, cfg);
+
+  int32_t w[6];
+  if (tas57xx_cram_read_image(img, size, HF1_DBE_MIX_WORD, w, 2) == ESP_OK) {
+    const float lower = -hf1_unq23(w[0]);
+    const float scale = hf1_unq23(w[1]);
+    if (lower > 0.0f && scale > 0.0f) {
+      cfg->dbe_lower_db = 20.0f * log10f(lower) + 4.0f;
+      cfg->dbe_upper_db = 20.0f * log10f(lower + 0.03125f / scale) + 4.0f;
+    }
+  }
+
+  /* Unlike HF3's first-order sensing filter, this one is a bandpass, so both
+   * edges come back: the pole pair gives the geometric centre and Q, which the
+   * encoder built from exactly those two numbers. */
+  if (tas57xx_cram_read_image(img, size, HF1_SENSING_BAND_WORD, w,
+                              TAS57XX_BQ_WORDS) == ESP_OK) {
+    tas57xx_bq_t band;
+    tas57xx_bq_unpack(w, TAS57XX_BQ_NUM_FIRST, sample_rate_hz, &band);
+    if (band.freq_hz > 0.0f && band.q > 0.0f) {
+      const float inv = 1.0f / (2.0f * band.q);
+      cfg->sense_lower_hz = band.freq_hz * (sqrtf(inv * inv + 1.0f) - inv);
+      cfg->sense_upper_hz = cfg->sense_lower_hz + band.freq_hz / band.q;
+    }
+  }
+
+  int32_t one;
+  if (tas57xx_cram_read_image(img, size, HF1_ENERGY_WINDOW_WORD, &one, 1) ==
+      ESP_OK) {
+    const float v = hf1_unq23(one);
+    if (v > 0.0f) {
+      cfg->sense_window_ms = 1000.0f / (v * (float)sample_rate_hz);
+    }
+  }
+
+  if (tas57xx_cram_read_image(img, size, HF1_DRC_MIX_WORD, w,
+                              TAS57XX_HF1_DRC_BANDS) == ESP_OK) {
+    for (int i = 0; i < TAS57XX_HF1_DRC_BANDS; i++) {
+      cfg->drc_mix[i] = hf1_unq23(w[i]);
+    }
+  }
+
+  for (int band = 0; band < TAS57XX_HF1_DRC_BANDS; band++) {
+    if (tas57xx_cram_read_image(img, size, HF1_DRC_TIMING_WORD + band * 6, w,
+                                6) != ESP_OK) {
+      continue;
+    }
+    const float t[3] = {hf1_read_time(w[0], 1, sample_rate_hz),
+                        hf1_read_time(w[2], 3, sample_rate_hz),
+                        hf1_read_time(w[4], 3, sample_rate_hz)};
+    if (t[0] > 0.0f) {
+      cfg->drc_timing[band].energy_ms = t[0];
+    }
+    if (t[1] > 0.0f) {
+      cfg->drc_timing[band].attack_ms = t[1];
+    }
+    if (t[2] > 0.0f) {
+      cfg->drc_timing[band].decay_ms = t[2];
+    }
+  }
+
+  if (tas57xx_cram_read_image(img, size, HF1_DRC_CURVE_WORD, w,
+                              TAS57XX_HF1_DRC_REGIONS + 2) == ESP_OK) {
+    for (int i = 0; i < TAS57XX_HF1_DRC_REGIONS; i++) {
+      const float slope = 4.0f * hf1_unq23_unit(w[i]) + 1.0f;
+      if (slope > 1.0f) {
+        cfg->drc_region[i].mode = TAS57XX_HF1_DRC_EXPAND;
+        cfg->drc_region[i].ratio = slope;
+      } else if (slope > 0.0f) {
+        cfg->drc_region[i].mode = TAS57XX_HF1_DRC_COMPRESS;
+        cfg->drc_region[i].ratio = 1.0f / slope;
+      }
+    }
+    cfg->drc_thresh1_db = -128.0f * hf1_unq23_unit(w[TAS57XX_HF1_DRC_REGIONS]);
+    cfg->drc_thresh2_db =
+        -128.0f * hf1_unq23_unit(w[TAS57XX_HF1_DRC_REGIONS + 1]);
+  }
+
+  if (tas57xx_cram_read_image(img, size, HF1_SMOOTH_CLIP_WORD, w, 2) ==
+      ESP_OK) {
+    const float t = 2.0f * hf1_unq23(w[0]);
+    // Rounding can put an untouched limiter a hair above 0 dB, which apply()
+    // would then refuse.
+    if (t > 0.0f) {
+      const float db = 20.0f * log10f(t);
+      cfg->smooth_clip_db = db > 0.0f ? 0.0f : (db < -78.0f ? -78.0f : db);
+    }
+  }
+  if (tas57xx_cram_read_image(img, size, HF1_FINE_VOLUME_WORD, &one, 1) ==
+      ESP_OK) {
+    const float g = 2.0f * hf1_unq23(one);
+    if (g > 0.0f) {
+      const float db = 20.0f * log10f(g);
+      cfg->fine_volume_db =
+          db > TAS57XX_HF1_FINE_VOL_MAX_DB
+              ? TAS57XX_HF1_FINE_VOL_MAX_DB
+              : (db < TAS57XX_HF1_FINE_VOL_MIN_DB ? TAS57XX_HF1_FINE_VOL_MIN_DB
+                                                  : db);
+    }
+  }
+  return ESP_OK;
+}
+
 esp_err_t tas57xx_hf1_apply(tas57xx_cram_sink_t *sink,
                             const tas57xx_hf1_config_t *cfg) {
   if (!sink || !cfg) {

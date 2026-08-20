@@ -2,6 +2,7 @@
 
 #include "dac.h"
 #include "tas57xx_hf1.h"
+#include "tas57xx_hf3.h"
 
 /**
  * TAS57xx DAC driver ops — register with dac_register() before calling
@@ -61,7 +62,11 @@ int dac_tas57xx_get_device_count(void);
  */
 void dac_tas57xx_log_status(void);
 
-/** True when a hybrid flow is loaded and its tuning can be edited. */
+/**
+ * True when a full-range flow is loaded and its tuning can be edited. HF1 and
+ * HF3 map coefficient RAM differently, so at most one is ever available — the
+ * bi-amp input mixer is what tells them apart.
+ */
 bool dac_tas57xx_hf1_available(void);
 
 /** Read the current HF1 tuning. */
@@ -83,3 +88,18 @@ esp_err_t dac_tas57xx_hf1_commit(void);
 /** Reload the committed flow from SPIFFS and re-download it, dropping any
  * uncommitted tuning. */
 esp_err_t dac_tas57xx_hf1_revert(void);
+
+/** True when a bi-amp flow is loaded and its tuning can be edited. */
+bool dac_tas57xx_hf3_available(void);
+
+/** Read the current HF3 tuning. */
+esp_err_t dac_tas57xx_hf3_get(tas57xx_hf3_config_t *cfg);
+
+/** Audition an HF3 tuning on the running DSP without persisting it. */
+esp_err_t dac_tas57xx_hf3_set(const tas57xx_hf3_config_t *cfg);
+
+/** Bake the current HF3 tuning into the flow image and write it to SPIFFS. */
+esp_err_t dac_tas57xx_hf3_commit(void);
+
+/** Reload the committed bi-amp flow, dropping any uncommitted tuning. */
+esp_err_t dac_tas57xx_hf3_revert(void);
