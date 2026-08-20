@@ -504,8 +504,14 @@ esp_err_t tas57xx_hf1_validate(const tas57xx_hf1_config_t *cfg) {
 
 /* ---- reading a tuning back out of a flow image ------------------------ */
 
+/**
+ * 0x800000 is a legitimate -1.0: it is what PPC2 emits for a fully inverted
+ * mixer. Scaling by Q23_ONE overshoots that one code, so clamp instead of
+ * handing back a value the writers would reject as out of range.
+ */
 static float hf1_unq23(int32_t w) {
-  return (float)w / Q23_ONE;
+  float v = (float)w / Q23_ONE;
+  return v < -1.0f ? -1.0f : v;
 }
 static float hf1_unq23_unit(int32_t w) {
   return (float)w / 8388608.0f;
