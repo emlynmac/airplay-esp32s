@@ -23,7 +23,7 @@ extern "C" {
 /** Psychoacoustic bass enhancer settings, matching the PurePath Console pane.
  */
 typedef struct {
-  float hpf_hz; /**< extraction corner, 40-200 Hz */
+  float hpf_hz; /**< extraction corner, 50-300 Hz */
   int harmonic; /**< harmonic intensity, 0-100 (0 mutes the generator) */
   int effect;   /**< effect intensity, 1-5 */
 } tas57xx_hf1_pbe_t;
@@ -94,19 +94,46 @@ typedef struct {
   float decay_ms;
 } tas57xx_hf1_drc_timing_t;
 
+#define TAS57XX_HF1_DRC_CROSS_SECTIONS 4
+
+enum {
+  TAS57XX_HF1_DRC_CROSS_LOW = 0, /**< low band, one section */
+  TAS57XX_HF1_DRC_CROSS_MID_A,   /**< mid band, first section */
+  TAS57XX_HF1_DRC_CROSS_MID_B,   /**< mid band, second section */
+  TAS57XX_HF1_DRC_CROSS_HIGH,    /**< high band, one section */
+};
+
 /**
- * Set the two corners of the compander's 3-band crossover. All four sections
- * are written together because the mid band shares a corner with each of its
- * neighbours.
+ * Set the compander's band-split filters. The four sections are ordinary
+ * biquads and need not be the Linkwitz-Riley pair the defaults use, so they
+ * are written together rather than derived from two corner frequencies.
+ *
+ * The mid band is summed INVERTED by the flow's mixer, which is what makes a
+ * complementary Linkwitz-Riley split add back to flat. Any other alignment has
+ * to be judged on the composite response.
  */
-esp_err_t tas57xx_hf1_set_drc_crossover(const tas57xx_cram_sink_t *sink,
-                                        float low_hz, float high_hz,
-                                        uint32_t sample_rate_hz);
+esp_err_t tas57xx_hf1_set_drc_crossover(
+    const tas57xx_cram_sink_t *sink,
+    const tas57xx_bq_t sections[TAS57XX_HF1_DRC_CROSS_SECTIONS],
+    uint32_t sample_rate_hz);
 
 /** Set one compander band's detector timing. */
 esp_err_t tas57xx_hf1_set_drc_timing(const tas57xx_cram_sink_t *sink, int band,
                                      const tas57xx_hf1_drc_timing_t *timing,
                                      uint32_t sample_rate_hz);
+
+#define TAS57XX_HF1_DRC_MIX_MIN -1.0f
+#define TAS57XX_HF1_DRC_MIX_MAX 1.0f
+
+/**
+ * Set the three gains that sum the companded bands back together, low first.
+ *
+ * The flow ships with the mid at -1. That inversion is what makes the default
+ * complementary Linkwitz-Riley split recombine flat, so changing it without
+ * also rethinking the split will not sum flat.
+ */
+esp_err_t tas57xx_hf1_set_drc_mix(const tas57xx_cram_sink_t *sink,
+                                  const float gain[TAS57XX_HF1_DRC_BANDS]);
 
 #define TAS57XX_HF1_DRC_REGIONS   3
 #define TAS57XX_HF1_DRC_RATIO_MIN 0.2f
@@ -137,8 +164,21 @@ esp_err_t tas57xx_hf1_set_drc_curve(
 esp_err_t tas57xx_hf1_set_smooth_clip(const tas57xx_cram_sink_t *sink,
                                       float threshold_db);
 
+#define TAS57XX_HF1_FINE_VOL_MIN_DB -0.25f
+#define TAS57XX_HF1_FINE_VOL_MAX_DB 0.25f
+
+/**
+ * Set the flow's own fine volume trim. This is separate from the part's volume
+ * registers, which the main volume control still owns.
+ *
+ * The range matches the tuning tool's; the coefficient itself could hold up to
+ * +6.02 dB before its 1/2 headroom pad saturates.
+ */
+esp_err_t tas57xx_hf1_set_fine_volume(const tas57xx_cram_sink_t *sink,
+                                      float gain_db);
+
 #define TAS57XX_HF1_CONFIG_MAGIC   0x48463145u /* "HF1E" */
-#define TAS57XX_HF1_CONFIG_VERSION 2u
+#define TAS57XX_HF1_CONFIG_VERSION 1u
 
 /**
  * Every tunable parameter of the flow, in one blob.
@@ -163,18 +203,25 @@ typedef struct {
   float sense_upper_hz;
   float sense_window_ms;
 
-  float drc_low_hz;
-  float drc_high_hz;
+  tas57xx_bq_t drc_cross[TAS57XX_HF1_DRC_CROSS_SECTIONS];
+  float drc_mix[TAS57XX_HF1_DRC_BANDS];
   tas57xx_hf1_drc_timing_t drc_timing[TAS57XX_HF1_DRC_BANDS];
   tas57xx_hf1_drc_region_t drc_region[TAS57XX_HF1_DRC_REGIONS];
   float drc_thresh1_db;
   float drc_thresh2_db;
 
   float smooth_clip_db;
+  float fine_volume_db;
 } tas57xx_hf1_config_t;
 
 /** Fill in a neutral tuning: flat EQ, bass enhancer muted, compander flat. */
 void tas57xx_hf1_defaults(tas57xx_hf1_config_t *cfg);
+
+/**
+ * Range-check a whole config without writing anything, so a tuning cannot be
+ * stored while the DSP is asleep and only turn out to be invalid later.
+ */
+esp_err_t tas57xx_hf1_validate(const tas57xx_hf1_config_t *cfg);
 
 /**
  * Write a whole tuning to a live device or into a flow image.

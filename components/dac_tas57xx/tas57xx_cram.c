@@ -57,17 +57,35 @@ void tas57xx_bq_unity(tas57xx_bq_layout_t layout,
 static double subtype_q(tas57xx_bq_subtype_t subtype, double q) {
   switch (subtype) {
   case TAS57XX_BQ_SUB_BUTTERWORTH_2:
-    // PurePath Console emits the rounded literal, not 1/sqrt(2); matching it
-    // exactly is worth 30 LSB.
+    // The tuning tool stores rounded literals rather than the exact algebraic
+    // values, so 0.707 rather than 1/sqrt(2). Worth 30 LSB.
     return 0.707;
   case TAS57XX_BQ_SUB_BESSEL_2:
-    return 1.0 / sqrt(3.0);
+    // Also a rounded literal, not sqrt(3)/3; exact against 30 Hz and 1 kHz
+    // captures.
+    return 0.58;
   case TAS57XX_BQ_SUB_CHEBYSHEV_2:
-    return 0.8637; // 0.5 dB passband ripple
+    // Chebyshev is the exception: exact algebraic values, not rounded ones.
+    return 0.8637210; // 0.5 dB passband ripple
   case TAS57XX_BQ_SUB_LINKWITZ_RILEY_2:
     return 0.5;
   default:
     return q;
+  }
+}
+
+/**
+ * Pole radius relative to the passband edge. Butterworth, Bessel and
+ * Linkwitz-Riley put the pole on the edge; Chebyshev trades that for its
+ * ripple, so the entered frequency is the ripple edge and the pole sits outside
+ * it for a low-pass, inside for a high-pass.
+ */
+static double subtype_freq_scale(tas57xx_bq_subtype_t subtype) {
+  switch (subtype) {
+  case TAS57XX_BQ_SUB_CHEBYSHEV_2:
+    return 1.2313418; // 0.5 dB ripple
+  default:
+    return 1.0;
   }
 }
 
@@ -97,10 +115,21 @@ static void design(const tas57xx_bq_t *bq, double fs, double b[3],
   } else if (f0 > fs * 0.49) {
     f0 = fs * 0.49;
   }
-  double w = 2.0 * M_PI * f0 / fs;
-  double cw = cos(w), sw = sin(w);
   bool is_pass =
       bq->type == TAS57XX_BQ_LOWPASS || bq->type == TAS57XX_BQ_HIGHPASS;
+  const double scale = is_pass ? subtype_freq_scale(bq->subtype) : 1.0;
+  if (scale != 1.0) {
+    // The ratio scales the analog prototype, so it lands on the prewarped
+    // frequency rather than the entered one.
+    double k = tan(M_PI * f0 / fs);
+    k = bq->type == TAS57XX_BQ_LOWPASS ? k * scale : k / scale;
+    f0 = atan(k) * fs / M_PI;
+    if (f0 > fs * 0.49) {
+      f0 = fs * 0.49;
+    }
+  }
+  double w = 2.0 * M_PI * f0 / fs;
+  double cw = cos(w), sw = sin(w);
 
   if (bq->type == TAS57XX_BQ_PHASE_1 ||
       (is_pass && bq->subtype == TAS57XX_BQ_SUB_BUTTERWORTH_1)) {
@@ -425,6 +454,12 @@ esp_err_t tas57xx_cram_commit(tas57xx_cram_sink_t *sink) {
   tas57xx_cram_batch_t *b = sink->batch;
   esp_err_t err = ESP_OK;
 
+  if (sink->dry_run) {
+    free(b);
+    sink->batch = NULL;
+    return ESP_OK;
+  }
+
   if (sink->image) {
     for (int w = 0; w < TAS57XX_CRAM_WORD_COUNT && err == ESP_OK; w++) {
       if (b->dirty[w]) {
@@ -459,7 +494,8 @@ esp_err_t tas57xx_cram_commit(tas57xx_cram_sink_t *sink) {
 
 esp_err_t tas57xx_cram_write(const tas57xx_cram_sink_t *sink, int word,
                              const int32_t *words, int count) {
-  if (!sink || (!sink->handle && !sink->image) || !words || count <= 0) {
+  if (!sink || (!sink->handle && !sink->image && !sink->dry_run) || !words ||
+      count <= 0) {
     return ESP_ERR_INVALID_ARG;
   }
   uint8_t page, reg;

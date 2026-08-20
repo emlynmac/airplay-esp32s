@@ -7,11 +7,13 @@
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
+#include <math.h>
 #include <sys/stat.h>
 #include <dirent.h>
 
 #include "esp_wifi.h"
 
+#include "playback_control.h"
 #include "settings.h"
 #include "led.h"
 #include "wifi.h"
@@ -524,6 +526,66 @@ static esp_err_t channel_mode_post_handler(httpd_req_t *req) {
 }
 
 #ifdef DAC_HAS_SUB_OFFSET
+/* AirPlay dB scale, matching playback_control's clamp. */
+#define VOLUME_UI_MIN_DB -30.0f
+#define VOLUME_UI_MAX_DB 0.0f
+
+static esp_err_t volume_get_handler(httpd_req_t *req) {
+  float db = -15.0f;
+  settings_get_volume(&db);
+  cJSON *json = cJSON_CreateObject();
+  cJSON_AddNumberToObject(json, "volume_db", db);
+  cJSON_AddNumberToObject(json, "min", VOLUME_UI_MIN_DB);
+  cJSON_AddNumberToObject(json, "max", VOLUME_UI_MAX_DB);
+  cJSON_AddBoolToObject(json, "muted", playback_control_is_muted());
+  cJSON_AddBoolToObject(json, "success", true);
+  char *json_str = cJSON_Print(json);
+  httpd_resp_set_type(req, "application/json");
+  httpd_resp_send(req, json_str, HTTPD_RESP_USE_STRLEN);
+  free(json_str);
+  cJSON_Delete(json);
+  return ESP_OK;
+}
+
+static esp_err_t volume_post_handler(httpd_req_t *req) {
+  char *content = recv_body(req, 512);
+  if (!content) {
+    httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Invalid body");
+    return ESP_FAIL;
+  }
+  cJSON *json = cJSON_Parse(content);
+  free(content);
+  cJSON *val = json ? cJSON_GetObjectItem(json, "volume_db") : NULL;
+  if (!cJSON_IsNumber(val)) {
+    cJSON_Delete(json);
+    httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Expected volume_db");
+    return ESP_FAIL;
+  }
+  float db = (float)val->valuedouble;
+  bool persist = cJSON_IsTrue(cJSON_GetObjectItem(json, "persist"));
+  cJSON_Delete(json);
+  if (db < VOLUME_UI_MIN_DB) {
+    db = VOLUME_UI_MIN_DB;
+  }
+  if (db > VOLUME_UI_MAX_DB) {
+    db = VOLUME_UI_MAX_DB;
+  }
+  settings_set_volume(db);
+  if (persist) {
+    settings_persist_volume();
+  }
+
+  cJSON *response = cJSON_CreateObject();
+  cJSON_AddBoolToObject(response, "success", true);
+  cJSON_AddNumberToObject(response, "volume_db", db);
+  char *json_str = cJSON_Print(response);
+  httpd_resp_set_type(req, "application/json");
+  httpd_resp_send(req, json_str, HTTPD_RESP_USE_STRLEN);
+  free(json_str);
+  cJSON_Delete(response);
+  return ESP_OK;
+}
+
 static esp_err_t sub_offset_get_handler(httpd_req_t *req) {
   cJSON *json = cJSON_CreateObject();
   cJSON_AddNumberToObject(json, "offset", dac_get_sub_offset_db());
@@ -834,6 +896,11 @@ static esp_err_t system_info_handler(httpd_req_t *req) {
 #else
   cJSON_AddBoolToObject(info, "dual_supported", false);
 #endif
+#ifdef CONFIG_DAC_TAS57XX
+  cJSON_AddBoolToObject(info, "hf1_supported", dac_tas57xx_hf1_available());
+#else
+  cJSON_AddBoolToObject(info, "hf1_supported", false);
+#endif
 
   cJSON_AddItemToObject(json, "info", info);
   cJSON_AddBoolToObject(json, "success", true);
@@ -1024,6 +1091,303 @@ static esp_err_t fs_list_handler(httpd_req_t *req) {
   cJSON_Delete(json);
   return ESP_OK;
 }
+
+/* ================================================================== */
+/*  HybridFlow 1 tuning  (only when TAS57xx DAC is configured)         */
+/* ================================================================== */
+
+#ifdef CONFIG_DAC_TAS57XX
+
+/* A float widened to double carries its representation error into the JSON
+ * (0.707f becomes 0.707000017166), which then shows up in the UI's inputs. */
+static double hf1_round(float v, double scale) {
+  return round((double)v * scale) / scale;
+}
+
+static void hf1_add_float(cJSON *o, const char *name, float v) {
+  cJSON_AddNumberToObject(o, name, hf1_round(v, 1e4));
+}
+
+static cJSON *hf1_bq_to_json(const tas57xx_bq_t *bq) {
+  cJSON *o = cJSON_CreateObject();
+  cJSON_AddNumberToObject(o, "type", (double)bq->type);
+  cJSON_AddNumberToObject(o, "sub", (double)bq->subtype);
+  hf1_add_float(o, "freq", bq->freq_hz);
+  hf1_add_float(o, "q", bq->q);
+  hf1_add_float(o, "gain", bq->gain_db);
+  cJSON *c = cJSON_AddArrayToObject(o, "coeff");
+  for (int i = 0; i < TAS57XX_BQ_WORDS; i++) {
+    // 8 places keeps the DSP's 1.23 resolution, which 4 would quantise away.
+    cJSON_AddItemToArray(c, cJSON_CreateNumber(hf1_round(bq->coeff[i], 1e8)));
+  }
+  return o;
+}
+
+static void hf1_bq_from_json(const cJSON *o, tas57xx_bq_t *bq) {
+  if (!cJSON_IsObject(o)) {
+    return;
+  }
+  const cJSON *v = cJSON_GetObjectItem(o, "type");
+  if (json_int_in_range(v, 0, TAS57XX_BQ_TYPE_MAX - 1)) {
+    bq->type = (tas57xx_bq_type_t)v->valueint;
+  }
+  v = cJSON_GetObjectItem(o, "sub");
+  if (json_int_in_range(v, 0, TAS57XX_BQ_SUB_MAX - 1)) {
+    bq->subtype = (tas57xx_bq_subtype_t)v->valueint;
+  }
+  v = cJSON_GetObjectItem(o, "freq");
+  if (cJSON_IsNumber(v)) {
+    bq->freq_hz = (float)v->valuedouble;
+  }
+  v = cJSON_GetObjectItem(o, "q");
+  if (cJSON_IsNumber(v)) {
+    bq->q = (float)v->valuedouble;
+  }
+  v = cJSON_GetObjectItem(o, "gain");
+  if (cJSON_IsNumber(v)) {
+    bq->gain_db = (float)v->valuedouble;
+  }
+  v = cJSON_GetObjectItem(o, "coeff");
+  if (cJSON_IsArray(v) && cJSON_GetArraySize(v) == TAS57XX_BQ_WORDS) {
+    for (int i = 0; i < TAS57XX_BQ_WORDS; i++) {
+      const cJSON *n = cJSON_GetArrayItem(v, i);
+      if (cJSON_IsNumber(n)) {
+        bq->coeff[i] = (float)n->valuedouble;
+      }
+    }
+  }
+}
+
+static void hf1_num_from_json(const cJSON *parent, const char *key,
+                              float *dst) {
+  const cJSON *v = cJSON_GetObjectItem(parent, key);
+  if (cJSON_IsNumber(v)) {
+    *dst = (float)v->valuedouble;
+  }
+}
+
+static cJSON *hf1_config_to_json(const tas57xx_hf1_config_t *cfg) {
+  cJSON *root = cJSON_CreateObject();
+  cJSON_AddBoolToObject(root, "available", dac_tas57xx_hf1_available());
+  cJSON_AddNumberToObject(root, "sample_rate", (double)cfg->sample_rate_hz);
+
+  cJSON *eq = cJSON_AddArrayToObject(root, "eq");
+  for (int i = 0; i < TAS57XX_HF1_EQ_BANDS; i++) {
+    cJSON_AddItemToArray(eq, hf1_bq_to_json(&cfg->eq[i]));
+  }
+
+  cJSON *pbe = cJSON_AddObjectToObject(root, "pbe");
+  hf1_add_float(pbe, "hpf", cfg->pbe.hpf_hz);
+  cJSON_AddNumberToObject(pbe, "harmonic", cfg->pbe.harmonic);
+  cJSON_AddNumberToObject(pbe, "effect", cfg->pbe.effect);
+
+  cJSON *dbe = cJSON_AddObjectToObject(root, "dbe");
+  cJSON *hi = cJSON_AddArrayToObject(dbe, "high");
+  cJSON *lo = cJSON_AddArrayToObject(dbe, "low");
+  for (int i = 0; i < TAS57XX_HF1_DBE_EQ_BANDS; i++) {
+    cJSON_AddItemToArray(hi, hf1_bq_to_json(&cfg->dbe_high[i]));
+    cJSON_AddItemToArray(lo, hf1_bq_to_json(&cfg->dbe_low[i]));
+  }
+  hf1_add_float(dbe, "lower_db", cfg->dbe_lower_db);
+  hf1_add_float(dbe, "upper_db", cfg->dbe_upper_db);
+  hf1_add_float(dbe, "sense_lo", cfg->sense_lower_hz);
+  hf1_add_float(dbe, "sense_hi", cfg->sense_upper_hz);
+  hf1_add_float(dbe, "window_ms", cfg->sense_window_ms);
+
+  cJSON *drc = cJSON_AddObjectToObject(root, "drc");
+  cJSON *cross = cJSON_AddArrayToObject(drc, "cross");
+  for (int i = 0; i < TAS57XX_HF1_DRC_CROSS_SECTIONS; i++) {
+    cJSON_AddItemToArray(cross, hf1_bq_to_json(&cfg->drc_cross[i]));
+  }
+  cJSON *mix = cJSON_AddArrayToObject(drc, "mix");
+  for (int i = 0; i < TAS57XX_HF1_DRC_BANDS; i++) {
+    cJSON_AddItemToArray(mix,
+                         cJSON_CreateNumber(hf1_round(cfg->drc_mix[i], 1e4)));
+  }
+  cJSON *timing = cJSON_AddArrayToObject(drc, "timing");
+  for (int i = 0; i < TAS57XX_HF1_DRC_BANDS; i++) {
+    cJSON *t = cJSON_CreateObject();
+    hf1_add_float(t, "energy", cfg->drc_timing[i].energy_ms);
+    hf1_add_float(t, "attack", cfg->drc_timing[i].attack_ms);
+    hf1_add_float(t, "decay", cfg->drc_timing[i].decay_ms);
+    cJSON_AddItemToArray(timing, t);
+  }
+  cJSON *regions = cJSON_AddArrayToObject(drc, "regions");
+  for (int i = 0; i < TAS57XX_HF1_DRC_REGIONS; i++) {
+    cJSON *r = cJSON_CreateObject();
+    cJSON_AddNumberToObject(r, "mode", cfg->drc_region[i].mode);
+    hf1_add_float(r, "ratio", cfg->drc_region[i].ratio);
+    cJSON_AddItemToArray(regions, r);
+  }
+  hf1_add_float(drc, "thresh1", cfg->drc_thresh1_db);
+  hf1_add_float(drc, "thresh2", cfg->drc_thresh2_db);
+
+  hf1_add_float(root, "smooth_clip", cfg->smooth_clip_db);
+  hf1_add_float(root, "fine_volume", cfg->fine_volume_db);
+  return root;
+}
+
+/* Overlays whatever the body supplies onto the current tuning, so a client can
+ * send one section without having to echo the rest back correctly. */
+static void hf1_config_from_json(const cJSON *root, tas57xx_hf1_config_t *cfg) {
+  const cJSON *v = cJSON_GetObjectItem(root, "sample_rate");
+  if (json_int_in_range(v, 8000, 192000)) {
+    cfg->sample_rate_hz = (uint32_t)v->valueint;
+  }
+
+  const cJSON *eq = cJSON_GetObjectItem(root, "eq");
+  if (cJSON_IsArray(eq)) {
+    int n = cJSON_GetArraySize(eq);
+    for (int i = 0; i < n && i < TAS57XX_HF1_EQ_BANDS; i++) {
+      hf1_bq_from_json(cJSON_GetArrayItem(eq, i), &cfg->eq[i]);
+    }
+  }
+
+  const cJSON *pbe = cJSON_GetObjectItem(root, "pbe");
+  if (cJSON_IsObject(pbe)) {
+    hf1_num_from_json(pbe, "hpf", &cfg->pbe.hpf_hz);
+    v = cJSON_GetObjectItem(pbe, "harmonic");
+    if (json_int_in_range(v, 0, TAS57XX_HF1_PBE_HARMONIC_MAX)) {
+      cfg->pbe.harmonic = v->valueint;
+    }
+    v = cJSON_GetObjectItem(pbe, "effect");
+    if (json_int_in_range(v, TAS57XX_HF1_PBE_EFFECT_MIN,
+                          TAS57XX_HF1_PBE_EFFECT_MAX)) {
+      cfg->pbe.effect = v->valueint;
+    }
+  }
+
+  const cJSON *dbe = cJSON_GetObjectItem(root, "dbe");
+  if (cJSON_IsObject(dbe)) {
+    const cJSON *hi = cJSON_GetObjectItem(dbe, "high");
+    const cJSON *lo = cJSON_GetObjectItem(dbe, "low");
+    for (int i = 0; i < TAS57XX_HF1_DBE_EQ_BANDS; i++) {
+      if (cJSON_IsArray(hi)) {
+        hf1_bq_from_json(cJSON_GetArrayItem(hi, i), &cfg->dbe_high[i]);
+      }
+      if (cJSON_IsArray(lo)) {
+        hf1_bq_from_json(cJSON_GetArrayItem(lo, i), &cfg->dbe_low[i]);
+      }
+    }
+    hf1_num_from_json(dbe, "lower_db", &cfg->dbe_lower_db);
+    hf1_num_from_json(dbe, "upper_db", &cfg->dbe_upper_db);
+    hf1_num_from_json(dbe, "sense_lo", &cfg->sense_lower_hz);
+    hf1_num_from_json(dbe, "sense_hi", &cfg->sense_upper_hz);
+    hf1_num_from_json(dbe, "window_ms", &cfg->sense_window_ms);
+  }
+
+  const cJSON *drc = cJSON_GetObjectItem(root, "drc");
+  if (cJSON_IsObject(drc)) {
+    const cJSON *cross = cJSON_GetObjectItem(drc, "cross");
+    if (cJSON_IsArray(cross) &&
+        cJSON_GetArraySize(cross) == TAS57XX_HF1_DRC_CROSS_SECTIONS) {
+      for (int i = 0; i < TAS57XX_HF1_DRC_CROSS_SECTIONS; i++) {
+        hf1_bq_from_json(cJSON_GetArrayItem(cross, i), &cfg->drc_cross[i]);
+      }
+    }
+    const cJSON *mix = cJSON_GetObjectItem(drc, "mix");
+    if (cJSON_IsArray(mix) &&
+        cJSON_GetArraySize(mix) == TAS57XX_HF1_DRC_BANDS) {
+      for (int i = 0; i < TAS57XX_HF1_DRC_BANDS; i++) {
+        const cJSON *v = cJSON_GetArrayItem(mix, i);
+        if (cJSON_IsNumber(v)) {
+          cfg->drc_mix[i] = (float)v->valuedouble;
+        }
+      }
+    }
+    const cJSON *timing = cJSON_GetObjectItem(drc, "timing");
+    for (int i = 0; cJSON_IsArray(timing) && i < TAS57XX_HF1_DRC_BANDS; i++) {
+      const cJSON *t = cJSON_GetArrayItem(timing, i);
+      if (cJSON_IsObject(t)) {
+        hf1_num_from_json(t, "energy", &cfg->drc_timing[i].energy_ms);
+        hf1_num_from_json(t, "attack", &cfg->drc_timing[i].attack_ms);
+        hf1_num_from_json(t, "decay", &cfg->drc_timing[i].decay_ms);
+      }
+    }
+    const cJSON *regions = cJSON_GetObjectItem(drc, "regions");
+    for (int i = 0; cJSON_IsArray(regions) && i < TAS57XX_HF1_DRC_REGIONS;
+         i++) {
+      const cJSON *r = cJSON_GetArrayItem(regions, i);
+      if (cJSON_IsObject(r)) {
+        v = cJSON_GetObjectItem(r, "mode");
+        if (json_int_in_range(v, 0, TAS57XX_HF1_DRC_EXPAND)) {
+          cfg->drc_region[i].mode = v->valueint;
+        }
+        hf1_num_from_json(r, "ratio", &cfg->drc_region[i].ratio);
+      }
+    }
+    hf1_num_from_json(drc, "thresh1", &cfg->drc_thresh1_db);
+    hf1_num_from_json(drc, "thresh2", &cfg->drc_thresh2_db);
+  }
+
+  hf1_num_from_json(root, "smooth_clip", &cfg->smooth_clip_db);
+  hf1_num_from_json(root, "fine_volume", &cfg->fine_volume_db);
+}
+
+static esp_err_t hf1_send_result(httpd_req_t *req, esp_err_t err) {
+  cJSON *resp = cJSON_CreateObject();
+  cJSON_AddBoolToObject(resp, "success", err == ESP_OK);
+  if (err != ESP_OK) {
+    cJSON_AddStringToObject(resp, "error", esp_err_to_name(err));
+  }
+  char *s = cJSON_PrintUnformatted(resp);
+  httpd_resp_set_type(req, "application/json");
+  httpd_resp_send(req, s, HTTPD_RESP_USE_STRLEN);
+  free(s);
+  cJSON_Delete(resp);
+  return ESP_OK;
+}
+
+static esp_err_t hf1_page_handler(httpd_req_t *req) {
+  return serve_spiffs_file(req, "/spiffs/www/hf1.html", "text/html");
+}
+
+static esp_err_t hf1_get_handler(httpd_req_t *req) {
+  tas57xx_hf1_config_t cfg;
+  if (dac_tas57xx_hf1_get(&cfg) != ESP_OK) {
+    return hf1_send_result(req, ESP_ERR_INVALID_STATE);
+  }
+  cJSON *root = hf1_config_to_json(&cfg);
+  char *s = cJSON_PrintUnformatted(root);
+  httpd_resp_set_type(req, "application/json");
+  httpd_resp_send(req, s, HTTPD_RESP_USE_STRLEN);
+  free(s);
+  cJSON_Delete(root);
+  return ESP_OK;
+}
+
+static esp_err_t hf1_post_handler(httpd_req_t *req) {
+  char *content = recv_body(req, 12288);
+  if (!content) {
+    httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Body required (max 8KB)");
+    return ESP_FAIL;
+  }
+  cJSON *root = cJSON_Parse(content);
+  free(content);
+  if (!root) {
+    httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Invalid JSON");
+    return ESP_FAIL;
+  }
+
+  tas57xx_hf1_config_t cfg;
+  esp_err_t err = dac_tas57xx_hf1_get(&cfg);
+  if (err == ESP_OK) {
+    hf1_config_from_json(root, &cfg);
+    err = dac_tas57xx_hf1_set(&cfg);
+  }
+  cJSON_Delete(root);
+  return hf1_send_result(req, err);
+}
+
+static esp_err_t hf1_commit_handler(httpd_req_t *req) {
+  return hf1_send_result(req, dac_tas57xx_hf1_commit());
+}
+
+static esp_err_t hf1_revert_handler(httpd_req_t *req) {
+  return hf1_send_result(req, dac_tas57xx_hf1_revert());
+}
+
+#endif /* CONFIG_DAC_TAS57XX */
 
 /* ================================================================== */
 /*  Biquad chains  (only when TAS58xx DAC is configured)               */
@@ -1367,6 +1731,9 @@ esp_err_t web_server_start(uint16_t port) {
   // dual DAC wiring plus the biquad page/API
   config.max_uri_handlers += 7;
 #endif
+#ifdef CONFIG_DAC_TAS57XX
+  config.max_uri_handlers += 5; // HF1 page + get/post/commit/revert
+#endif
   config.max_resp_headers = 8;
   config.stack_size = 8192;
 
@@ -1444,6 +1811,16 @@ esp_err_t web_server_start(uint16_t port) {
                                        .method = HTTP_POST,
                                        .handler = channel_mode_post_handler};
   httpd_register_uri_handler(s_server, &channel_mode_post_uri);
+
+  httpd_uri_t volume_get_uri = {.uri = "/api/audio/volume",
+                                .method = HTTP_GET,
+                                .handler = volume_get_handler};
+  httpd_register_uri_handler(s_server, &volume_get_uri);
+
+  httpd_uri_t volume_post_uri = {.uri = "/api/audio/volume",
+                                 .method = HTTP_POST,
+                                 .handler = volume_post_handler};
+  httpd_register_uri_handler(s_server, &volume_post_uri);
 
 #ifdef DAC_HAS_SUB_OFFSET
   httpd_uri_t sub_offset_get_uri = {.uri = "/api/audio/sub",
@@ -1562,6 +1939,30 @@ esp_err_t web_server_start(uint16_t port) {
                                .method = HTTP_POST,
                                .handler = bq_revert_handler};
   httpd_register_uri_handler(s_server, &bq_revert_uri);
+#endif
+
+#ifdef CONFIG_DAC_TAS57XX
+  httpd_uri_t hf1_page_uri = {
+      .uri = "/hf1", .method = HTTP_GET, .handler = hf1_page_handler};
+  httpd_register_uri_handler(s_server, &hf1_page_uri);
+
+  httpd_uri_t hf1_get_uri = {
+      .uri = "/api/hf1", .method = HTTP_GET, .handler = hf1_get_handler};
+  httpd_register_uri_handler(s_server, &hf1_get_uri);
+
+  httpd_uri_t hf1_post_uri = {
+      .uri = "/api/hf1", .method = HTTP_POST, .handler = hf1_post_handler};
+  httpd_register_uri_handler(s_server, &hf1_post_uri);
+
+  httpd_uri_t hf1_commit_uri = {.uri = "/api/hf1/commit",
+                                .method = HTTP_POST,
+                                .handler = hf1_commit_handler};
+  httpd_register_uri_handler(s_server, &hf1_commit_uri);
+
+  httpd_uri_t hf1_revert_uri = {.uri = "/api/hf1/revert",
+                                .method = HTTP_POST,
+                                .handler = hf1_revert_handler};
+  httpd_register_uri_handler(s_server, &hf1_revert_uri);
 #endif
 
   log_stream_register(s_server);
