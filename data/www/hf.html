@@ -80,6 +80,8 @@ input:disabled{opacity:0.3}
 .two{display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:16px}
 .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px}
 .fld label{display:block;font-size:11px;color:#888;margin-bottom:4px}
+.fld label .val{float:right;color:#ddd;font-variant-numeric:tabular-nums}
+.fld input[type=range]{width:100%;accent-color:#e94560;padding:0}
 .rowhead{display:grid;grid-template-columns:70px 1fr 1fr 1fr;gap:6px;margin-bottom:6px;font-size:10px;color:#666;text-transform:uppercase;letter-spacing:0.5px}
 .row3{display:grid;grid-template-columns:70px 1fr 1fr 1fr;gap:6px;align-items:center;margin-bottom:6px}
 .row3 .n{font-size:11px;color:#888}
@@ -154,7 +156,7 @@ level, and PBE last. Each stage assumes the ones before it are settled.</p>
 </div>
 
 <div class='chainwrap' id='chain3' style='display:none'>
-<svg class='chain' viewBox='0 0 620 112' preserveAspectRatio='xMidYMid meet'>
+<svg class='chain' viewBox='0 0 718 112' preserveAspectRatio='xMidYMid meet'>
 <defs><marker id='arc3' viewBox='0 0 8 8' refX='7' refY='4' markerWidth='5'
  markerHeight='5' orient='auto'><path d='M0 0 L8 4 L0 8 z' fill='#5a6478'/></marker></defs>
 <g fill='none' stroke='#5a6478' stroke-width='1.5' marker-end='url(#arc3)'>
@@ -163,7 +165,8 @@ level, and PBE last. Each stage assumes the ones before it are settled.</p>
 <path d='M152 28 H166'/><path d='M220 28 H234'/>
 <path d='M152 84 H166'/>
 <path d='M288 28 H318 V40'/><path d='M230 84 H318 V72'/>
-<path d='M334 56 H346'/><path d='M450 56 H464'/><path d='M568 56 H584'/>
+<path d='M334 56 H346'/><path d='M450 56 H464'/><path d='M568 56 H582'/>
+<path d='M666 56 H682'/>
 </g>
 <circle cx='40' cy='56' r='3.5' fill='#5a6478'/>
 <circle cx='318' cy='56' r='14' fill='rgba(233,69,96,0.15)' stroke='#e94560' stroke-width='1.5'/>
@@ -184,7 +187,9 @@ level, and PBE last. Each stage assumes the ones before it are settled.</p>
 <rect x='346' y='36' width='104' height='40' rx='8'/><text x='398' y='60'>Compander</text></g>
 <g class='chip hit' data-sect='out' onclick='pick("out")'>
 <rect x='464' y='36' width='104' height='40' rx='8'/><text x='516' y='60'>Smooth clip</text></g>
-<text x='600' y='60' fill='#5f6875'>Out</text>
+<g class='chip hit' data-sect='vol' onclick='pick("vol")'>
+<rect x='582' y='36' width='84' height='40' rx='8'/><text x='624' y='60'>Volume</text></g>
+<text x='698' y='60' fill='#5f6875'>Out</text>
 </g>
 </svg>
 <p class='hint' style='margin:6px 0 0'>The input feeds both ways in parallel.
@@ -553,22 +558,22 @@ but lets more energy through, which is then the smooth clipper's problem.</p>
 
 <div class='card sect' id='sect-vol'><h2>Volume</h2>
 <div class='grid'>
-<div class='fld'><label>Master volume (dB)</label><input type='number' id='mvol' min='-30' max='0' step='0.5'></div>
-<div class='fld' id='fvol-fld'><label>Fine volume trim (dB)</label><input type='number' id='fvol' min='-0.25' max='0.25' step='0.01'></div>
+<div class='fld'><label>Master volume <span class='val' id='mvol-v'></span></label><input type='range' id='mvol' min='-30' max='0' step='0.5' oninput='onMvol()'></div>
+<div class='fld' id='fvol-fld'><label>Fine volume trim <span class='val' id='fvol-v'></span></label><input type='range' id='fvol' min='-0.25' max='0.25' step='0.01' oninput='onFvol()'></div>
 </div>
 <div class='row' style='margin-top:8px'>
-<button class='btn btn-secondary' onclick='setVol(false)'>Set volume</button>
-<button class='btn btn-secondary' onclick='setVol(true)'>Set and save</button>
+<button class='btn btn-secondary' onclick='setVol(true)'>Save volume</button>
 <span id='vol-msg' class='hint' style='margin-left:10px'></span>
 </div>
 <p class='hint'>Master volume drives the part's own volume registers and is
-the same one AirPlay sets, so it applies the moment you press the button
-&mdash; it is not part of the Apply/Commit flow below, and the next volume
-change from a phone will overwrite it. <em>Set and save</em> also writes it to
-NVS so it survives a reboot.</p>
+the same one AirPlay sets, so it applies as you drag &mdash; it is not part of
+the Apply/Commit flow below, and the next volume change from a phone will
+overwrite it. <em>Save volume</em> also writes it to NVS so it survives a
+reboot.</p>
 <p class='hint' id='fvol-note'>The fine trim is a gain <em>inside</em> the flow, after the
-compander and before the smooth clipper, so it belongs to the tuning and is
-saved with it. Range is &plusmn;0.25 dB; the
+compander and before the smooth clipper, so it belongs to the tuning: it is
+applied as you drag, but only Commit writes it to SPIFFS. Range is
+&plusmn;0.25 dB; the
 coefficient itself could reach +6.02 dB before its 1/2 headroom pad saturates.
 Use it to match levels between units, not as a volume control.</p>
 <p class='hint' id='vol-first'>This is the first thing to settle. Everything downstream
@@ -2070,6 +2075,7 @@ function populate(c){
     bqSet('xh',0,c.drc.cross[3]);
     for(i=0;i<3;i++)$('mg'+i).value=c.drc.mix[i];
     $('fvol').value=c.fine_volume;
+    drawVol();
   }
   for(i=0;i<3;i++){
     $('t'+i+'-e').value=dp1(c.drc.timing[i].energy);
@@ -2228,23 +2234,58 @@ function loadVol(){
   fetch('/api/audio/volume').then(function(r){return r.json();})
     .then(function(j){
       $('mvol').value=Math.round(j.volume_db*10)/10;
+      drawVol();
       if(j.muted)$('vol-msg').textContent='Output is muted';
     }).catch(function(){});
 }
 function setVol(persist){
   var v=parseFloat($('mvol').value);
-  if(isNaN(v)||v<-30||v>0){
-    $('vol-msg').textContent='Master volume must be -30 to 0 dB';return;
-  }
   fetch('/api/audio/volume',{method:'POST',
         headers:{'Content-Type':'application/json'},
         body:JSON.stringify({volume_db:v,persist:!!persist})})
     .then(function(r){return r.json();})
     .then(function(j){
-      $('vol-msg').textContent=j.success?
-        (persist?'Set and saved':'Set')+' at '+j.volume_db+' dB':'Rejected';
+      // The slider's own readout reports a plain move; only saving and
+      // failing are worth saying out loud.
+      if(!j.success)$('vol-msg').textContent='Rejected';
+      else if(persist)$('vol-msg').textContent='Saved at '+j.volume_db+' dB';
+      else $('vol-msg').textContent='';
     })
     .catch(function(){$('vol-msg').textContent='Request failed';});
+}
+function drawVol(){
+  $('mvol-v').textContent=parseFloat($('mvol').value).toFixed(1)+' dB';
+  $('fvol-v').textContent=parseFloat($('fvol').value).toFixed(2)+' dB';
+}
+/* Leading call, then at most one per interval, and always a trailing one so
+   the value the slider is left on is the value that lands. */
+function throttle(fn,ms){
+  var last=0,timer=null;
+  return function(){
+    var wait=ms-(Date.now()-last);
+    if(timer)clearTimeout(timer);
+    if(wait<=0){last=Date.now();timer=null;fn();}
+    else timer=setTimeout(function(){timer=null;last=Date.now();fn();},wait);
+  };
+}
+var pushVol=throttle(function(){setVol(false);},500);
+var pushTrim=throttle(applyQuiet,500);
+function onMvol(){drawVol();pushVol();}
+function onFvol(){drawVol();touch();pushTrim();}
+/* The trim's own apply: the same POST the Apply button makes, without the
+   button flicker or a message per drag. It still leaves the page dirty,
+   because applying is not committing. */
+function applyQuiet(){
+  var c=collect();
+  if(validate(c))return;
+  cfg=c;
+  fetch(API,{method:'POST',headers:{'Content-Type':'application/json'},
+             body:JSON.stringify(c)})
+    .then(function(r){return r.json();})
+    .then(function(j){
+      if(!j.success)show($('msg'),'Rejected: '+(j.error||'unknown error'),'err');
+    })
+    .catch(function(){show($('msg'),'Request failed','err');});
 }
 
 /* The channel trims are live device settings like the master volume, so they
@@ -2538,7 +2579,7 @@ function boot(){
 }
 ['pbe-hpf','pbe-harm','pbe-eff','dbe-lower','dbe-upper','sense-lo','sense-hi',
  'sense-win','drc-t1','drc-t2','clip','mg0','mg1','mg2','mgl','mgm',
- 'fvol','pbe-en'].forEach(function(id){
+ 'pbe-en'].forEach(function(id){
   var el=$(id);
   if(el)el.addEventListener('input',touch);
 });
