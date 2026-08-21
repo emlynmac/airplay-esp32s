@@ -11,6 +11,14 @@ body{font-family:-apple-system,system-ui,sans-serif;background:linear-gradient(1
 .header p{color:#888;font-size:13px}
 .nav{text-align:center;margin-bottom:16px}
 .nav a{color:#e94560;text-decoration:none;font-size:13px}
+.levels{display:flex;flex-wrap:wrap;gap:8px 20px;align-items:center;justify-content:center;background:rgba(255,255,255,0.05);border:1px solid rgba(255,255,255,0.1);border-radius:12px;padding:10px 14px;margin-bottom:8px}
+.lev{display:flex;align-items:center;gap:8px}
+.lev span.nm{font-size:11px;color:#888;white-space:nowrap;min-width:64px}
+.lev input[type=range]{width:110px;accent-color:#e94560;padding:0}
+.lev span.db{font-size:11px;color:#ddd;min-width:44px;text-align:right;font-variant-numeric:tabular-nums}
+.lev label{font-size:11px;color:#888;display:flex;align-items:center;gap:5px}
+.mutebtn{background:rgba(255,255,255,0.1);border:none;border-radius:6px;color:#aaa;font-size:11px;padding:5px 9px;cursor:pointer}
+.mutebtn.on{background:#e94560;color:#fff}
 .card{background:rgba(255,255,255,0.05);border-radius:16px;padding:20px;margin-bottom:16px;border:1px solid rgba(255,255,255,0.1)}
 .card h2{font-size:16px;font-weight:600;margin-bottom:16px;color:#e94560}
 .card h3{font-size:13px;font-weight:600;margin:18px 0 8px;color:#aaa}
@@ -82,6 +90,19 @@ input:disabled{opacity:0.3}
 <div class='wrap'>
 <div class='header'><h1>HybridFlow Tuning</h1><p id='sub'>TAS57xx on-chip DSP</p></div>
 <div class='nav'><a href='/'>&#8592; Back to Settings</a></div>
+
+<div class='levels' id='levels' style='display:none'>
+<div class='lev'><span class='nm' id='lv0-nm'>Channel A</span>
+<input type='range' id='lv0' oninput='onTrim(0,false)' onchange='onTrim(0,true)'>
+<span class='db' id='lv0-db'>0.0 dB</span>
+<button class='mutebtn' id='lv0-mute' onclick='onMute(0)'>Mute</button></div>
+<div class='lev'><span class='nm' id='lv1-nm'>Channel B</span>
+<input type='range' id='lv1' oninput='onTrim(1,false)' onchange='onTrim(1,true)'>
+<span class='db' id='lv1-db'>0.0 dB</span>
+<button class='mutebtn' id='lv1-mute' onclick='onMute(1)'>Mute</button></div>
+<div class='lev'><label><input type='checkbox' id='lv-gang' checked> Gang</label></div>
+</div>
+<p class='hint' id='lv-hint' style='text-align:center;margin:0 0 16px'></p>
 
 <div id='flowcard' class='card' style='display:none'>
 <h2>Speaker configuration</h2>
@@ -545,12 +566,12 @@ the same one AirPlay sets, so it applies the moment you press the button
 &mdash; it is not part of the Apply/Commit flow below, and the next volume
 change from a phone will overwrite it. <em>Set and save</em> also writes it to
 NVS so it survives a reboot.</p>
-<p class='hint'>The fine trim is a gain <em>inside</em> the flow, after the
+<p class='hint' id='fvol-note'>The fine trim is a gain <em>inside</em> the flow, after the
 compander and before the smooth clipper, so it belongs to the tuning and is
 saved with it. Range is &plusmn;0.25 dB; the
 coefficient itself could reach +6.02 dB before its 1/2 headroom pad saturates.
 Use it to match levels between units, not as a volume control.</p>
-<p class='hint'>This is the first thing to settle. Everything downstream
+<p class='hint' id='vol-first'>This is the first thing to settle. Everything downstream
 &mdash; the compressor thresholds, the smooth clip point, where DBE and PBE
 start working &mdash; is judged against the loudest the system will ever be
 asked to play, so decide that before tuning anything else.</p>
@@ -574,7 +595,7 @@ Once the clipper is active the part reports Overflow in its audio data status;
 that is the clipper working, not a fault.</p>
 </div>
 
-<div class='bar'>
+<div class='bar' id='applybar'>
 <div class='actions'>
 <button class='btn btn-primary' id='apply-btn' onclick='doApply()'>Apply (live)</button>
 <button class='btn btn-secondary' id='commit-btn' onclick='doCommit()'>Commit to SPIFFS</button>
@@ -2226,6 +2247,60 @@ function setVol(persist){
     .catch(function(){$('vol-msg').textContent='Request failed';});
 }
 
+/* The channel trims are live device settings like the master volume, so they
+   sit outside the dirty tracking too. Gang is a page convenience only: the
+   part keeps two independent trims, and ganging just moves both by the same
+   amount so whatever offset is set survives the move. */
+var LV=[0,0],LV_MUTE=[false,false],LV_MIN=-20,LV_MAX=0;
+function loadLevels(){
+  fetch('/api/audio/channels').then(function(r){return r.ok?r.json():null;})
+    .then(function(j){
+      if(!j||!j.channels)return;
+      LV_MIN=j.min;LV_MAX=j.max;
+      for(var i=0;i<2;i++){
+        var s=$('lv'+i);
+        s.min=LV_MIN;s.max=LV_MAX;s.step=0.5;
+        LV[i]=j.channels[i].trim;LV_MUTE[i]=!!j.channels[i].mute;
+        s.value=LV[i];
+      }
+      $('levels').style.display='flex';
+      drawLevels();
+    }).catch(function(){});
+}
+function drawLevels(){
+  for(var i=0;i<2;i++){
+    $('lv'+i+'-db').textContent=LV[i].toFixed(1)+' dB';
+    $('lv'+i+'-mute').classList.toggle('on',LV_MUTE[i]);
+    $('lv'+i+'-mute').textContent=LV_MUTE[i]?'Muted':'Mute';
+  }
+  var d=LV[1]-LV[0],lo=FLOW===3?'the woofer':'left',
+      hi=FLOW===3?'The tweeter':'Right';
+  $('lv-hint').textContent=(Math.abs(d)<0.05?'The two channels are level.':
+      hi+' is '+Math.abs(d).toFixed(1)+' dB '+(d<0?'below ':'above ')+lo+'.')+
+    ' Trims are saved; mute is not, and clears on reboot.';
+}
+function onTrim(i,commit){
+  var v=parseFloat($('lv'+i).value),d=v-LV[i],o=1-i;
+  if($('lv-gang').checked){
+    var ov=LV[o]+d;
+    if(ov>LV_MAX)d-=ov-LV_MAX;
+    if(ov<LV_MIN)d+=LV_MIN-ov;
+    LV[o]+=d;$('lv'+o).value=LV[o];
+    v=LV[i]+d;
+  }
+  LV[i]=v;$('lv'+i).value=v;
+  drawLevels();
+  if(commit)postLevels();
+}
+function onMute(i){LV_MUTE[i]=!LV_MUTE[i];drawLevels();postLevels();}
+function postLevels(){
+  fetch('/api/audio/channels',{method:'POST',
+        headers:{'Content-Type':'application/json'},
+        body:JSON.stringify({channels:[{trim:LV[0],mute:LV_MUTE[0]},
+                                       {trim:LV[1],mute:LV_MUTE[1]}]})})
+    .catch(function(){});
+}
+
 function load(){
   fetch(API).then(function(r){return r.json();}).then(function(c){
     if(!c.available){$('unavail').style.display='block';$('ui').style.display='none';return;}
@@ -2304,15 +2379,30 @@ var DRC_NOTE3='Two split sections rather than four: a low-pass that takes the '+
   'recombines flat.';
 function setFlow(n){
   FLOW=n;
+  $('lv0-nm').textContent=n===3?'Woofer (A)':'Left (A)';
+  $('lv1-nm').textContent=n===3?'Tweeter (B)':'Right (B)';
+  drawLevels();
   if(!n){
+    /* Master volume and the channel trims are the part's own registers, so
+       they work with no flow loaded; nothing else on the page does. */
     $('sub').textContent='TAS57xx on-chip DSP \u2014 not in use';
     $('unavail').style.display='block';
-    $('ui').style.display='none';
+    $('ui').style.display='block';
+    $('chain1').style.display='none';
+    $('chain3').style.display='none';
+    $('applybar').style.display='none';
+    $('fvol-fld').style.display='none';
+    $('fvol-note').style.display='none';
+    $('vol-first').style.display='none';
+    pick('vol');
+    loadVol();
     return;
   }
   API=n===3?'/api/hf3':'/api/hf1';
   SECTS=n===3?SECTS3:SECTS1;
   DBE_LO_N=n===3?3:2;
+  $('applybar').style.display='block';
+  $('vol-first').style.display='block';
   $('sub').textContent='TAS57xx on-chip DSP \u2014 '+
     (n===3?'HybridFlow 3, bi-amp':'HybridFlow 1');
   $('chain1').style.display=n===3?'none':'block';
@@ -2320,6 +2410,7 @@ function setFlow(n){
   $('drc-split1').style.display=n===3?'none':'block';
   $('drc-split3').style.display=n===3?'block':'none';
   $('fvol-fld').style.display=n===3?'none':'block';
+  $('fvol-note').style.display=n===3?'none':'block';
   $('pbe-en-fld').style.display='block';
   $('aeq-way-fld').style.display=n===3?'block':'none';
   $('aeq-n').max=n===3?4:10;
@@ -2436,6 +2527,7 @@ function onFlowChange(){
    tuning map applies without probing. A build without it falls back to the
    probe: HF3 says so plainly, and HF1 answers 404 rather than a config. */
 function boot(){
+  loadLevels();
   fetch('/api/hf/flow').then(function(r){return r.ok?r.json():null;})
     .then(function(j){
       if(j){applyFlowChoice(j);setFlow(j.active||0);return null;}
