@@ -446,6 +446,18 @@ esp_err_t tas57xx_hf3_set_smooth_clip(const tas57xx_cram_sink_t *sink,
   return tas57xx_cram_write(sink, HF3_SMOOTH_CLIP_WORD, w, 2);
 }
 
+bool tas57xx_hf3_config_migrate(tas57xx_hf3_config_t *cfg) {
+  if (cfg == NULL || cfg->magic != TAS57XX_HF3_CONFIG_MAGIC ||
+      cfg->version != 2u) {
+    return false;
+  }
+  const tas57xx_bq_t was_first = cfg->drc_split_low;
+  cfg->drc_split_low = cfg->drc_split_high;
+  cfg->drc_split_high = was_first;
+  cfg->version = TAS57XX_HF3_CONFIG_VERSION;
+  return true;
+}
+
 void tas57xx_hf3_defaults(tas57xx_hf3_config_t *cfg) {
   if (!cfg) {
     return;

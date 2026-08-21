@@ -105,6 +105,10 @@ bool dac_tas57xx_flow_base_available(int flow);
  * that flow's saved tuning if there is one. Bi-amp and stereo drive the two
  * amplifier outputs completely differently, so callers must confirm the
  * speaker is wired for it first.
+ *
+ * Flow 0 removes the working flow instead, leaving the part on its ROM stereo
+ * program. That is the only setting a TAS57xx without a usable HybridFlow can
+ * run, and it discards nothing but the flow file - the saved tunings stay.
  */
 esp_err_t dac_tas57xx_select_flow(int flow);
 

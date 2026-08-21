@@ -92,9 +92,11 @@ input:disabled{opacity:0.3}
 </div>
 
 <div id='unavail' class='card' style='display:none'>
-<h2>Not available</h2>
-<p class='hint'>No hybrid flow is loaded. Upload a HybridFlow 1 or HybridFlow 3
-binary as <code>/spiffs/hf/tas57xx_fw.bin</code> and reboot before tuning.</p>
+<h2>No processing</h2>
+<p class='hint'>The amplifier is running the part's built-in stereo program:
+plain left and right, digital volume only, no crossover, EQ or dynamics. Pick
+a configuration above to tune one, or leave it here if this part has no usable
+HybridFlow.</p>
 </div>
 
 <div id='ui' style='display:none'>
@@ -2302,6 +2304,12 @@ var DRC_NOTE3='Two split sections rather than four: a low-pass that takes the '+
   'recombines flat.';
 function setFlow(n){
   FLOW=n;
+  if(!n){
+    $('sub').textContent='TAS57xx on-chip DSP \u2014 not in use';
+    $('unavail').style.display='block';
+    $('ui').style.display='none';
+    return;
+  }
   API=n===3?'/api/hf3':'/api/hf1';
   SECTS=n===3?SECTS3:SECTS1;
   DBE_LO_N=n===3?3:2;
@@ -2355,41 +2363,54 @@ var FLOW_WARN={
    'channel B will be sent bass at full power, which will destroy it.\n\n'+
    'Disconnect the tweeter, or restore the passive crossover, before playing '+
    'anything.\n\n'+
-   'Volume will be turned down to minimum before the change is applied.'};
+   'Volume will be turned down to minimum before the change is applied.',
+ 0:'Turn the processing off?\n\n'+
+   'The amplifier goes back to its built-in stereo program \u2014 full-range '+
+   'left and right, with nothing but digital volume. No crossover, no EQ, no '+
+   'limiting.\n\n'+
+   'If this speaker is wired for bi-amping, a tweeter will be sent bass at '+
+   'full power and will be destroyed. Disconnect it first.\n\n'+
+   'The tuning you have saved is kept and comes back if you switch a '+
+   'configuration on again. Volume will be turned down to minimum.'};
 var FLOW_ACTIVE=0;
-function flowName(n){return n===3?'Bi-amp speaker':'Full-range stereo EQ';}
+function flowName(n){
+  return n===3?'Bi-amp speaker':n===1?'Full-range stereo EQ':'No HybridFlow';
+}
+
+function applyFlowChoice(j){
+  FLOW_ACTIVE=j.active||0;
+  /* Off is always reachable: it needs no base file, and it is the only thing
+     a part without a usable flow can run. */
+  var opts=[0].concat(j.available||[]);
+  /* A flow whose base is missing is still what the amplifier is running,
+     so it has to appear or the control would misreport the device. */
+  if(FLOW_ACTIVE&&opts.indexOf(FLOW_ACTIVE)<0)opts.push(FLOW_ACTIVE);
+  opts.sort();
+  var sel=$('flowsel');
+  sel.innerHTML=opts.map(function(n){
+    return "<option value='"+n+"'>"+flowName(n)+'</option>';}).join('');
+  sel.value=String(FLOW_ACTIVE);
+  var others=opts.filter(function(n){return n!==FLOW_ACTIVE;});
+  sel.disabled=others.length===0;
+  $('flow-hint').textContent=
+    (j.available||[]).length?
+     'Each configuration keeps its own tuning, so switching back restores '+
+     'what was last saved for it.':
+     'No base flows are installed under /spiffs/hf, so there is nothing to '+
+     'switch to. Upload one as base-hf1-'+j.sample_rate+'.bin.';
+  $('flowcard').style.display='block';
+}
 
 function loadFlowChoice(){
   fetch('/api/hf/flow').then(function(r){return r.ok?r.json():null;})
-   .then(function(j){
-     if(!j)return;
-     FLOW_ACTIVE=j.active||0;
-     var opts=(j.available||[]).slice();
-     /* A flow whose base is missing is still what the amplifier is running,
-        so it has to appear or the control would misreport the device. */
-     if(FLOW_ACTIVE&&opts.indexOf(FLOW_ACTIVE)<0)opts.push(FLOW_ACTIVE);
-     opts.sort();
-     var sel=$('flowsel');
-     sel.innerHTML=(FLOW_ACTIVE?'':"<option value='0'>None loaded</option>")+
-       opts.map(function(n){
-         return "<option value='"+n+"'>"+flowName(n)+'</option>';}).join('');
-     sel.value=String(FLOW_ACTIVE);
-     var others=opts.filter(function(n){return n!==FLOW_ACTIVE;});
-     sel.disabled=others.length===0;
-     $('flow-hint').textContent=others.length?
-       'Each configuration keeps its own tuning, so switching back restores '+
-       'what was last saved for it.':
-       (FLOW_ACTIVE?
-        'Only this one is installed. Upload the other as /spiffs/hf/base-hf'+
-        (FLOW_ACTIVE===3?1:3)+'-'+j.sample_rate+'.bin to be able to switch.':
-        'No base flows are installed under /spiffs/hf.');
-     $('flowcard').style.display='block';
-   }).catch(function(){});
+   .then(function(j){if(j)applyFlowChoice(j);}).catch(function(){});
 }
 
 function onFlowChange(){
   var sel=$('flowsel'),want=parseInt(sel.value,10);
-  if(want===FLOW_ACTIVE||!FLOW_WARN[want]){sel.value=String(FLOW_ACTIVE);return;}
+  if(want===FLOW_ACTIVE||FLOW_WARN[want]===undefined){
+    sel.value=String(FLOW_ACTIVE);return;
+  }
   if(!confirm(FLOW_WARN[want])){sel.value=String(FLOW_ACTIVE);return;}
   sel.disabled=true;
   show($('flow-msg'),'Reprogramming the DSP\u2026','');
@@ -2411,14 +2432,17 @@ function onFlowChange(){
    .then(function(){sel.disabled=false;});
 }
 
-/* HF3 is asked first because a board that has it says so plainly, and a build
-   without it answers 404 rather than a config. */
+/* The flow endpoint answers for every TAS57xx build, so it settles which
+   tuning map applies without probing. A build without it falls back to the
+   probe: HF3 says so plainly, and HF1 answers 404 rather than a config. */
 function boot(){
-  fetch('/api/hf3')
-    .then(function(r){return r.ok?r.json():null;})
-    .then(function(j){setFlow(j&&j.available?3:1);})
-    .catch(function(){setFlow(1);})
-    .then(loadFlowChoice);
+  fetch('/api/hf/flow').then(function(r){return r.ok?r.json():null;})
+    .then(function(j){
+      if(j){applyFlowChoice(j);setFlow(j.active||0);return null;}
+      return fetch('/api/hf3').then(function(r){return r.ok?r.json():null;})
+        .then(function(c){setFlow(c&&c.available?3:1);});
+    })
+    .catch(function(){setFlow(1);});
 }
 ['pbe-hpf','pbe-harm','pbe-eff','dbe-lower','dbe-upper','sense-lo','sense-hi',
  'sense-win','drc-t1','drc-t2','clip','mg0','mg1','mg2','mgl','mgm',
