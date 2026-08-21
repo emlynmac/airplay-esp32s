@@ -488,6 +488,66 @@ static esp_err_t channel_mode_post_handler(httpd_req_t *req) {
   return ESP_OK;
 }
 
+/* AirPlay dB scale, matching playback_control's clamp. */
+#define VOLUME_UI_MIN_DB -30.0f
+#define VOLUME_UI_MAX_DB 0.0f
+
+static esp_err_t volume_get_handler(httpd_req_t *req) {
+  float db = -15.0f;
+  settings_get_volume(&db);
+  cJSON *json = cJSON_CreateObject();
+  cJSON_AddNumberToObject(json, "volume_db", db);
+  cJSON_AddNumberToObject(json, "min", VOLUME_UI_MIN_DB);
+  cJSON_AddNumberToObject(json, "max", VOLUME_UI_MAX_DB);
+  cJSON_AddBoolToObject(json, "muted", playback_control_is_muted());
+  cJSON_AddBoolToObject(json, "success", true);
+  char *json_str = cJSON_Print(json);
+  httpd_resp_set_type(req, "application/json");
+  httpd_resp_send(req, json_str, HTTPD_RESP_USE_STRLEN);
+  free(json_str);
+  cJSON_Delete(json);
+  return ESP_OK;
+}
+
+static esp_err_t volume_post_handler(httpd_req_t *req) {
+  char *content = recv_body(req, 512);
+  if (!content) {
+    httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Invalid body");
+    return ESP_FAIL;
+  }
+  cJSON *json = cJSON_Parse(content);
+  free(content);
+  cJSON *val = json ? cJSON_GetObjectItem(json, "volume_db") : NULL;
+  if (!cJSON_IsNumber(val)) {
+    cJSON_Delete(json);
+    httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Expected volume_db");
+    return ESP_FAIL;
+  }
+  float db = (float)val->valuedouble;
+  bool persist = cJSON_IsTrue(cJSON_GetObjectItem(json, "persist"));
+  cJSON_Delete(json);
+  if (db < VOLUME_UI_MIN_DB) {
+    db = VOLUME_UI_MIN_DB;
+  }
+  if (db > VOLUME_UI_MAX_DB) {
+    db = VOLUME_UI_MAX_DB;
+  }
+  settings_set_volume(db);
+  if (persist) {
+    settings_persist_volume();
+  }
+
+  cJSON *response = cJSON_CreateObject();
+  cJSON_AddBoolToObject(response, "success", true);
+  cJSON_AddNumberToObject(response, "volume_db", db);
+  char *json_str = cJSON_Print(response);
+  httpd_resp_set_type(req, "application/json");
+  httpd_resp_send(req, json_str, HTTPD_RESP_USE_STRLEN);
+  free(json_str);
+  cJSON_Delete(response);
+  return ESP_OK;
+}
+
 #ifdef DAC_HAS_SUB_OFFSET
 #ifdef CONFIG_DAC_TAS58XX
 /* The NVS blob layout and the driver's band count are declared independently,
@@ -557,66 +617,6 @@ static esp_err_t sub_eq_persist(void) {
   return settings_set_sub_eq(saved);
 }
 #endif /* CONFIG_DAC_TAS58XX */
-
-/* AirPlay dB scale, matching playback_control's clamp. */
-#define VOLUME_UI_MIN_DB -30.0f
-#define VOLUME_UI_MAX_DB 0.0f
-
-static esp_err_t volume_get_handler(httpd_req_t *req) {
-  float db = -15.0f;
-  settings_get_volume(&db);
-  cJSON *json = cJSON_CreateObject();
-  cJSON_AddNumberToObject(json, "volume_db", db);
-  cJSON_AddNumberToObject(json, "min", VOLUME_UI_MIN_DB);
-  cJSON_AddNumberToObject(json, "max", VOLUME_UI_MAX_DB);
-  cJSON_AddBoolToObject(json, "muted", playback_control_is_muted());
-  cJSON_AddBoolToObject(json, "success", true);
-  char *json_str = cJSON_Print(json);
-  httpd_resp_set_type(req, "application/json");
-  httpd_resp_send(req, json_str, HTTPD_RESP_USE_STRLEN);
-  free(json_str);
-  cJSON_Delete(json);
-  return ESP_OK;
-}
-
-static esp_err_t volume_post_handler(httpd_req_t *req) {
-  char *content = recv_body(req, 512);
-  if (!content) {
-    httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Invalid body");
-    return ESP_FAIL;
-  }
-  cJSON *json = cJSON_Parse(content);
-  free(content);
-  cJSON *val = json ? cJSON_GetObjectItem(json, "volume_db") : NULL;
-  if (!cJSON_IsNumber(val)) {
-    cJSON_Delete(json);
-    httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Expected volume_db");
-    return ESP_FAIL;
-  }
-  float db = (float)val->valuedouble;
-  bool persist = cJSON_IsTrue(cJSON_GetObjectItem(json, "persist"));
-  cJSON_Delete(json);
-  if (db < VOLUME_UI_MIN_DB) {
-    db = VOLUME_UI_MIN_DB;
-  }
-  if (db > VOLUME_UI_MAX_DB) {
-    db = VOLUME_UI_MAX_DB;
-  }
-  settings_set_volume(db);
-  if (persist) {
-    settings_persist_volume();
-  }
-
-  cJSON *response = cJSON_CreateObject();
-  cJSON_AddBoolToObject(response, "success", true);
-  cJSON_AddNumberToObject(response, "volume_db", db);
-  char *json_str = cJSON_Print(response);
-  httpd_resp_set_type(req, "application/json");
-  httpd_resp_send(req, json_str, HTTPD_RESP_USE_STRLEN);
-  free(json_str);
-  cJSON_Delete(response);
-  return ESP_OK;
-}
 
 static esp_err_t sub_offset_get_handler(httpd_req_t *req) {
   cJSON *json = cJSON_CreateObject();
