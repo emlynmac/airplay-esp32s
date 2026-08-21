@@ -525,7 +525,6 @@ static esp_err_t channel_mode_post_handler(httpd_req_t *req) {
   return ESP_OK;
 }
 
-#ifdef DAC_HAS_SUB_OFFSET
 /* AirPlay dB scale, matching playback_control's clamp. */
 #define VOLUME_UI_MIN_DB -30.0f
 #define VOLUME_UI_MAX_DB 0.0f
@@ -586,6 +585,7 @@ static esp_err_t volume_post_handler(httpd_req_t *req) {
   return ESP_OK;
 }
 
+#ifdef DAC_HAS_SUB_OFFSET
 static esp_err_t sub_offset_get_handler(httpd_req_t *req) {
   cJSON *json = cJSON_CreateObject();
   cJSON_AddNumberToObject(json, "offset", dac_get_sub_offset_db());
