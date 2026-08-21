@@ -96,8 +96,9 @@
 
 // P0-R61/R62 digital volume limits. 0x00 is +24 dB, 0x30 is 0 dB and 0xFE is
 // -103 dB in 0.5 dB steps (0xFF is reserved, not mute). Boost is never used.
-// R61 is channel A (left) and R62 channel B (right), matching the Linux
-// pcm512x driver, whose register map this part shares.
+// R61 carries left and R62 right, as in the Linux pcm512x driver whose
+// register map this part shares. The EVM wires the amplifier output labelled
+// A to right and B to left, so A is R62 and B is R61.
 #define TAS57XX_VOL_REG_MAX_DB 24.0f
 #define TAS57XX_VOL_MIN_DB     -103.0f
 
@@ -146,8 +147,8 @@ typedef enum {
   TAS57XX_DOWN,
   TAS57XX_ANALOGUE_OFF,
   TAS57XX_ANALOGUE_ON,
-  TAS57XX_SET_VOLUME_A_L,
-  TAS57XX_SET_VOLUME_B_R,
+  TAS57XX_SET_VOLUME_A,
+  TAS57XX_SET_VOLUME_B,
   TAS57XX_MUTE,
   TAS57XX_UNMUTE,
 } tas57xx_cmd_e;
@@ -158,8 +159,8 @@ static const struct tas57xx_cmd_s tas57xx_cmd[] = {
     {0x02, 0x01}, // TAS57XX_DOWN
     {0x56, 0x10}, // TAS57XX_ANALOGUE_OFF
     {0x56, 0x00}, // TAS57XX_ANALOGUE_ON
-    {0x3D, 0x30}, // TAS57XX_SET_VOLUME_A_L - Channel A, P0-R61
-    {0x3E, 0x30}, // TAS57XX_SET_VOLUME_B_R - Channel B, P0-R62
+    {0x3E, 0x30}, // TAS57XX_SET_VOLUME_A - P0-R62
+    {0x3D, 0x30}, // TAS57XX_SET_VOLUME_B - P0-R61
     {0x03, 0x11}, // TAS57XX_MUTE (BA)
     {0x03, 0x00}, // TAS57XX_UNMUTE (BA)
 };
@@ -1837,8 +1838,8 @@ static uint8_t tas57xx_db_to_reg(float db_level) {
 // Re-apply the cached master volume to every device, adding the sub offset to
 // any sub device and each channel's own trim. Caller must hold s_dac_mutex.
 static void tas57xx_apply_volume_locked(void) {
-  static const tas57xx_cmd_e ch_cmd[TAS57XX_CHANNELS] = {
-      TAS57XX_SET_VOLUME_A_L, TAS57XX_SET_VOLUME_B_R};
+  static const tas57xx_cmd_e ch_cmd[TAS57XX_CHANNELS] = {TAS57XX_SET_VOLUME_A,
+                                                         TAS57XX_SET_VOLUME_B};
   float base_db = tas57xx_map_volume_db(s_last_airplay_db);
 
   ESP_LOGI(TAG,
@@ -2003,8 +2004,8 @@ static esp_err_t write_cmd(i2c_master_dev_handle_t handle, tas57xx_cmd_e cmd,
   va_start(args, cmd);
 
   switch (cmd) {
-  case TAS57XX_SET_VOLUME_A_L:
-  case TAS57XX_SET_VOLUME_B_R:
+  case TAS57XX_SET_VOLUME_A:
+  case TAS57XX_SET_VOLUME_B:
     uint8_t val = (uint8_t)va_arg(args, int);
     err = board_i2c_write(handle, tas57xx_cmd[cmd].reg, &val, sizeof(uint8_t));
     break;

@@ -2273,8 +2273,8 @@ function drawLevels(){
     $('lv'+i+'-mute').classList.toggle('on',LV_MUTE[i]);
     $('lv'+i+'-mute').textContent=LV_MUTE[i]?'Muted':'Mute';
   }
-  var d=LV[1]-LV[0],lo=FLOW===3?'the woofer':'left',
-      hi=FLOW===3?'The tweeter':'Right';
+  var d=LV[1]-LV[0],lo=FLOW===3?'the woofer':'right',
+      hi=FLOW===3?'The tweeter':'Left';
   $('lv-hint').textContent=(Math.abs(d)<0.05?'The two channels are level.':
       hi+' is '+Math.abs(d).toFixed(1)+' dB '+(d<0?'below ':'above ')+lo+'.')+
     ' Trims are saved; mute is not, and clears on reboot.';
@@ -2379,8 +2379,8 @@ var DRC_NOTE3='Two split sections rather than four: a low-pass that takes the '+
   'recombines flat.';
 function setFlow(n){
   FLOW=n;
-  $('lv0-nm').textContent=n===3?'Woofer (A)':'Left (A)';
-  $('lv1-nm').textContent=n===3?'Tweeter (B)':'Right (B)';
+  $('lv0-nm').textContent=n===3?'Woofer (A)':'Right (A)';
+  $('lv1-nm').textContent=n===3?'Tweeter (B)':'Left (B)';
   drawLevels();
   if(!n){
     /* Master volume and the channel trims are the part's own registers, so
@@ -2442,15 +2442,15 @@ function setFlow(n){
    safe to apply to whatever happens to be wired up. */
 var FLOW_WARN={
  3:'Switch to a bi-amp speaker?\n\n'+
-   'The two amplifier outputs stop being left and right. Channel A, the left '+
-   'output, drives the woofer; channel B, the right output, drives the '+
+   'The two amplifier outputs stop being left and right. Channel A, the '+
+   'right output, drives the woofer; channel B, the left output, drives the '+
    'tweeter. Both are fed a mono sum of the incoming stereo.\n\n'+
    'Unless this speaker is wired that way \u2014 woofer on A, tweeter on B, '+
    'with the passive crossover bypassed \u2014 it will not play correctly.\n\n'+
    'Volume will be turned down to minimum before the change is applied.',
  1:'Switch away from a bi-amp speaker?\n\n'+
    'Both amplifier outputs go back to carrying full-range stereo: channel A '+
-   'becomes left again and channel B becomes right. A tweeter still wired to '+
+   'becomes right again and channel B becomes left. A tweeter still wired to '+
    'channel B will be sent bass at full power, which will destroy it.\n\n'+
    'Disconnect the tweeter, or restore the passive crossover, before playing '+
    'anything.\n\n'+
