@@ -148,12 +148,12 @@ esp_err_t tas57xx_hf3_set_drc_timing(const tas57xx_cram_sink_t *sink, int band,
 /**
  * Set the compander's band-split filters.
  *
- * Only two exist: a high-pass feeding the high band and a low-pass feeding the
- * mid band. The low band is whatever the two leave behind, which is why it has
- * neither a filter nor a gain of its own.
+ * Only two exist: a low-pass feeding the low band and a high-pass feeding the
+ * high band. The mid band is whatever the two leave behind, which is why it has
+ * no filter of its own.
  */
 esp_err_t tas57xx_hf3_set_drc_split(const tas57xx_cram_sink_t *sink,
-                                    const tas57xx_bq_t *mid,
+                                    const tas57xx_bq_t *low,
                                     const tas57xx_bq_t *high,
                                     uint32_t sample_rate_hz);
 
@@ -161,14 +161,15 @@ esp_err_t tas57xx_hf3_set_drc_split(const tas57xx_cram_sink_t *sink,
 #define TAS57XX_HF3_DRC_MIX_MAX 1.0f
 
 /**
- * Set the gains that sum the companded mid and high bands back in.
+ * Set the gains that sum the companded low and mid bands back in.
  *
- * The flow ships the high band at -1. That inversion is what makes the default
- * complementary split recombine flat, so changing it without also rethinking
- * the split will not sum flat.
+ * The high band has no gain of its own and is always summed at unity. The flow
+ * ships the mid at -1: that inversion is what makes the default complementary
+ * split recombine flat, so changing it without also rethinking the split will
+ * not sum flat.
  */
-esp_err_t tas57xx_hf3_set_drc_mix(const tas57xx_cram_sink_t *sink, float mid,
-                                  float high);
+esp_err_t tas57xx_hf3_set_drc_mix(const tas57xx_cram_sink_t *sink, float low,
+                                  float mid);
 
 #define TAS57XX_HF3_DRC_REGIONS   3
 #define TAS57XX_HF3_DRC_RATIO_MIN 0.2f
@@ -229,10 +230,14 @@ typedef struct {
   float sense_upper_hz;
   float sense_window_ms;
 
-  tas57xx_bq_t drc_split_mid;
+  /* The compander has three bands but only two filters: the low band is what
+   * the low-pass passes, the high band what the high-pass passes, and the mid
+   * is the input less those two. Only the low and mid gains are stored; the
+   * high band is summed at unity. */
+  tas57xx_bq_t drc_split_low;
   tas57xx_bq_t drc_split_high;
+  float drc_mix_low;
   float drc_mix_mid;
-  float drc_mix_high;
   tas57xx_hf3_drc_timing_t drc_timing[TAS57XX_HF3_DRC_BANDS];
   tas57xx_hf3_drc_region_t drc_region[TAS57XX_HF3_DRC_REGIONS];
   float drc_thresh1_db;
