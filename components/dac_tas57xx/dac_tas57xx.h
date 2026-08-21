@@ -25,7 +25,8 @@ void dac_tas57xx_set_sub_offset_db(float offset_db);
 /** Get the current sub volume offset in dB. */
 float dac_tas57xx_get_sub_offset_db(void);
 
-/** The part's two amplifier outputs: channel A is left, channel B is right. */
+/** The part's two amplifier outputs. Index 0 is A, which the EVM feeds from
+ *  the right input channel, and index 1 is B, fed from the left. */
 #define TAS57XX_CHANNELS 2
 
 /** Per-channel trim limits (dB), relative to the master volume. Cut only, so
