@@ -246,45 +246,33 @@ use bass/treble shelves too</label></div>
 </div>
 <p class='hint'>Load a frequency response export &mdash; REW text, or any file
 with a frequency and a level in the first two columns &mdash; and the fitter
-places peaking filters to flatten it. The measurement is band-averaged at the
-smoothing you pick, so narrow wiggles that are measurement artefacts rather
-than speaker behaviour are ignored; 1/6 octave is a reasonable start. Only the
-shape is fitted, never the level, and the filters are ordered cuts first so the
-boosts land in the later bands.</p>
-<p class='hint'>The two limits apply to the summed response, not to any one
-filter, so a boost stacked on a deeper cut is allowed as long as the total
-stays inside them. Setting <em>max total boost</em> to zero puts the whole
-correction at or below unity: it costs output level, since you have cut rather
-than boosted to get there, but it consumes none of the &plusmn;12 dB data-path
-headroom and cannot clip. Whatever the summed peak comes out at is how much
-you need to take off the output volume, and it is reported after each fit.</p>
+places peaking filters to flatten it. Only the shape is fitted, never the
+level, and the two limits apply to the summed response rather than to any one
+filter. Setting <em>max total boost</em> to zero puts the whole correction at
+or below unity, which costs output level but consumes no headroom and cannot
+clip.</p>
 <p class='hint'>The fit range matters more than anything else here. A small
 speaker rolls off at both ends by more than the &plusmn;12 dB the data path
 has, so leaving the range wide spends filters fighting the roll-off and pulls
 the midrange down with it. Narrow it to the span the speaker can actually
-reproduce and the remaining bands go where they help. Max total boost is the
-one to keep honest: every dB of it is headroom, and the compressor and smooth
-clipper see the result.</p>
+reproduce. Whatever the summed peak comes out at is how much you need to take
+off the output volume, and it is reported after each fit.</p>
 </div>
-<p class='hint'>Ten biquads in series ahead of the bass enhancer. The curves are the
-design response, before the headroom scaling a large boost needs. Alignment
-applies to the pass filters only. &ldquo;All pass&rdquo; here means unity, a
-section that does nothing &mdash; for a real all-pass, which shifts phase while
-leaving magnitude flat, choose Phase shift and read the phase graph. Chebyshev
-reads the frequency as the edge of the ripple band rather than the corner, so
-its pole sits about 23% past the number you type &mdash; below it for a
-high-pass, above it for a low-pass. The other alignments put the pole on the
-frequency itself.</p>
-<p class='hint'>TI's tuning guide asks for cuts before boosts &mdash; use bands
-1&ndash;5 to attenuate and 6&ndash;10 to lift. The sections run in series, so a
-boost early on can clip and every band after it then carries a copy of the
-clipped signal. The data path has +12 dB of headroom, which is why the boost
-control stops there; keep individual peaks to 9&ndash;10 dB, and remember that
-two peaking bands close together simply add, so a pair at +8 dB is a +16 dB
-problem. Aim for the fewest bands that get the finished response inside
-&plusmn;3 to &plusmn;5 dB. A deep, narrow null that refuses to fill in when you
-boost it is a room reflection rather than the speaker &mdash; leave it
-alone.</p>
+<p class='hint'>Ten biquads in series ahead of the bass enhancer, drawn as the
+design response before the headroom scaling a large boost needs. &ldquo;All
+pass&rdquo; here means unity, a section that does nothing; for a real all-pass
+choose Phase shift and read the phase graph. Alignment applies to the pass
+filters only, and Chebyshev reads the frequency as the edge of its ripple band,
+putting the pole about 23% past the number you type.</p>
+<h3>Tuning guide</h3>
+<p class='hint'>Cuts before boosts &mdash; bands 1&ndash;5 to attenuate,
+6&ndash;10 to lift. The sections run in series, so a boost early on can clip and
+every band after it then carries a copy of the clipped signal. The data path
+has +12 dB of headroom; keep individual peaks to 9&ndash;10 dB, and remember
+that two peaking bands close together simply add. Aim for the fewest bands that
+get the finished response inside &plusmn;3 to &plusmn;5 dB. A deep, narrow null
+that refuses to fill in when you boost it is a room reflection rather than the
+speaker &mdash; leave it alone.</p>
 </div>
 
 <div class='card sect' id='sect-pbe'><h2>Psychoacoustic Bass (PBE)</h2>
@@ -367,9 +355,9 @@ TI's guide says to find them by listening, on familiar material, at the volume
 the speaker will actually be used at.</p>
 <h3>Energy estimator</h3>
 <div class='grid'>
-<div class='fld'><label>Sensing low (Hz)</label><input type='number' id='sense-lo' min='10' max='20000' step='1'></div>
-<div class='fld'><label>Sensing high (Hz)</label><input type='number' id='sense-hi' min='10' max='20000' step='1'></div>
-<div class='fld'><label>Averaging window (ms)</label><input type='number' id='sense-win' min='1' max='10000' step='1'></div>
+<div class='fld'><label>Sensing low (Hz)</label><input type='number' id='sense-lo' min='10' max='20000' step='0.1'></div>
+<div class='fld'><label>Sensing high (Hz)</label><input type='number' id='sense-hi' min='10' max='20000' step='0.1'></div>
+<div class='fld'><label>Averaging window (ms)</label><input type='number' id='sense-win' min='1' max='10000' step='0.1'></div>
 </div>
 <div class='plotlab' style='margin-top:12px'>Sensing band</div>
 <canvas id='dbe-sense' class='plot' width='1640' height='400'></canvas>
@@ -405,9 +393,9 @@ this ships with.</p>
 <rect x='62' y='26' width='126' height='32' rx='7' fill='rgba(78,204,163,0.13)' stroke='#4ecca3'/>
 <text x='125' y='46' id='drc-lab0'>EQ low band</text>
 <rect x='62' y='82' width='126' height='32' rx='7' fill='rgba(77,157,224,0.13)' stroke='#4d9de0'/>
-<text x='125' y='102'>EQ mid band</text>
+<text x='125' y='102' id='drc-lab1'>EQ mid band</text>
 <rect x='62' y='138' width='126' height='32' rx='7' fill='rgba(240,162,2,0.13)' stroke='#f0a202'/>
-<text x='125' y='158'>EQ high band</text>
+<text x='125' y='158' id='drc-lab2'>EQ high band</text>
 <rect x='210' y='26' width='102' height='32' rx='7' fill='rgba(255,255,255,0.07)' stroke='#7a8699'/>
 <text x='261' y='46'>DRC low</text>
 <rect x='210' y='82' width='102' height='32' rx='7' fill='rgba(255,255,255,0.07)' stroke='#7a8699'/>
@@ -453,20 +441,21 @@ the default Linkwitz-Riley split recombine flat, so if you change it the split
 will need rethinking too.</p>
 </div>
 <div id='drc-split3' style='display:none'>
-<div class='plotlab'>Mid band split (low-pass out of the low band)</div>
+<div class='plotlab'>Low band split (low-pass)</div>
 <div class='bqhead'><span></span><span>Type</span><span>Alignment</span><span>Freq Hz</span><span>Q / BW / Hz</span><span>Gain dB</span></div>
-<div id='drc-sm-rows'></div>
-<div class='plotlab' style='margin-top:10px'>High band split</div>
+<div id='drc-sl-rows'></div>
+<div class='plotlab' style='margin-top:10px'>High band split (high-pass)</div>
 <div class='bqhead'><span></span><span>Type</span><span>Alignment</span><span>Freq Hz</span><span>Q / BW / Hz</span><span>Gain dB</span></div>
 <div id='drc-sh-rows'></div>
 <h3>Mixer gains</h3>
 <div class='grid'>
+<div class='fld'><label>Low</label><input type='number' id='mgl' min='-1' max='1' step='0.01'></div>
 <div class='fld'><label>Mid</label><input type='number' id='mgm' min='-1' max='1' step='0.01'></div>
-<div class='fld'><label>High</label><input type='number' id='mgh' min='-1' max='1' step='0.01'></div>
 </div>
-<p class='hint'>Two split sections rather than four, and two gains: the low band
-is whatever the other two leave behind and is always summed at unity. The flow
-ships the high gain at &minus;1, which is what makes the split recombine flat.</p>
+<p class='hint'>Two split sections rather than four, and two gains: the mid band
+is whatever the other two leave behind, and the high band is always summed at
+unity. The flow ships the mid gain at &minus;1, which is what makes the split
+recombine flat.</p>
 </div>
 <div class='plotlab' style='margin-top:14px'>Band split</div>
 <div class='legend'>
@@ -628,6 +617,9 @@ var cfg=null,dirty=false;
 
 function $(id){return document.getElementById(id);}
 function num(id){return parseFloat($(id).value);}
+/* The part stores these as time constants and coefficients, so reading one back
+   gives 100.0094 ms where 100 was asked for. Nobody wants to see that. */
+function dp1(v){return Math.round(v*10)/10;}
 
 function show(el,text,cls){el.innerHTML=text?"<div class='msg "+cls+"'>"+text+'</div>':'';}
 function setDirty(d){
@@ -803,6 +795,18 @@ function solvePeaking(t,fs){
   return {type:1,sub:0,freq:w*fs/(2*Math.PI),q:sw/(2*alpha),
           gain:40*Math.log10(A),coeff:[]};
 }
+/* Variable Q reproduces every fixed alignment, and its free Q usually lands a
+   hair closer, so on error alone it wins even when the section plainly is a
+   Linkwitz-Riley. Once both are inside tolerance the named alignment is the
+   better answer: it is what was designed, and it holds its Q if the rate
+   changes. */
+function betterFit(r,best){
+  if(!best)return true;
+  if(r.err<=SHAPE_TOL&&best.err<=SHAPE_TOL&&r.bq.type===best.bq.type&&
+     (r.bq.sub===0)!==(best.bq.sub===0))
+    return best.bq.sub===0;
+  return r.err<best.err;
+}
 function unCustom(prefix,i,quiet){
   var b=bqGet(prefix,i),fs=(cfg&&cfg.sample_rate)||44100,k;
   if(b.type!==T_CUSTOM)return false;
@@ -838,7 +842,7 @@ function unCustom(prefix,i,quiet){
              gain-bearing seed rather than starting off by that factor. */
           var qs=HAS_GAIN[ty]?q0/Math.pow(10,gseed[gi]/40):q0;
           var r=fitShape(t,ty,subs[s],fs,fseed[fi],qs,gseed[gi]);
-          if(!best||r.err<best.err)best=r;
+          if(betterFit(r,best))best=r;
         }
   }
   if(!best||best.err>SHAPE_TOL){
@@ -1173,17 +1177,18 @@ function dbOf(re,im){
   return m>1e-6?Math.max(-48,20*Math.log10(m)):-48;
 }
 /* The bands run in parallel, so they add as complex numbers rather than as the
-   dB sums a cascade uses. The mid ships at -1, which is what makes a
+   dB sums a cascade uses. One band is inverted, which is what makes a
    Linkwitz-Riley split recombine flat. */
 function drcBands(fs){
-  var band,g;
+  var band,g,leftover=-1;
   if(FLOW===3){
-    /* Only two sections and two gains: the low band is what the other two do
-       not take, and it is always summed at unity. An empty section list runs
-       through the product below as a flat 1, which is exactly right. */
-    if(!$('sm0-t')||!$('mgm'))return null;
-    band=[[],[designBq(bqGet('sm',0),fs)],[designBq(bqGet('sh',0),fs)]];
-    g=[1,num('mgm'),num('mgh')];
+    /* Only two sections and two gains: the mid band is the input less what the
+       other two take, so it has to be worked out per point rather than by
+       cascading, and the high band is always summed at unity. */
+    if(!$('sl0-t')||!$('mgl'))return null;
+    band=[[designBq(bqGet('sl',0),fs)],null,[designBq(bqGet('sh',0),fs)]];
+    g=[num('mgl'),num('mgm'),1];
+    leftover=1;
   }else{
     if(!$('xl0-t')||!$('mg0'))return null;
     band=[[designBq(bqGet('xl',0),fs)],
@@ -1194,16 +1199,24 @@ function drcBands(fs){
   for(var m=0;m<3;m++)if(isNaN(g[m]))return null;
   var N=360,F0=20,F1=Math.min(20000,fs/2),out=[[],[],[],[]],b,k,i;
   for(i=0;i<=N;i++){
-    var w=2*Math.PI*F0*Math.pow(F1/F0,i/N)/fs,sr=0,si=0;
+    var w=2*Math.PI*F0*Math.pow(F1/F0,i/N)/fs,sr=0,si=0,br=[],bi=[];
     for(b=0;b<3;b++){
-      var re=1,im=0;
-      for(k=0;k<band[b].length;k++){
-        var r=response(band[b][k],w),dd=r.dr*r.dr+r.di*r.di;
+      var re=1,im=0,sec=band[b]||[];
+      for(k=0;k<sec.length;k++){
+        var r=response(sec[k],w),dd=r.dr*r.dr+r.di*r.di;
         var qr=(r.nr*r.dr+r.ni*r.di)/dd,qi=(r.ni*r.dr-r.nr*r.di)/dd;
         var t=re*qr-im*qi;im=re*qi+im*qr;re=t;
       }
-      var sg=g[b];sr+=sg*re;si+=sg*im;
-      out[b].push(dbOf(re*Math.abs(sg),im*Math.abs(sg)));
+      br.push(re);bi.push(im);
+    }
+    if(leftover>=0){
+      var lr=1,li=0;
+      for(b=0;b<3;b++)if(b!==leftover){lr-=br[b];li-=bi[b];}
+      br[leftover]=lr;bi[leftover]=li;
+    }
+    for(b=0;b<3;b++){
+      var sg=g[b];sr+=sg*br[b];si+=sg*bi[b];
+      out[b].push(dbOf(br[b]*Math.abs(sg),bi[b]*Math.abs(sg)));
     }
     out[3].push(dbOf(sr,si));
   }
@@ -1273,7 +1286,7 @@ function drcSlopes(){
       (parseInt($('r'+r+'-m').value,10)===1?ratio:1/ratio).toFixed(2):'';
   }
   for(var m=0;m<3;m++){
-    var lab=$('mix'+m),v=FLOW===3?(m===0?1:num(m===1?'mgm':'mgh')):num('mg'+m);
+    var lab=$('mix'+m),v=FLOW===3?(m===2?1:num(m===0?'mgl':'mgm')):num('mg'+m);
     if(lab)lab.textContent=isNaN(v)?'':(v>0?'x+':'x')+v;
   }
 }
@@ -2019,14 +2032,14 @@ function populate(c){
   for(i=0;i<c.dbe.low.length;i++)bqSet('dl',i,c.dbe.low[i]);
   $('dbe-lower').value=c.dbe.lower_db;
   $('dbe-upper').value=c.dbe.upper_db;
-  $('sense-lo').value=c.dbe.sense_lo;
-  $('sense-hi').value=c.dbe.sense_hi;
-  $('sense-win').value=c.dbe.window_ms;
+  $('sense-lo').value=dp1(c.dbe.sense_lo);
+  $('sense-hi').value=dp1(c.dbe.sense_hi);
+  $('sense-win').value=dp1(c.dbe.window_ms);
   if(FLOW===3){
-    bqSet('sm',0,c.drc.split_mid);
+    bqSet('sl',0,c.drc.split_low);
     bqSet('sh',0,c.drc.split_high);
+    $('mgl').value=c.drc.mix_low;
     $('mgm').value=c.drc.mix_mid;
-    $('mgh').value=c.drc.mix_high;
   }else{
     bqSet('xl',0,c.drc.cross[0]);
     bqSet('xm',0,c.drc.cross[1]);
@@ -2036,9 +2049,9 @@ function populate(c){
     $('fvol').value=c.fine_volume;
   }
   for(i=0;i<3;i++){
-    $('t'+i+'-e').value=c.drc.timing[i].energy;
-    $('t'+i+'-a').value=c.drc.timing[i].attack;
-    $('t'+i+'-d').value=c.drc.timing[i].decay;
+    $('t'+i+'-e').value=dp1(c.drc.timing[i].energy);
+    $('t'+i+'-a').value=dp1(c.drc.timing[i].attack);
+    $('t'+i+'-d').value=dp1(c.drc.timing[i].decay);
     $('r'+i+'-m').value=c.drc.regions[i].mode;
     $('r'+i+'-r').value=c.drc.regions[i].ratio;
   }
@@ -2066,10 +2079,10 @@ function collect(){
       c.ways.push(way);
     }
     c.high_delay=parseInt($('w-delay').value,10);
-    c.drc.split_mid=bqGet('sm',0);
+    c.drc.split_low=bqGet('sl',0);
     c.drc.split_high=bqGet('sh',0);
+    c.drc.mix_low=num('mgl');
     c.drc.mix_mid=num('mgm');
-    c.drc.mix_high=num('mgh');
   }else{
     c.eq=[];
     for(i=0;i<10;i++)c.eq.push(bqGet('eq',i));
@@ -2131,10 +2144,10 @@ function validate(c){
         e=checkBq(c.ways[w].eq[i],WNAME[w]+' EQ band '+(i+1));if(e)return e;
       }
     }
-    e=checkBq(c.drc.split_mid,'Mid band split')||
+    e=checkBq(c.drc.split_low,'Low band split')||
       checkBq(c.drc.split_high,'High band split')||
-      rangeErr(c.drc.mix_mid,-1,1,'Mid band mixer gain')||
-      rangeErr(c.drc.mix_high,-1,1,'High band mixer gain');
+      rangeErr(c.drc.mix_low,-1,1,'Low band mixer gain')||
+      rangeErr(c.drc.mix_mid,-1,1,'Mid band mixer gain');
     if(e)return e;
   }else{
     for(i=0;i<c.eq.length;i++){e=checkBq(c.eq[i],'EQ band '+(i+1));if(e)return e;}
@@ -2281,8 +2294,9 @@ function doRevert(){
 
 /* Everything above is written once and switched here. Both flows' markup is in
    the document from the start; this decides which of it is real. */
+var DRC_NOTE1=null;
 var DRC_NOTE3='Two split sections rather than four: a low-pass that takes the '+
-  'mid band and a high-pass that takes the high, with the low band left as '+
+  'low band and a high-pass that takes the high, with the mid band left as '+
   'whatever those two do not claim. The composite trace is how you judge '+
   'them &mdash; any alignment is allowed, but only a complementary pair '+
   'recombines flat.';
@@ -2302,12 +2316,15 @@ function setFlow(n){
   $('aeq-way-fld').style.display=n===3?'block':'none';
   $('aeq-n').max=n===3?4:10;
   $('aeq-n').value=n===3?4:10;
+  var lab=n===3?['Low pass','Direct (leftover)','High pass']:
+                ['EQ low band','EQ mid band','EQ high band'];
+  for(var L=0;L<3;L++)$('drc-lab'+L).textContent=lab[L];
+  if(DRC_NOTE1===null)DRC_NOTE1=$('drc-note').innerHTML;
+  $('drc-note').innerHTML=n===3?DRC_NOTE3:DRC_NOTE1;
   if(n===3){
-    $('drc-lab0').textContent='Low band (direct)';
-    $('drc-note').innerHTML=DRC_NOTE3;
     fillBq('w0x-rows','w0x',1);fillBq('w0e-rows','w0e',4);
     fillBq('w1x-rows','w1x',1);fillBq('w1e-rows','w1e',4);
-    fillBq('drc-sm-rows','sm',1);fillBq('drc-sh-rows','sh',1);
+    fillBq('drc-sl-rows','sl',1);fillBq('drc-sh-rows','sh',1);
   }else{
     fillBq('eq-rows','eq',10);
     fillBq('drc-low-rows','xl',1);
@@ -2326,20 +2343,21 @@ function setFlow(n){
    safe to apply to whatever happens to be wired up. */
 var FLOW_WARN={
  3:'Switch to a bi-amp speaker?\n\n'+
-   'The two amplifier outputs stop being left and right. One drives a woofer '+
-   'and the other a tweeter, both fed from the same input.\n\n'+
-   'Unless this speaker is wired for bi-amping \u2014 one driver per output, '+
+   'The two amplifier outputs stop being left and right. Channel A, the left '+
+   'output, drives the woofer; channel B, the right output, drives the '+
+   'tweeter. Both are fed a mono sum of the incoming stereo.\n\n'+
+   'Unless this speaker is wired that way \u2014 woofer on A, tweeter on B, '+
    'with the passive crossover bypassed \u2014 it will not play correctly.\n\n'+
    'Volume will be turned down to minimum before the change is applied.',
  1:'Switch away from a bi-amp speaker?\n\n'+
-   'Both amplifier outputs go back to carrying full-range stereo. A tweeter '+
-   'still wired directly to one of them will be sent bass at full power, '+
-   'which will destroy it.\n\n'+
+   'Both amplifier outputs go back to carrying full-range stereo: channel A '+
+   'becomes left again and channel B becomes right. A tweeter still wired to '+
+   'channel B will be sent bass at full power, which will destroy it.\n\n'+
    'Disconnect the tweeter, or restore the passive crossover, before playing '+
    'anything.\n\n'+
    'Volume will be turned down to minimum before the change is applied.'};
 var FLOW_ACTIVE=0;
-function flowName(n){return n===3?'Bi-amp speaker':'EQ controls';}
+function flowName(n){return n===3?'Bi-amp speaker':'Full-range stereo EQ';}
 
 function loadFlowChoice(){
   fetch('/api/hf/flow').then(function(r){return r.ok?r.json():null;})
@@ -2403,7 +2421,7 @@ function boot(){
     .then(loadFlowChoice);
 }
 ['pbe-hpf','pbe-harm','pbe-eff','dbe-lower','dbe-upper','sense-lo','sense-hi',
- 'sense-win','drc-t1','drc-t2','clip','mg0','mg1','mg2','mgm','mgh',
+ 'sense-win','drc-t1','drc-t2','clip','mg0','mg1','mg2','mgl','mgm',
  'fvol','pbe-en'].forEach(function(id){
   var el=$(id);
   if(el)el.addEventListener('input',touch);

@@ -60,11 +60,11 @@ int main(int argc, char **argv) {
   printf("  sensing      %.1f .. %.1f Hz  window %.1f ms\n", cfg.sense_lower_hz,
          cfg.sense_upper_hz, cfg.sense_window_ms);
   printf(
-      "  drc split    mid  f0 %8.2f Hz  Q %6.4f   high f0 %8.2f Hz  Q %6.4f\n",
-      cfg.drc_split_mid.freq_hz, cfg.drc_split_mid.q,
+      "  drc split    low  f0 %8.2f Hz  Q %6.4f   high f0 %8.2f Hz  Q %6.4f\n",
+      cfg.drc_split_low.freq_hz, cfg.drc_split_low.q,
       cfg.drc_split_high.freq_hz, cfg.drc_split_high.q);
-  printf("  drc mix      mid %.4f  high %.4f\n", cfg.drc_mix_mid,
-         cfg.drc_mix_high);
+  printf("  drc mix      low %.4f  mid %.4f\n", cfg.drc_mix_low,
+         cfg.drc_mix_mid);
   for (int b = 0; b < TAS57XX_HF3_DRC_BANDS; b++) {
     printf("  drc band%d    energy %7.2f  attack %7.2f  decay %7.2f ms\n", b,
            cfg.drc_timing[b].energy_ms, cfg.drc_timing[b].attack_ms,
