@@ -602,6 +602,16 @@ static void tas57xx_program_device(tas57xx_dev_t *d) {
 
       write_cmd(d->handle, TAS57XX_ACTIVE);
     }
+  } else if (s_flow_resident) {
+    // A flow is still in the miniDSP RAM and nothing is replacing it, so only
+    // a module reset hands playback back to the ROM program.
+    const uint8_t reset = TAS57XX_RESET_MODULES;
+    board_i2c_write(d->handle, TAS57XX_REG_RESET, &reset, sizeof(reset));
+    vTaskDelay(pdMS_TO_TICKS(10));
+    tas57xx_write_seq(d, tas57xx_init_seq);
+    board_i2c_write(d->handle, TAS57XX_REG_PLL_REF, &pll_ref, sizeof(pll_ref));
+    board_i2c_write(d->handle, TAS57XX_REG_IGNORE_ERR, &err_masks,
+                    sizeof(err_masks));
   }
 
   write_cmd(d->handle, TAS57XX_MUTE); // a flow's tail exits shutdown unmuted
@@ -984,6 +994,9 @@ static void tas57xx_hf3_load_config_locked(void) {
   tas57xx_hf3_config_t saved;
   size_t n = fread(&saved, 1, sizeof(saved), f);
   fclose(f);
+  if (n == sizeof(saved) && tas57xx_hf3_config_migrate(&saved)) {
+    ESP_LOGI(TAG, "Brought the HF3 tuning at %s forward", HF3_CONFIG_PATH);
+  }
   if (n != sizeof(saved) || saved.magic != TAS57XX_HF3_CONFIG_MAGIC ||
       saved.version != TAS57XX_HF3_CONFIG_VERSION) {
     ESP_LOGW(TAG, "Ignoring unusable HF3 tuning at %s", HF3_CONFIG_PATH);
@@ -1198,6 +1211,9 @@ static void tas57xx_reapply_saved_tuning_locked(tas57xx_dev_t *d, int flow) {
   }
   size_t n = fread(&saved, 1, sizeof(saved), f);
   fclose(f);
+  if (flow == 3 && n == want) {
+    tas57xx_hf3_config_migrate(&saved.hf3);
+  }
   const bool usable =
       n == want &&
       (flow == 3 ? saved.hf3.magic == TAS57XX_HF3_CONFIG_MAGIC &&
@@ -1273,12 +1289,45 @@ static esp_err_t tas57xx_install_base_locked(int flow) {
   return err;
 }
 
+/* Drop the flow entirely: the miniDSP goes back to its ROM stereo program,
+ * which is all a part without a usable HybridFlow can offer. Caller holds the
+ * mutex. */
+static esp_err_t tas57xx_clear_flow_locked(void) {
+  tas57xx_dev_t *d = s_dev_count > 0 ? &s_devs[0] : NULL;
+  if (d == NULL) {
+    return ESP_ERR_INVALID_STATE;
+  }
+  if (d->hf_path[0] != '\0') {
+    remove(d->hf_path);
+  }
+  free(d->hf_buf);
+  d->hf_buf = NULL;
+  d->hf_size = 0;
+  d->is_biamp = false;
+  d->has_input_mix = false;
+  s_hf1_ready = false;
+  s_hf3_ready = false;
+  tas57xx_redownload_locked();
+  s_flow_resident = false;
+  return ESP_OK;
+}
+
 esp_err_t dac_tas57xx_select_flow(int flow) {
-  if (flow != 1 && flow != 3) {
+  if (flow != 0 && flow != 1 && flow != 3) {
     return ESP_ERR_INVALID_ARG;
   }
   if (s_dac_mutex == NULL) {
     return ESP_ERR_INVALID_STATE;
+  }
+
+  if (flow == 0) {
+    xSemaphoreTake(s_dac_mutex, portMAX_DELAY);
+    esp_err_t err = tas57xx_clear_flow_locked();
+    xSemaphoreGive(s_dac_mutex);
+    if (err == ESP_OK) {
+      ESP_LOGI(TAG, "HybridFlow removed - running the built-in stereo flow");
+    }
+    return err;
   }
 
   char path[64];
