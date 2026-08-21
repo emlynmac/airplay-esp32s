@@ -1649,7 +1649,10 @@ static esp_err_t hf1_send_result(httpd_req_t *req, esp_err_t err) {
   return ESP_OK;
 }
 
-static esp_err_t hf1_page_handler(httpd_req_t *req) {
+/* One page for every flow: it asks which one is loaded and shows that, and
+ * offers to swap between the bases that are present. A board only ever runs
+ * one at a time, so there is no reason to ship the machinery twice. */
+static esp_err_t hf_page_handler(httpd_req_t *req) {
   return serve_spiffs_file(req, "/spiffs/www/hf.html", "text/html");
 }
 
@@ -1866,13 +1869,6 @@ static void hf3_config_from_json(const cJSON *root, tas57xx_hf3_config_t *cfg) {
   }
 
   hf1_num_from_json(root, "smooth_clip", &cfg->smooth_clip_db);
-}
-
-/* The same page as /hf1: it asks which flow is loaded and shows that one, and
- * offers to swap between them when both bases are present. A board only ever
- * runs one at a time, so there is no reason to ship the machinery twice. */
-static esp_err_t hf3_page_handler(httpd_req_t *req) {
-  return serve_spiffs_file(req, "/spiffs/www/hf.html", "text/html");
 }
 
 static esp_err_t hf3_get_handler(httpd_req_t *req) {
@@ -2092,8 +2088,9 @@ esp_err_t web_server_start(uint16_t port) {
   config.max_uri_handlers += 2; // bi-amp get/post
 #endif
 #ifdef CONFIG_DAC_TAS57XX
-  config.max_uri_handlers += 5; // HF1 page + get/post/commit/revert
-  config.max_uri_handlers += 5; // HF3 page + get/post/commit/revert
+  config.max_uri_handlers += 1; // the shared tuning page
+  config.max_uri_handlers += 4; // HF1 get/post/commit/revert
+  config.max_uri_handlers += 4; // HF3 get/post/commit/revert
 #endif
   config.max_resp_headers = 8;
   config.stack_size = 8192;
@@ -2303,9 +2300,9 @@ esp_err_t web_server_start(uint16_t port) {
 #endif
 
 #ifdef CONFIG_DAC_TAS57XX
-  httpd_uri_t hf1_page_uri = {
-      .uri = "/hf1", .method = HTTP_GET, .handler = hf1_page_handler};
-  httpd_register_uri_handler(s_server, &hf1_page_uri);
+  httpd_uri_t hf_page_uri = {
+      .uri = "/hf", .method = HTTP_GET, .handler = hf_page_handler};
+  httpd_register_uri_handler(s_server, &hf_page_uri);
 
   httpd_uri_t hf1_get_uri = {
       .uri = "/api/hf1", .method = HTTP_GET, .handler = hf1_get_handler};
@@ -2324,10 +2321,6 @@ esp_err_t web_server_start(uint16_t port) {
                                 .method = HTTP_POST,
                                 .handler = hf1_revert_handler};
   httpd_register_uri_handler(s_server, &hf1_revert_uri);
-
-  httpd_uri_t hf3_page_uri = {
-      .uri = "/hf3", .method = HTTP_GET, .handler = hf3_page_handler};
-  httpd_register_uri_handler(s_server, &hf3_page_uri);
 
   httpd_uri_t hf3_get_uri = {
       .uri = "/api/hf3", .method = HTTP_GET, .handler = hf3_get_handler};
