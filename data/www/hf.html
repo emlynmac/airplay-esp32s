@@ -2422,6 +2422,9 @@ function setFlow(n){
   FLOW=n;
   $('lv0-nm').textContent=n===3?'Woofer (A)':'Right (A)';
   $('lv1-nm').textContent=n===3?'Tweeter (B)':'Left (B)';
+  /* Bi-amp's two channels are a woofer and a tweeter, and moving them
+     together is the one thing you never want to do to a crossover. */
+  $('lv-gang').checked=n!==3;
   drawLevels();
   if(!n){
     /* Master volume and the channel trims are the part's own registers, so
