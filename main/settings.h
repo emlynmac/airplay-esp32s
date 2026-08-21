@@ -226,6 +226,22 @@ esp_err_t settings_get_amp_mix(uint8_t mix[SETTINGS_AMPS]);
  */
 esp_err_t settings_set_amp_mix(const uint8_t mix[SETTINGS_AMPS]);
 
+// ---- Per-channel level trim (TAS57xx) ----
+
+/** The two amplifier output channels, A and B. */
+#define SETTINGS_CHANNELS 2
+
+/**
+ * Get the saved per-channel level trims in dB (relative to master volume).
+ * @return ESP_OK if found, error otherwise
+ */
+esp_err_t settings_get_channel_trim(float trim_db[SETTINGS_CHANNELS]);
+
+/**
+ * Save the per-channel level trims (dB) to persistent storage.
+ */
+esp_err_t settings_set_channel_trim(const float trim_db[SETTINGS_CHANNELS]);
+
 // ---- Dual DAC (second amplifier) wiring ----
 
 /**
