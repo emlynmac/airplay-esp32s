@@ -13,12 +13,15 @@ static const char *TAG = "tas57xx_hf3";
 #define HF3_PBE_EFFECT_WORD 8
 /** Bypass crossfade around the bass enhancer: dry gain, then wet. */
 #define HF3_PBE_MIX_WORD 227
-/** Compander band-split filters: low-pass into the high band, then the mid. */
-#define HF3_DRC_SPLIT_HIGH_WORD 28
-#define HF3_DRC_SPLIT_MID_WORD  33
-/** Compander band mixer gains; the flow ships the high at -1. */
-#define HF3_DRC_MIX_MID_WORD  38
-#define HF3_DRC_MIX_HIGH_WORD 39
+/** Compander band splits: the low band's low-pass, then the high band's
+ *  high-pass. The mid band is whatever those two leave behind. */
+#define HF3_DRC_SPLIT_LOW_WORD  28
+#define HF3_DRC_SPLIT_HIGH_WORD 33
+/** Mixer gains for the low and mid bands; the high band is fixed at unity, and
+ *  the flow ships the mid at -1, which is what makes the split recombine
+ *  flat. */
+#define HF3_DRC_MIX_LOW_WORD 38
+#define HF3_DRC_MIX_MID_WORD 39
 /** DBE crossfade: lower threshold, then the reciprocal of the span. */
 #define HF3_DBE_MIX_WORD 69
 /** Reciprocal of the energy estimator's averaging window, in samples. */
@@ -370,36 +373,36 @@ esp_err_t tas57xx_hf3_set_drc_timing(const tas57xx_cram_sink_t *sink, int band,
 }
 
 esp_err_t tas57xx_hf3_set_drc_split(const tas57xx_cram_sink_t *sink,
-                                    const tas57xx_bq_t *mid,
+                                    const tas57xx_bq_t *low,
                                     const tas57xx_bq_t *high,
                                     uint32_t sample_rate_hz) {
-  if (!mid || !high) {
+  if (!low || !high) {
     return ESP_ERR_INVALID_ARG;
   }
   int32_t c[TAS57XX_BQ_WORDS];
-  tas57xx_bq_pack(high, sample_rate_hz, TAS57XX_BQ_NUM_FIRST, c);
+  tas57xx_bq_pack(low, sample_rate_hz, TAS57XX_BQ_NUM_FIRST, c);
   esp_err_t err =
-      tas57xx_cram_write(sink, HF3_DRC_SPLIT_HIGH_WORD, c, TAS57XX_BQ_WORDS);
+      tas57xx_cram_write(sink, HF3_DRC_SPLIT_LOW_WORD, c, TAS57XX_BQ_WORDS);
   if (err != ESP_OK) {
     return err;
   }
-  tas57xx_bq_pack(mid, sample_rate_hz, TAS57XX_BQ_NUM_FIRST, c);
-  return tas57xx_cram_write(sink, HF3_DRC_SPLIT_MID_WORD, c, TAS57XX_BQ_WORDS);
+  tas57xx_bq_pack(high, sample_rate_hz, TAS57XX_BQ_NUM_FIRST, c);
+  return tas57xx_cram_write(sink, HF3_DRC_SPLIT_HIGH_WORD, c, TAS57XX_BQ_WORDS);
 }
 
-esp_err_t tas57xx_hf3_set_drc_mix(const tas57xx_cram_sink_t *sink, float mid,
-                                  float high) {
-  if (!(mid >= TAS57XX_HF3_DRC_MIX_MIN && mid <= TAS57XX_HF3_DRC_MIX_MAX) ||
-      !(high >= TAS57XX_HF3_DRC_MIX_MIN && high <= TAS57XX_HF3_DRC_MIX_MAX)) {
+esp_err_t tas57xx_hf3_set_drc_mix(const tas57xx_cram_sink_t *sink, float low,
+                                  float mid) {
+  if (!(low >= TAS57XX_HF3_DRC_MIX_MIN && low <= TAS57XX_HF3_DRC_MIX_MAX) ||
+      !(mid >= TAS57XX_HF3_DRC_MIX_MIN && mid <= TAS57XX_HF3_DRC_MIX_MAX)) {
     return ESP_ERR_INVALID_ARG;
   }
-  int32_t w = hf3_q23_unit(mid);
-  esp_err_t err = tas57xx_cram_write(sink, HF3_DRC_MIX_MID_WORD, &w, 1);
+  int32_t w = hf3_q23_unit(low);
+  esp_err_t err = tas57xx_cram_write(sink, HF3_DRC_MIX_LOW_WORD, &w, 1);
   if (err != ESP_OK) {
     return err;
   }
-  w = hf3_q23_unit(high);
-  return tas57xx_cram_write(sink, HF3_DRC_MIX_HIGH_WORD, &w, 1);
+  w = hf3_q23_unit(mid);
+  return tas57xx_cram_write(sink, HF3_DRC_MIX_MID_WORD, &w, 1);
 }
 
 /**
@@ -489,19 +492,20 @@ void tas57xx_hf3_defaults(tas57xx_hf3_config_t *cfg) {
   cfg->sense_upper_hz = 160.0f;
   cfg->sense_window_ms = 100.0f;
 
-  /* Complementary Linkwitz-Riley pair. The stock flow puts both edges at the
-   * same frequency, which collapses the mid band to nothing and leaves the
-   * compander pass-through until someone spreads them apart. */
-  cfg->drc_split_mid.type = TAS57XX_BQ_HIGHPASS;
-  cfg->drc_split_mid.subtype = TAS57XX_BQ_SUB_LINKWITZ_RILEY_2;
-  cfg->drc_split_mid.freq_hz = 5000.0f;
-  cfg->drc_split_mid.q = 0.5f;
-  cfg->drc_split_high.type = TAS57XX_BQ_LOWPASS;
+  /* Complementary Linkwitz-Riley pair sharing a corner, which is what makes
+   * the three bands sum back to unity. The mid band is the leftover, so it
+   * comes out as a band-pass peaking at that same corner: move the two edges
+   * apart and the mid widens into a real band. */
+  cfg->drc_split_low.type = TAS57XX_BQ_LOWPASS;
+  cfg->drc_split_low.subtype = TAS57XX_BQ_SUB_LINKWITZ_RILEY_2;
+  cfg->drc_split_low.freq_hz = 5000.0f;
+  cfg->drc_split_low.q = 0.5f;
+  cfg->drc_split_high.type = TAS57XX_BQ_HIGHPASS;
   cfg->drc_split_high.subtype = TAS57XX_BQ_SUB_LINKWITZ_RILEY_2;
   cfg->drc_split_high.freq_hz = 5000.0f;
   cfg->drc_split_high.q = 0.5f;
-  cfg->drc_mix_mid = 1.0f;
-  cfg->drc_mix_high = -1.0f;
+  cfg->drc_mix_low = 1.0f;
+  cfg->drc_mix_mid = -1.0f;
 
   const tas57xx_hf3_drc_timing_t timing[TAS57XX_HF3_DRC_BANDS] = {
       {100.0f, 50.0f, 150.0f},
@@ -719,14 +723,14 @@ esp_err_t tas57xx_hf3_read(const uint8_t *img, size_t size,
     }
   }
 
-  hf3_read_bq(img, size, HF3_DRC_SPLIT_MID_WORD, sample_rate_hz,
-              &cfg->drc_split_mid);
+  hf3_read_bq(img, size, HF3_DRC_SPLIT_LOW_WORD, sample_rate_hz,
+              &cfg->drc_split_low);
   hf3_read_bq(img, size, HF3_DRC_SPLIT_HIGH_WORD, sample_rate_hz,
               &cfg->drc_split_high);
-  if (tas57xx_cram_read_image(img, size, HF3_DRC_MIX_MID_WORD, w, 2) ==
+  if (tas57xx_cram_read_image(img, size, HF3_DRC_MIX_LOW_WORD, w, 2) ==
       ESP_OK) {
-    cfg->drc_mix_mid = hf3_unq23_unit(w[0]);
-    cfg->drc_mix_high = hf3_unq23_unit(w[1]);
+    cfg->drc_mix_low = hf3_unq23_unit(w[0]);
+    cfg->drc_mix_mid = hf3_unq23_unit(w[1]);
   }
 
   for (int band = 0; band < TAS57XX_HF3_DRC_BANDS; band++) {
@@ -834,11 +838,11 @@ esp_err_t tas57xx_hf3_apply(tas57xx_cram_sink_t *sink,
            "energy window");
 
   hf3_keep(&first,
-           tas57xx_hf3_set_drc_split(sink, &cfg->drc_split_mid,
+           tas57xx_hf3_set_drc_split(sink, &cfg->drc_split_low,
                                      &cfg->drc_split_high, fs),
            "DRC split");
   hf3_keep(&first,
-           tas57xx_hf3_set_drc_mix(sink, cfg->drc_mix_mid, cfg->drc_mix_high),
+           tas57xx_hf3_set_drc_mix(sink, cfg->drc_mix_low, cfg->drc_mix_mid),
            "DRC mix");
   for (int i = 0; i < TAS57XX_HF3_DRC_BANDS; i++) {
     hf3_keep(&first,

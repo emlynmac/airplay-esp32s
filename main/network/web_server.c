@@ -1483,11 +1483,11 @@ static cJSON *hf3_config_to_json(const tas57xx_hf3_config_t *cfg) {
   hf1_add_float(dbe, "window_ms", cfg->sense_window_ms);
 
   cJSON *drc = cJSON_AddObjectToObject(root, "drc");
-  cJSON_AddItemToObject(drc, "split_mid", hf1_bq_to_json(&cfg->drc_split_mid));
+  cJSON_AddItemToObject(drc, "split_low", hf1_bq_to_json(&cfg->drc_split_low));
   cJSON_AddItemToObject(drc, "split_high",
                         hf1_bq_to_json(&cfg->drc_split_high));
+  hf1_add_float(drc, "mix_low", cfg->drc_mix_low);
   hf1_add_float(drc, "mix_mid", cfg->drc_mix_mid);
-  hf1_add_float(drc, "mix_high", cfg->drc_mix_high);
   cJSON *timing = cJSON_AddArrayToObject(drc, "timing");
   for (int i = 0; i < TAS57XX_HF3_DRC_BANDS; i++) {
     cJSON *t = cJSON_CreateObject();
@@ -1573,12 +1573,12 @@ static void hf3_config_from_json(const cJSON *root, tas57xx_hf3_config_t *cfg) {
 
   const cJSON *drc = cJSON_GetObjectItem(root, "drc");
   if (cJSON_IsObject(drc)) {
-    hf1_bq_from_json(cJSON_GetObjectItem(drc, "split_mid"),
-                     &cfg->drc_split_mid);
+    hf1_bq_from_json(cJSON_GetObjectItem(drc, "split_low"),
+                     &cfg->drc_split_low);
     hf1_bq_from_json(cJSON_GetObjectItem(drc, "split_high"),
                      &cfg->drc_split_high);
+    hf1_num_from_json(drc, "mix_low", &cfg->drc_mix_low);
     hf1_num_from_json(drc, "mix_mid", &cfg->drc_mix_mid);
-    hf1_num_from_json(drc, "mix_high", &cfg->drc_mix_high);
     const cJSON *timing = cJSON_GetObjectItem(drc, "timing");
     for (int i = 0; cJSON_IsArray(timing) && i < TAS57XX_HF3_DRC_BANDS; i++) {
       const cJSON *t = cJSON_GetArrayItem(timing, i);
