@@ -25,6 +25,34 @@ void dac_tas57xx_set_sub_offset_db(float offset_db);
 /** Get the current sub volume offset in dB. */
 float dac_tas57xx_get_sub_offset_db(void);
 
+/** The part's two amplifier outputs: channel A is left, channel B is right. */
+#define TAS57XX_CHANNELS 2
+
+/** Per-channel trim limits (dB), relative to the master volume. Cut only, so
+ *  no trim can push a channel past the ceiling the master sets. */
+#define TAS57XX_CH_TRIM_MIN_DB (-20.0f)
+#define TAS57XX_CH_TRIM_MAX_DB (0.0f)
+
+/**
+ * Trim one amplifier channel relative to the master volume, for balance or,
+ * on a bi-amp speaker, for the level between woofer and tweeter. Clamped to
+ * [TAS57XX_CH_TRIM_MIN_DB, TAS57XX_CH_TRIM_MAX_DB]. Safe to call before
+ * dac_init(); the value is applied on the next volume update.
+ */
+void dac_tas57xx_set_channel_trim_db(int ch, float trim_db);
+
+/** Get one channel's trim in dB. */
+float dac_tas57xx_get_channel_trim_db(int ch);
+
+/**
+ * Silence one channel, for comparing the two against each other. This is not
+ * persisted, so it clears on reboot.
+ */
+void dac_tas57xx_set_channel_mute(int ch, bool mute);
+
+/** True while the channel is silenced. */
+bool dac_tas57xx_get_channel_mute(int ch);
+
 /** Which input channel a bi-amp hybrid flow's mixer feeds both ways from. */
 typedef enum {
   TAS57XX_INPUT_MIX = 0, /**< (L+R)/2 */

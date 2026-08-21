@@ -168,6 +168,22 @@ esp_err_t settings_get_sub_offset(float *offset_db);
  */
 esp_err_t settings_set_sub_offset(float offset_db);
 
+// ---- Per-channel level trim ----
+
+/** The two amplifier output channels, A and B. */
+#define SETTINGS_CHANNELS 2
+
+/**
+ * Get the saved per-channel level trims in dB (relative to master volume).
+ * @return ESP_OK if found, error otherwise
+ */
+esp_err_t settings_get_channel_trim(float trim_db[SETTINGS_CHANNELS]);
+
+/**
+ * Save the per-channel level trims (dB) to persistent storage.
+ */
+esp_err_t settings_set_channel_trim(const float trim_db[SETTINGS_CHANNELS]);
+
 /**
  * Get the saved sub low-pass crossover frequency in Hz (0 = full range).
  */

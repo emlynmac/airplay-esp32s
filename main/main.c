@@ -224,6 +224,12 @@ void app_main(void) {
   if (settings_get_sub_offset(&sub_off) == ESP_OK) {
     dac_tas57xx_set_sub_offset_db(sub_off);
   }
+  float ch_trim[SETTINGS_CHANNELS];
+  if (settings_get_channel_trim(ch_trim) == ESP_OK) {
+    for (int ch = 0; ch < SETTINGS_CHANNELS; ch++) {
+      dac_tas57xx_set_channel_trim_db(ch, ch_trim[ch]);
+    }
+  }
 #elif defined(CONFIG_DAC_TAS58XX)
   // Load persisted sub level offset (pre-init safe; applied on first volume).
   float sub_off;

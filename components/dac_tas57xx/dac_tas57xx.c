@@ -96,6 +96,8 @@
 
 // P0-R61/R62 digital volume limits. 0x00 is +24 dB, 0x30 is 0 dB and 0xFE is
 // -103 dB in 0.5 dB steps (0xFF is reserved, not mute). Boost is never used.
+// R61 is channel A (left) and R62 channel B (right), matching the Linux
+// pcm512x driver, whose register map this part shares.
 #define TAS57XX_VOL_REG_MAX_DB 24.0f
 #define TAS57XX_VOL_MIN_DB     -103.0f
 
@@ -156,8 +158,8 @@ static const struct tas57xx_cmd_s tas57xx_cmd[] = {
     {0x02, 0x01}, // TAS57XX_DOWN
     {0x56, 0x10}, // TAS57XX_ANALOGUE_OFF
     {0x56, 0x00}, // TAS57XX_ANALOGUE_ON
-    {0x3E, 0x30}, // TAS57XX_SET_VOLUME_A_L - Channel A
-    {0x3D, 0x30}, // TAS57XX_SET_VOLUME_B_R - Channel B
+    {0x3D, 0x30}, // TAS57XX_SET_VOLUME_A_L - Channel A, P0-R61
+    {0x3E, 0x30}, // TAS57XX_SET_VOLUME_B_R - Channel B, P0-R62
     {0x03, 0x11}, // TAS57XX_MUTE (BA)
     {0x03, 0x00}, // TAS57XX_UNMUTE (BA)
 };
@@ -185,6 +187,12 @@ static SemaphoreHandle_t s_dac_mutex = NULL;
 // cached master volume so the trim can be re-applied on its own.
 static float s_sub_offset_db = 0.0f;
 static float s_last_airplay_db = -15.0f;
+
+// Per-channel trim and mute, index 0 = channel A, 1 = B. Mute is the volume
+// floor rather than the part's mute register, so it survives every path that
+// re-applies volume and never fights the driver's own muting.
+static float s_ch_trim_db[TAS57XX_CHANNELS] = {0.0f, 0.0f};
+static bool s_ch_muted[TAS57XX_CHANNELS] = {false, false};
 
 // Which input channel a bi-amp flow's mixer takes. Cached so it can be set
 // before dac_init() and re-applied after every flow download.
@@ -1827,21 +1835,26 @@ static uint8_t tas57xx_db_to_reg(float db_level) {
 }
 
 // Re-apply the cached master volume to every device, adding the sub offset to
-// any sub device. Caller must hold s_dac_mutex.
+// any sub device and each channel's own trim. Caller must hold s_dac_mutex.
 static void tas57xx_apply_volume_locked(void) {
+  static const tas57xx_cmd_e ch_cmd[TAS57XX_CHANNELS] = {
+      TAS57XX_SET_VOLUME_A_L, TAS57XX_SET_VOLUME_B_R};
   float base_db = tas57xx_map_volume_db(s_last_airplay_db);
-  uint8_t main_reg = tas57xx_db_to_reg(base_db);
-  uint8_t sub_reg = tas57xx_db_to_reg(base_db + s_sub_offset_db);
 
   ESP_LOGI(TAG,
-           "Volume: AirPlay %.1f dB -> DAC %.1f dB (main 0x%02X, sub %+.1f dB "
-           "0x%02X)",
-           s_last_airplay_db, base_db, main_reg, s_sub_offset_db, sub_reg);
+           "Volume: AirPlay %.1f dB -> DAC %.1f dB (A %+.1f%s, B %+.1f%s, sub "
+           "%+.1f dB)",
+           s_last_airplay_db, base_db, s_ch_trim_db[0],
+           s_ch_muted[0] ? " muted" : "", s_ch_trim_db[1],
+           s_ch_muted[1] ? " muted" : "", s_sub_offset_db);
 
   for (int i = 0; i < s_dev_count; i++) {
-    uint8_t reg_val = s_devs[i].is_sub ? sub_reg : main_reg;
-    write_cmd(s_devs[i].handle, TAS57XX_SET_VOLUME_A_L, reg_val);
-    write_cmd(s_devs[i].handle, TAS57XX_SET_VOLUME_B_R, reg_val);
+    float dev_db = base_db + (s_devs[i].is_sub ? s_sub_offset_db : 0.0f);
+    for (int ch = 0; ch < TAS57XX_CHANNELS; ch++) {
+      uint8_t reg_val = tas57xx_db_to_reg(
+          s_ch_muted[ch] ? TAS57XX_VOL_MIN_DB : dev_db + s_ch_trim_db[ch]);
+      write_cmd(s_devs[i].handle, ch_cmd[ch], reg_val);
+    }
   }
 }
 
@@ -1882,6 +1895,54 @@ void dac_tas57xx_set_sub_offset_db(float offset_db) {
 
 float dac_tas57xx_get_sub_offset_db(void) {
   return s_sub_offset_db;
+}
+
+void dac_tas57xx_set_channel_trim_db(int ch, float trim_db) {
+  if (ch < 0 || ch >= TAS57XX_CHANNELS) {
+    return;
+  }
+  if (trim_db > TAS57XX_CH_TRIM_MAX_DB) {
+    trim_db = TAS57XX_CH_TRIM_MAX_DB;
+  }
+  if (trim_db < TAS57XX_CH_TRIM_MIN_DB) {
+    trim_db = TAS57XX_CH_TRIM_MIN_DB;
+  }
+
+  // May be called before the DAC is initialised; the next volume update will
+  // pick it up.
+  if (s_dac_mutex == NULL) {
+    s_ch_trim_db[ch] = trim_db;
+    return;
+  }
+
+  xSemaphoreTake(s_dac_mutex, portMAX_DELAY);
+  s_ch_trim_db[ch] = trim_db;
+  tas57xx_apply_volume_locked();
+  xSemaphoreGive(s_dac_mutex);
+}
+
+float dac_tas57xx_get_channel_trim_db(int ch) {
+  if (ch < 0 || ch >= TAS57XX_CHANNELS) {
+    return 0.0f;
+  }
+  return s_ch_trim_db[ch];
+}
+
+void dac_tas57xx_set_channel_mute(int ch, bool mute) {
+  if (ch < 0 || ch >= TAS57XX_CHANNELS || s_dac_mutex == NULL) {
+    return;
+  }
+  xSemaphoreTake(s_dac_mutex, portMAX_DELAY);
+  s_ch_muted[ch] = mute;
+  tas57xx_apply_volume_locked();
+  xSemaphoreGive(s_dac_mutex);
+}
+
+bool dac_tas57xx_get_channel_mute(int ch) {
+  if (ch < 0 || ch >= TAS57XX_CHANNELS) {
+    return false;
+  }
+  return s_ch_muted[ch];
 }
 
 bool dac_tas57xx_has_input_mix(void) {
