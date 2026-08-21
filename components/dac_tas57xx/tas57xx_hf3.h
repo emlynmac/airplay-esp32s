@@ -200,7 +200,7 @@ esp_err_t tas57xx_hf3_set_smooth_clip(const tas57xx_cram_sink_t *sink,
                                       float threshold_db);
 
 #define TAS57XX_HF3_CONFIG_MAGIC   0x48463345u /* "HF3E" */
-#define TAS57XX_HF3_CONFIG_VERSION 2u
+#define TAS57XX_HF3_CONFIG_VERSION 3u
 
 /**
  * Every tunable parameter of the flow, in one blob.
@@ -245,6 +245,15 @@ typedef struct {
 
   float smooth_clip_db;
 } tas57xx_hf3_config_t;
+
+/**
+ * Bring a saved config forward to the current version, in place.
+ *
+ * Version 2 held the two split biquads in the opposite order, so swapping them
+ * is what keeps the amplifier doing the same thing. Returns false, leaving the
+ * config untouched, when there is nothing to bring forward.
+ */
+bool tas57xx_hf3_config_migrate(tas57xx_hf3_config_t *cfg);
 
 /**
  * Fill in the tuning the stock flow ships with: a 1 kHz Linkwitz-Riley 2

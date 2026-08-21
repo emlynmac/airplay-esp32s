@@ -1689,10 +1689,10 @@ static esp_err_t hf_flow_post_handler(httpd_req_t *req) {
   cJSON *root = cJSON_Parse(body);
   free(body);
   cJSON *flow = root ? cJSON_GetObjectItem(root, "flow") : NULL;
-  int want = cJSON_IsNumber(flow) ? flow->valueint : 0;
+  int want = cJSON_IsNumber(flow) ? flow->valueint : -1;
   cJSON_Delete(root);
-  if (want != 1 && want != 3) {
-    httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Expected flow 1 or 3");
+  if (want != 0 && want != 1 && want != 3) {
+    httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Expected flow 0, 1 or 3");
     return ESP_FAIL;
   }
 
