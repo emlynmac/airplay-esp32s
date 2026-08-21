@@ -803,18 +803,20 @@ function solvePeaking(t,fs){
   return {type:1,sub:0,freq:w*fs/(2*Math.PI),q:sw/(2*alpha),
           gain:40*Math.log10(A),coeff:[]};
 }
-function unCustom(prefix,i){
+function unCustom(prefix,i,quiet){
   var b=bqGet(prefix,i),fs=(cfg&&cfg.sample_rate)||44100,k;
-  if(b.type!==T_CUSTOM)return;
-  for(k=0;k<5;k++)if(isNaN(b.coeff[k]))return;
+  if(b.type!==T_CUSTOM)return false;
+  for(k=0;k<5;k++)if(isNaN(b.coeff[k]))return false;
   var t={b0:b.coeff[0],b1:b.coeff[1],b2:b.coeff[2],a1:b.coeff[3],a2:b.coeff[4]};
   if(isUnity(t)){
     bqSet(prefix,i,{type:T_BYPASS,sub:0,freq:1000,q:0.707,gain:0,coeff:null});
-    touch();
-    show($('msg'),'That section passes the signal through unchanged - set to'+
-         ' All pass. Applying will replace its coefficients with a plain'+
-         ' unity section, which does the same thing.','ok');
-    return;
+    if(!quiet){
+      touch();
+      show($('msg'),'That section passes the signal through unchanged - set to'+
+           ' All pass. Applying will replace its coefficients with a plain'+
+           ' unity section, which does the same thing.','ok');
+    }
+    return true;
   }
   var f0=b.freq>10?b.freq:1000,q0=b.q>0.05?b.q:0.707,best=null;
   var pk=solvePeaking(t,fs),pkBad=null;
@@ -840,6 +842,7 @@ function unCustom(prefix,i){
         }
   }
   if(!best||best.err>SHAPE_TOL){
+    if(quiet)return false;
     if(pkBad){
       var r0=qRange(1),why=[];
       if(pkBad.freq<10||pkBad.freq>20000)why.push('the frequency');
@@ -857,7 +860,7 @@ function unCustom(prefix,i){
                  .toFixed(2)+' dB out':'')+
            ', so it stays Custom. It is still exact as it stands.','info');
     }
-    return;
+    return false;
   }
   /* Rounded to the steps the row offers, so what is shown is what will be
      encoded, and re-checked afterwards in case rounding moved it too far. */
@@ -866,16 +869,33 @@ function unCustom(prefix,i){
   best.bq.gain=Math.round(best.bq.gain*100)/100;
   var final=coefErr(t,designBq(best.bq,fs));
   if(final>SHAPE_TOL){
-    show($('msg'),'Closest shape drifts once rounded to the fields'+
-         ' - leaving it Custom.','info');
-    return;
+    if(!quiet)
+      show($('msg'),'Closest shape drifts once rounded to the fields'+
+           ' - leaving it Custom.','info');
+    return false;
   }
   bqSet(prefix,i,best.bq);
-  touch();
-  show($('msg'),'Matched '+TYPES[best.bq.type].toLowerCase()+
-       (HAS_SUB[best.bq.type]?', '+SUBS[best.bq.sub].toLowerCase():'')+
-       ' - the response is unchanged to within '+
-       respErr(t,designBq(best.bq,fs),fs).toFixed(3)+' dB.','ok');
+  if(!quiet){
+    touch();
+    show($('msg'),'Matched '+TYPES[best.bq.type].toLowerCase()+
+         (HAS_SUB[best.bq.type]?', '+SUBS[best.bq.sub].toLowerCase():'')+
+         ' - the response is unchanged to within '+
+         respErr(t,designBq(best.bq,fs),fs).toFixed(3)+' dB.','ok');
+  }
+  return true;
+}
+
+/* The part stores five coefficients per section and nothing about how they
+   were arrived at, so a tuning read back off the flow arrives entirely
+   Custom. Fit every section before the page is shown: opening on five numbers
+   per row, none of which can be dragged, is not the tuning anyone typed. */
+function autoShape(){
+  var els=document.querySelectorAll("select[id$='-t']"),left=0,i,m;
+  for(i=0;i<els.length;i++){
+    m=/^(.*?)(\d+)-t$/.exec(els[i].id);
+    if(m&&parseInt(els[i].value,10)===T_CUSTOM&&!unCustom(m[1],+m[2],true))left++;
+  }
+  return left;
 }
 
 /* ---- response plot: mirrors design() in tas57xx_cram.c ---- */
@@ -2198,7 +2218,12 @@ function load(){
     $('unavail').style.display='none';
     $('ui').style.display='block';
     populate(c);
+    var left=autoShape();
     setDirty(false);
+    if(left)
+      show($('msg'),left+' section'+(left>1?'s':'')+' stayed Custom: no shape'+
+           ' this page offers reproduces their coefficients. They are exact'+
+           ' as they stand.','info');
     loadVol();
   }).catch(function(){show($('msg'),'Could not read the current tuning','err');});
 }
