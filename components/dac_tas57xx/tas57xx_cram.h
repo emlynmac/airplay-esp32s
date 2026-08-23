@@ -37,7 +37,9 @@ typedef enum {
   // PurePath Console lists this as "All pass". It is unity, not a phase
   // shifting section — TAS57XX_BQ_PHASE_* are the real all-pass filters.
   TAS57XX_BQ_BYPASS = 0,
-  TAS57XX_BQ_PEAKING,    // "EQ", parameterised by Q
+  // "EQ". Its Q is measured 3 dB back from the peak rather than at the
+  // half-gain points, so it is neither RBJ's Q nor the one REW reports.
+  TAS57XX_BQ_PEAKING,
   TAS57XX_BQ_PEAKING_BW, // "EQ", parameterised by bandwidth in octaves
   TAS57XX_BQ_LOW_SHELF,  // "Bass shelf"
   TAS57XX_BQ_HIGH_SHELF, // "Treble shelf"
