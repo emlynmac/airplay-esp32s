@@ -33,6 +33,10 @@
 // seek.  512 KB (~3 s) still exceeds the ring's observed steady-state fill.
 #define AP2_AUDIO_BUFFER_SIZE (512 * 1024)
 
+// Realtime (type 96) is paced over UDP and never queues ahead on the sender, so
+// none of the above applies to it.  Kept at the original advertisement.
+#define AP2_REALTIME_AUDIO_BUFFER_SIZE (1 * 1024 * 1024)
+
 // Include for audio_format_t
 #include "audio_receiver.h"
 
