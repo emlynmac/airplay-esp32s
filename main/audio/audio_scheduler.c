@@ -244,17 +244,21 @@ size_t audio_scheduler_render(audio_scheduler_t *scheduler,
                           now_us - scheduler->preroll_started_us >=
                               scheduler->fallback_after_us;
 
-      /* Fallback stays sample-granular, but do not start on a single tail
-       * sample. Require one complete render quantum (352 samples) from the
-       * chosen RTP so the very first I2S callback cannot manufacture a
-       * partial conceal just because the next AAC frame has not arrived yet.
-       * This touches at most two 1024-sample ring slots and remains O(1). */
+      /* Fallback stays sample-granular, but one render quantum of runway is
+       * not enough: playback underruns on the very next callback, re-enters
+       * preroll and starts again, which is the double `start decision' plus
+       * conceal seen after a seek.  Require a quarter of the configured
+       * preroll so arriving AAC frames have somewhere to land first. */
+      uint32_t fallback_samples = scheduler->preroll_samples / 4U;
+      if (fallback_samples < AUDIO_V2_BLOCK_SAMPLES) {
+        fallback_samples = AUDIO_V2_BLOCK_SAMPLES;
+      }
       if (fallback_due) {
         scheduler->fallback_attempts++;
       }
       if (fallback_due &&
           audio_timeline_find_contiguous_from(
-              timeline, scheduler->epoch, wanted_rtp, AUDIO_V2_BLOCK_SAMPLES,
+              timeline, scheduler->epoch, wanted_rtp, fallback_samples,
               AUDIO_V2_BLOCK_SAMPLES, &start_rtp)) {
         scheduler->cursor_rtp = start_rtp;
         /* O(1) recovery jump: skipped READY slots are reclaimed lazily. */
