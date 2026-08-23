@@ -198,6 +198,18 @@ size_t audio_scheduler_render(audio_scheduler_t *scheduler,
     uint32_t start_rtp = 0;
     scheduler->start_attempts++;
 
+    /* Audio behind the playout position can never be used, but the ring origin
+     * is pinned at the first block received after a flush.  A skip whose anchor
+     * is already seconds old therefore fills the whole ring with unplayable
+     * audio, at which point backpressure throttles the reader and reserve()
+     * fails — wanted_rtp is never reached and the stream wedges silently.
+     * Publishing the floor makes that audio recyclable; trimming keeps the
+     * occupancy count honest so the reader is not throttled against it. */
+    audio_timeline_set_playback_floor(timeline, scheduler->epoch, wanted_rtp);
+    if (audio_timeline_is_nearly_full(timeline)) {
+      (void)audio_timeline_trim_before(timeline, scheduler->epoch, wanted_rtp);
+    }
+
     /* Start in sample coordinates, not block coordinates.  The requested RTP
      * may fall anywhere inside a 1024-sample AAC PCM frame.  The timeline
      * verifies that a continuous preroll exists from that exact sample and

@@ -217,6 +217,37 @@ size_t audio_timeline_discard_from(audio_timeline_t *t, uint32_t epoch,
   return dropped;
 }
 
+size_t audio_timeline_trim_before(audio_timeline_t *t, uint32_t epoch,
+                                  uint32_t rtp) {
+  if (!t || !t->desc) {
+    return 0U;
+  }
+
+  size_t dropped = 0U;
+  portENTER_CRITICAL(&t->lock);
+
+  for (uint16_t i = 0; i < t->capacity; ++i) {
+    audio_timeline_desc_t *d = &t->desc[i];
+    if (!d->used || d->reading || d->epoch != epoch) {
+      continue;
+    }
+    if (rtp_diff(d->rtp_start + AUDIO_TIMELINE_FRAME_SAMPLES, rtp) <= 0) {
+      d->used = false;
+      if (t->count > 0U) {
+        t->count--;
+      }
+      dropped++;
+    }
+  }
+
+  portEXIT_CRITICAL(&t->lock);
+
+  if (dropped > 0U && t->space_available) {
+    xSemaphoreGive(t->space_available);
+  }
+  return dropped;
+}
+
 size_t audio_timeline_free_slots(audio_timeline_t *t) {
   if (!t || !t->desc) {
     return 0U;

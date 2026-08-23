@@ -102,6 +102,12 @@ size_t audio_timeline_count(audio_timeline_t *timeline);
 size_t audio_timeline_discard_from(audio_timeline_t *timeline, uint32_t epoch,
                                    uint32_t rtp);
 
+/* Inverse of the above: drop every READY block of `epoch` that ends at or
+ * before `rtp`, i.e. audio the playout position has already passed.  Returns
+ * blocks dropped. */
+size_t audio_timeline_trim_before(audio_timeline_t *timeline, uint32_t epoch,
+                                  uint32_t rtp);
+
 size_t audio_timeline_free_slots(audio_timeline_t *timeline);
 bool audio_timeline_is_nearly_full(audio_timeline_t *timeline);
 void audio_timeline_set_playback_floor(audio_timeline_t *timeline,
