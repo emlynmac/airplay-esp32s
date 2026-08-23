@@ -53,6 +53,66 @@ static void audio_receiver_copy_stream_state(audio_stream_t *dst,
   dst->encrypt = src->encrypt;
 }
 
+// True when the AirPlay 2 buffered engine owns playback.  The realtime path
+// keeps using audio_buffer + audio_timing; the two never run at the same time.
+static inline bool engine_v2_active(void) {
+  return receiver.engine_v2_ready && receiver.stream &&
+         receiver.stream->type == AUDIO_STREAM_BUFFERED;
+}
+
+// Create the buffered engine on first use.  It costs ~790 KB of PSRAM, so a
+// device that only ever serves AirPlay 1 never pays for it, and it is never
+// torn down afterwards: the playback task calls audio_engine_v2_render() on
+// every I2S refill and freeing the timeline underneath it would race.
+static esp_err_t audio_receiver_ensure_engine_v2(void) {
+  if (!receiver.buffered_stream) {
+    return ESP_ERR_INVALID_STATE;
+  }
+
+  if (!receiver.decoder_mutex) {
+    receiver.decoder_mutex = xSemaphoreCreateMutex();
+    if (!receiver.decoder_mutex) {
+      ESP_LOGE(TAG, "Failed to create decoder mutex");
+      return ESP_ERR_NO_MEM;
+    }
+  }
+
+  if (!receiver.engine_v2_ready) {
+    esp_err_t err = audio_engine_v2_init(&receiver.engine_v2,
+                                         &receiver.buffered_stream->format);
+    if (err != ESP_OK) {
+      ESP_LOGE(TAG, "Buffered engine init failed: %s", esp_err_to_name(err));
+      return err;
+    }
+    receiver.engine_v2_ready = true;
+  }
+
+  // The worker is torn down by audio_receiver_stop() together with the
+  // decoder it uses, so it is recreated on every buffered SETUP.
+  if (!receiver.decode_worker) {
+    esp_err_t err =
+        audio_decode_worker_create(&receiver, &receiver.decode_worker);
+    if (err != ESP_OK) {
+      ESP_LOGE(TAG, "Decode worker create failed: %s", esp_err_to_name(err));
+      return err;
+    }
+  }
+
+  return ESP_OK;
+}
+
+// Discard everything buffered for the buffered path and wait for a fresh
+// anchor.  Advancing the epoch invalidates in-flight decode jobs and the whole
+// timeline in one step, so no stale PCM can reach the new segment.
+static void audio_receiver_reset_engine_v2(void) {
+  if (!receiver.engine_v2_ready) {
+    return;
+  }
+  audio_decode_worker_discard_pending(receiver.decode_worker);
+  (void)audio_engine_v2_begin_epoch(&receiver.engine_v2, esp_timer_get_time());
+  receiver.aac_diag_rtp_valid = false;
+}
+
 esp_err_t audio_receiver_init(void) {
   if (receiver.buffer.pool) {
     return ESP_OK;
@@ -139,16 +199,26 @@ void audio_receiver_set_format(const audio_format_t *format) {
   receiver.realtime_stream->format = *format;
   receiver.buffered_stream->format = *format;
 
+  // The decode worker task may be inside audio_decoder_decode() right now.
+  if (receiver.decoder_mutex) {
+    xSemaphoreTake(receiver.decoder_mutex, portMAX_DELAY);
+  }
   audio_decoder_destroy(receiver.decoder);
   receiver.decoder = NULL;
 
   audio_decoder_config_t cfg = {.format = *format};
   receiver.decoder = audio_decoder_create(&cfg);
+  if (receiver.decoder_mutex) {
+    xSemaphoreGive(receiver.decoder_mutex);
+  }
   if (!receiver.decoder) {
     ESP_LOGW(TAG, "Decoder not initialized for codec: %s", format->codec);
   }
 
   audio_timing_set_format(&receiver.timing, format);
+  if (receiver.engine_v2_ready) {
+    audio_engine_v2_set_format(&receiver.engine_v2, format);
+  }
   audio_output_set_source_rate(format->sample_rate);
 }
 
@@ -294,6 +364,7 @@ void audio_receiver_set_anchor_time(uint64_t clock_id, uint64_t network_time_ns,
                (unsigned long)reference_rtp, (unsigned long)rtp_time,
                (long)delta, (float)delta / sample_rate);
       audio_buffer_flush(&receiver.buffer);
+      audio_receiver_reset_engine_v2();
       receiver.timing.playout_started = false;
       receiver.timing.pending_valid = false;
       receiver.timing.pending_frame_len = 0;
@@ -364,10 +435,33 @@ void audio_receiver_set_anchor_time(uint64_t clock_id, uint64_t network_time_ns,
 
   audio_timing_set_anchor(&receiver.timing, &receiver.stream->format, clock_id,
                           network_time_ns, rtp_time);
+
+  if (engine_v2_active()) {
+    // Same domain conversion audio_timing.c's compute_early_us() performs:
+    // the sender's network time minus the PTP offset is local monotonic time,
+    // which is what audio_receiver_read() feeds the scheduler.
+    const int64_t anchor_local_ns =
+        (int64_t)network_time_ns - ptp_clock_get_offset_ns();
+    int64_t playout_offset_ns =
+        ((int64_t)receiver.timing.playout_latency_samples * 1000000000LL) /
+        sample_rate;
+    if (anchor_local_ns < 0 ||
+        !audio_engine_v2_set_anchor(&receiver.engine_v2, rtp_time,
+                                    (uint64_t)anchor_local_ns,
+                                    playout_offset_ns)) {
+      // No usable mapping yet (PTP not locked, or a degenerate anchor).  Keep
+      // the buffered PCM and wait rather than discarding a full pre-buffer.
+      audio_engine_v2_wait_for_anchor(&receiver.engine_v2,
+                                      esp_timer_get_time());
+    }
+  }
 }
 
 void audio_receiver_set_playing(bool playing) {
   audio_timing_set_playing(&receiver.timing, playing);
+  if (receiver.engine_v2_ready) {
+    audio_engine_v2_set_playing(&receiver.engine_v2, playing);
+  }
   if (!playing) {
     receiver.blocks_read_in_sequence = 0;
     // Snapshot the expected RTP position at the moment of pause so that
@@ -466,6 +560,11 @@ esp_err_t audio_receiver_start(uint16_t data_port, uint16_t control_port) {
 }
 
 esp_err_t audio_receiver_start_buffered(uint16_t tcp_port) {
+  esp_err_t engine_err = audio_receiver_ensure_engine_v2();
+  if (engine_err != ESP_OK) {
+    return engine_err;
+  }
+
   audio_receiver_set_stream_type(AUDIO_STREAM_BUFFERED);
 
   if (!receiver.stream || !receiver.stream->ops ||
@@ -481,7 +580,12 @@ esp_err_t audio_receiver_start_buffered(uint16_t tcp_port) {
   // Starting a stream resets all timing state (including pause tracking)
   audio_receiver_reset_stats();
   audio_buffer_flush(&receiver.buffer);
+  audio_receiver_reset_engine_v2();
   audio_timing_reset(&receiver.timing);
+  // audio_timing defaults to playing; mirror that onto the engine, which
+  // starts paused, so a sender that never sends an explicit rate=1 still
+  // produces audio.
+  audio_engine_v2_set_playing(&receiver.engine_v2, receiver.timing.playing);
   audio_receiver_reset_resend_state();
 
   receiver.timing.ptp_locked = ptp_clock_is_locked();
@@ -540,8 +644,19 @@ void audio_receiver_stop(void) {
     receiver.buffered_stream->ops->stop(receiver.buffered_stream);
   }
 
+  // Stop the decode worker before the decoder it uses goes away.  The engine
+  // itself is kept: the playback task renders from it on every I2S refill.
+  audio_decode_worker_destroy(receiver.decode_worker);
+  receiver.decode_worker = NULL;
+
+  if (receiver.decoder_mutex) {
+    xSemaphoreTake(receiver.decoder_mutex, portMAX_DELAY);
+  }
   audio_decoder_destroy(receiver.decoder);
   receiver.decoder = NULL;
+  if (receiver.decoder_mutex) {
+    xSemaphoreGive(receiver.decoder_mutex);
+  }
 
   if (receiver.realtime_stream) {
     memset(&receiver.realtime_stream->encrypt, 0,
@@ -575,7 +690,18 @@ void audio_receiver_get_stats(audio_stats_t *stats) {
 }
 
 size_t audio_receiver_read(int16_t *buffer, size_t samples) {
-  if (!receiver.buffer.pool || !buffer || samples == 0) {
+  if (!buffer || samples == 0) {
+    return 0;
+  }
+
+  if (engine_v2_active()) {
+    return audio_engine_v2_render(
+        &receiver.engine_v2,
+        audio_output_get_next_playout_time_ns(esp_timer_get_time()), buffer,
+        samples);
+  }
+
+  if (!receiver.buffer.pool) {
     return 0;
   }
 
@@ -584,6 +710,9 @@ size_t audio_receiver_read(int16_t *buffer, size_t samples) {
 }
 
 bool audio_receiver_has_data(void) {
+  if (engine_v2_active()) {
+    return audio_timeline_count(&receiver.engine_v2.timeline) > 0;
+  }
   int buffered_frames = audio_buffer_get_frame_count(&receiver.buffer);
   return buffered_frames > 0 || receiver.timing.pending_valid;
 }
@@ -594,6 +723,7 @@ void audio_receiver_flush(void) {
   // Also disarm any pending deferred flush so it does not fire on the
   // next track's frames.
   audio_buffer_flush(&receiver.buffer);
+  audio_receiver_reset_engine_v2();
   audio_timing_reset(&receiver.timing);
   audio_receiver_reset_resend_state();
 
@@ -642,6 +772,9 @@ void audio_receiver_pause(void) {
   // SETRATEANCHORTIME anchor that re-aligns the buffered frames to the
   // correct wall-clock position; no flush or offset compensation is needed.
   audio_timing_set_playing(&receiver.timing, false);
+  if (receiver.engine_v2_ready) {
+    audio_engine_v2_set_playing(&receiver.engine_v2, false);
+  }
   receiver.blocks_read_in_sequence = 0;
 }
 
