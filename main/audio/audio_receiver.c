@@ -111,6 +111,23 @@ static void audio_receiver_reset_engine_v2(void) {
   audio_decode_worker_discard_pending(receiver.decode_worker);
   (void)audio_engine_v2_begin_epoch(&receiver.engine_v2, esp_timer_get_time());
   receiver.aac_diag_rtp_valid = false;
+  receiver.engine_v2_anchor_pending = false;
+}
+
+// Publish the pending anchor once the PTP clock is usable.  Before the first
+// lock ptp_clock_get_offset_ns() is 0, which would place the anchor days away
+// from local time and wrap the int32 RTP delta into a meaningless position.
+// Retried from the playback task; re-arming with identical values is a no-op.
+static void audio_receiver_arm_engine_v2_anchor(void) {
+  if (!receiver.engine_v2_anchor_pending || !ptp_clock_is_locked()) {
+    return;
+  }
+  if (audio_engine_v2_set_anchor(&receiver.engine_v2,
+                                 receiver.engine_v2_anchor_rtp,
+                                 receiver.engine_v2_anchor_network_ns,
+                                 receiver.engine_v2_playout_offset_ns)) {
+    receiver.engine_v2_anchor_pending = false;
+  }
 }
 
 esp_err_t audio_receiver_init(void) {
@@ -437,20 +454,22 @@ void audio_receiver_set_anchor_time(uint64_t clock_id, uint64_t network_time_ns,
                           network_time_ns, rtp_time);
 
   if (engine_v2_active()) {
-    // Same domain conversion audio_timing.c's compute_early_us() performs:
-    // the sender's network time minus the PTP offset is local monotonic time,
-    // which is what audio_receiver_read() feeds the scheduler.
-    const int64_t anchor_local_ns =
-        (int64_t)network_time_ns - ptp_clock_get_offset_ns();
-    int64_t playout_offset_ns =
+    // Keep the clock map in the sender's PTP domain and let
+    // audio_receiver_read() convert local time into it with the live offset,
+    // exactly as audio_timing.c's compute_early_us() re-reads the offset on
+    // every frame.  Baking the offset into the anchor here instead strands the
+    // stream whenever the anchor lands before a lock: SETPEERS zeroes the
+    // offset, so the anchor would sit days in the future and never be reached.
+    receiver.engine_v2_anchor_rtp = rtp_time;
+    receiver.engine_v2_anchor_network_ns = network_time_ns;
+    receiver.engine_v2_playout_offset_ns =
         ((int64_t)receiver.timing.playout_latency_samples * 1000000000LL) /
         sample_rate;
-    if (anchor_local_ns < 0 ||
-        !audio_engine_v2_set_anchor(&receiver.engine_v2, rtp_time,
-                                    (uint64_t)anchor_local_ns,
-                                    playout_offset_ns)) {
-      // No usable mapping yet (PTP not locked, or a degenerate anchor).  Keep
-      // the buffered PCM and wait rather than discarding a full pre-buffer.
+    receiver.engine_v2_anchor_pending = true;
+    audio_receiver_arm_engine_v2_anchor();
+    if (receiver.engine_v2_anchor_pending) {
+      // No usable clock yet.  Keep the buffered PCM and wait rather than
+      // discarding a full pre-buffer.
       audio_engine_v2_wait_for_anchor(&receiver.engine_v2,
                                       esp_timer_get_time());
     }
@@ -695,10 +714,13 @@ size_t audio_receiver_read(int16_t *buffer, size_t samples) {
   }
 
   if (engine_v2_active()) {
-    return audio_engine_v2_render(
-        &receiver.engine_v2,
-        audio_output_get_next_playout_time_ns(esp_timer_get_time()), buffer,
-        samples);
+    audio_receiver_arm_engine_v2_anchor();
+    // The scheduler works in the sender's PTP domain: network = local + offset.
+    const int64_t playout_ptp_ns =
+        audio_output_get_next_playout_time_ns(esp_timer_get_time()) +
+        ptp_clock_get_offset_ns();
+    return audio_engine_v2_render(&receiver.engine_v2, playout_ptp_ns, buffer,
+                                  samples);
   }
 
   if (!receiver.buffer.pool) {

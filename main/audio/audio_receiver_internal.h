@@ -50,6 +50,14 @@ typedef struct audio_receiver_state {
   uint32_t aac_diag_last_rtp;
   bool aac_diag_rtp_valid;
 
+  // Last SETRATEANCHORTIME, kept in the sender's PTP domain so it can be
+  // re-armed once the PTP clock locks.  An anchor that arrives while the
+  // offset is still 0 maps to a wrapped RTP position and must not be used.
+  bool engine_v2_anchor_pending;
+  uint32_t engine_v2_anchor_rtp;
+  uint64_t engine_v2_anchor_network_ns;
+  int64_t engine_v2_playout_offset_ns;
+
   audio_stats_t stats;
 
   int data_socket;
