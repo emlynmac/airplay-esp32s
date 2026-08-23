@@ -153,6 +153,41 @@ static double subtype_freq_scale(tas57xx_bq_subtype_t subtype) {
 }
 
 /**
+ * Bandwidth parameter of a peaking section, in PurePath Console's convention.
+ *
+ * It measures Q between the points 3 dB back from the peak rather than at the
+ * half-gain points RBJ uses, so the same number is a different filter: they
+ * differ by a factor of 2.8 at -3.4 dB and coincide exactly at +/-6 dB, where
+ * half the gain is 3 dB. A section shallower than 3 dB never gets 3 dB back
+ * from its peak at all, and the tool falls back to the half-power points.
+ *
+ * Returns beta, which is what the denominator is built from. RBJ's alpha is
+ * beta * A, and its own convention is the special case c == 1/A.
+ */
+static double peaking_beta(double w, double q, double gain_db) {
+  const double g = pow(10.0, gain_db / 20.0);
+  // The two definitions do not meet as the gain approaches 3 dB, and a gain
+  // solved back out of quantised coefficients lands either side of it, so the
+  // boundary carries a tolerance: far wider than that noise, far narrower than
+  // anything anyone would dial in.
+  const double gb = fabs(gain_db) > 3.001
+                        ? pow(10.0, (gain_db - copysign(3.0, gain_db)) / 20.0)
+                        : sqrt((1.0 + g * g) / 2.0);
+  const double num = gb * gb - 1.0;
+  const double den = g * g - gb * gb;
+  // Both vanish at unity gain, where the section passes audio through whatever
+  // c is, so anything finite will do.
+  const double c = num * den > 0.0 ? sqrt(num / den) : 1.0;
+  // Half the bandwidth in rad, which the prewarp sends to infinity as it
+  // approaches the whole band.
+  double half_bw = w / (2.0 * q);
+  if (half_bw > 1.5533) {
+    half_bw = 1.5533;
+  }
+  return c * tan(half_bw);
+}
+
+/**
  * Design one section as normalised transfer function coefficients.
  * b[] and a[] are the usual direct-form numerator and denominator with
  * a[0] == 1, i.e. before the DSP's sign and scaling conventions are applied.
@@ -226,11 +261,25 @@ static void design(const tas57xx_bq_t *bq, double fs, double b[3],
     q = f0 / q; // the notch is specified by its width in Hz
   }
 
+  double gain_db = bq->gain_db;
+  if (gain_db < TAS57XX_BQ_GAIN_MIN_DB) {
+    gain_db = TAS57XX_BQ_GAIN_MIN_DB;
+  } else if (gain_db > TAS57XX_BQ_GAIN_MAX_DB) {
+    gain_db = TAS57XX_BQ_GAIN_MAX_DB;
+  }
+  double A = pow(10.0, gain_db / 40.0);
+
   double alpha;
   switch (bq->type) {
+  case TAS57XX_BQ_PEAKING:
+    // Carried as RBJ's alpha so the clamp below and the branch further down
+    // stay shared; the peaking branch divides the A back out again.
+    alpha = A * peaking_beta(w, q, gain_db);
+    break;
   case TAS57XX_BQ_PEAKING_BW:
   case TAS57XX_BQ_PHASE_2:
     // Here `q` is bandwidth in octaves, measured between the half-gain points.
+    // Unverified against the tuning tool, unlike the Q form above.
     alpha = sw * sinh(M_LN2 / 2.0 * q * w / sw);
     break;
   default:
@@ -242,13 +291,6 @@ static void design(const tas57xx_bq_t *bq, double fs, double b[3],
   if (alpha < sw / 200.0) {
     alpha = sw / 200.0;
   }
-  double gain_db = bq->gain_db;
-  if (gain_db < TAS57XX_BQ_GAIN_MIN_DB) {
-    gain_db = TAS57XX_BQ_GAIN_MIN_DB;
-  } else if (gain_db > TAS57XX_BQ_GAIN_MAX_DB) {
-    gain_db = TAS57XX_BQ_GAIN_MAX_DB;
-  }
-  double A = pow(10.0, gain_db / 40.0);
   double a0;
 
   switch (bq->type) {
