@@ -392,6 +392,32 @@ void audio_timing_set_playing(audio_timing_t *timing, bool playing) {
   }
 }
 
+bool audio_timing_take_deferred_flush(audio_timing_t *timing,
+                                      uint32_t timestamp,
+                                      uint32_t *flush_until_ts) {
+  if (!timing || !timing->deferred_flush_pending) {
+    return false;
+  }
+
+  const uint32_t until = timing->flush_until_ts;
+  // Signed 32-bit subtraction handles RTP wraparound correctly.
+  if ((int32_t)(timestamp - until) < 0) {
+    return false;
+  }
+
+  // Test-and-clear: the RTSP task can re-arm at any moment, and only the
+  // caller that observes the transition may act on it.
+  if (!__atomic_exchange_n(&timing->deferred_flush_pending, false,
+                           __ATOMIC_SEQ_CST)) {
+    return false;
+  }
+
+  if (flush_until_ts) {
+    *flush_until_ts = until;
+  }
+  return true;
+}
+
 size_t audio_timing_read(audio_timing_t *timing, audio_buffer_t *buffer,
                          const audio_stream_t *stream, audio_stats_t *stats,
                          int16_t *out, size_t samples) {

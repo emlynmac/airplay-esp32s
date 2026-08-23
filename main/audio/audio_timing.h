@@ -117,6 +117,15 @@ void audio_timing_set_anchor(audio_timing_t *timing,
                              const audio_format_t *format, uint64_t clock_id,
                              uint64_t network_time_ns, uint32_t rtp_time);
 void audio_timing_set_playing(audio_timing_t *timing, bool playing);
+
+// Consume a pending deferred flush if `timestamp` has reached the boundary.
+// Returns true exactly once per armed flush and stores the boundary in
+// *flush_until_ts.  Used by the buffered path, where the flush is applied by
+// the decode task rather than by audio_timing_read().
+bool audio_timing_take_deferred_flush(audio_timing_t *timing,
+                                      uint32_t timestamp,
+                                      uint32_t *flush_until_ts);
+
 size_t audio_timing_read(audio_timing_t *timing, audio_buffer_t *buffer,
                          const audio_stream_t *stream, audio_stats_t *stats,
                          int16_t *out, size_t samples);

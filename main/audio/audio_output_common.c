@@ -17,6 +17,19 @@
 
 #include "audio_output.h"
 
+// ~5 ms of scheduling + write delay between this call and the samples
+// reaching the backend.  Mirrors PIPELINE_LATENCY_US in audio_timing.c.
+#define OUTPUT_PIPELINE_LATENCY_US 5000
+
+// Not weak: every backend wants the same answer, and it is derived entirely
+// from audio_output_get_hardware_latency_us(), which each one already
+// provides.
+int64_t audio_output_get_next_playout_time_ns(int64_t now_us) {
+  return (now_us + (int64_t)audio_output_get_hardware_latency_us() +
+          OUTPUT_PIPELINE_LATENCY_US) *
+         1000LL;
+}
+
 __attribute__((weak)) bool audio_output_get_pipeline_us(int64_t *now_us,
                                                         uint32_t *pipeline_us) {
   (void)now_us;
