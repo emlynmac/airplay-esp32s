@@ -244,8 +244,6 @@ bool audio_stream_decode_encoded_packet(audio_receiver_state_t *state,
     return false;
   }
 
-  (void)__atomic_add_fetch(&state->engine_v2.diag_pcm_inserted, 1U,
-                           __ATOMIC_RELAXED);
   state->stats.packets_received++;
   return true;
 }
