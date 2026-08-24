@@ -134,6 +134,15 @@ size_t audio_timeline_trim_before(audio_timeline_t *timeline, uint32_t epoch,
 
 size_t audio_timeline_free_slots(audio_timeline_t *timeline);
 bool audio_timeline_is_nearly_full(audio_timeline_t *timeline);
+
+/* True when `rtp_start` cannot be addressed yet because it carries a different
+ * RTP phase to the blocks already buffered for `epoch`.  The timeline holds one
+ * phase per epoch, so a mid-stream phase change (a gapless track transition
+ * whose RTP step is not a whole number of frames) can only be adopted once the
+ * outgoing audio has drained.  Producers should wait rather than discard. */
+bool audio_timeline_phase_blocked(audio_timeline_t *timeline, uint32_t epoch,
+                                  uint32_t rtp_start);
+
 void audio_timeline_set_playback_floor(audio_timeline_t *timeline,
                                        uint32_t epoch, uint32_t floor_rtp);
 

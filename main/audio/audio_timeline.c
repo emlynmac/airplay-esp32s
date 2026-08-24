@@ -70,7 +70,20 @@ static bool ensure_base_locked(audio_timeline_t *t, uint32_t epoch,
     return true;
   }
   /* All frame starts in one epoch must share the same phase. */
-  return rtp_diff(frame_start, t->base_rtp) % (int32_t)t->frame_samples == 0;
+  if (rtp_diff(frame_start, t->base_rtp) % (int32_t)t->frame_samples == 0) {
+    return true;
+  }
+  /* A gapless track change can shift RTP phase without ending the epoch: the
+   * sender simply steps by a value that is not a whole number of frames.  Once
+   * the ring is empty no descriptor is addressed relative to the old base, so
+   * adopt the new phase instead of rejecting every write for the rest of the
+   * epoch.  While blocks are still outstanding the old phase must stand, so
+   * the new track only lands after the outgoing one has played out. */
+  if (t->count == 0U && t->writing_count == 0U) {
+    t->base_rtp = frame_start;
+    return true;
+  }
+  return false;
 }
 
 /* Find the READY block covering target, or the first READY block after it.
@@ -305,6 +318,20 @@ size_t audio_timeline_free_slots(audio_timeline_t *t) {
 
 bool audio_timeline_is_nearly_full(audio_timeline_t *t) {
   return t && audio_timeline_free_slots(t) < 8U;
+}
+
+bool audio_timeline_phase_blocked(audio_timeline_t *t, uint32_t epoch,
+                                  uint32_t rtp_start) {
+  if (!t || !t->desc) {
+    return false;
+  }
+  portENTER_CRITICAL(&t->lock);
+  const bool blocked =
+      t->base_valid && t->base_epoch == epoch &&
+      (rtp_diff(rtp_start, t->base_rtp) % (int32_t)t->frame_samples) != 0 &&
+      (t->count != 0U || t->writing_count != 0U);
+  portEXIT_CRITICAL(&t->lock);
+  return blocked;
 }
 
 bool audio_timeline_wait_for_space(audio_timeline_t *t, uint32_t timeout_ms) {

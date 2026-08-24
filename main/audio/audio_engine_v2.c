@@ -326,7 +326,8 @@ bool audio_engine_v2_push_pcm_wait(audio_engine_v2_t *engine, uint32_t epoch,
       esp_timer_get_time() + (int64_t)timeout_ms * 1000LL;
 
   while (audio_epoch_matches(&engine->epoch, epoch)) {
-    if (audio_timeline_free_slots(&engine->timeline) > 0U) {
+    if (!audio_timeline_phase_blocked(&engine->timeline, epoch, first_rtp) &&
+        audio_timeline_free_slots(&engine->timeline) > 0U) {
       return audio_engine_v2_push_pcm(engine, epoch, first_rtp, pcm, samples,
                                       channels);
     }

@@ -10,10 +10,14 @@
 #include "audio_decoder.h"
 #include "audio_receiver_internal.h"
 
-// Upper bound on how long a decoded frame waits for timeline space.  Roughly
-// two AAC frames' worth of slack beyond the deepest expected backlog; past
-// that the packet is dropped so the decode task stays responsive to teardown.
-#define AUDIO_DECODE_PUSH_TIMEOUT_MS 2000U
+// Upper bound on how long a decoded frame waits for timeline space.  Sized to
+// outlast a full drain of the ring (~4.5 s of PCM): a gapless track change can
+// shift RTP phase mid-epoch, and the timeline can only adopt the new phase once
+// the outgoing track has played out.  Waiting that long keeps the incoming
+// track intact; past it the packet is dropped so the decode task stays
+// responsive to teardown.  Flush and teardown break the wait early by bumping
+// the epoch, so this bound is only reached when the sender really is ahead.
+#define AUDIO_DECODE_PUSH_TIMEOUT_MS 6000U
 
 static const char *TAG = "audio_stream";
 
