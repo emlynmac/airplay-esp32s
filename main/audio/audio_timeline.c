@@ -110,16 +110,21 @@ esp_err_t audio_timeline_init(audio_timeline_t *t, uint16_t capacity,
 
   t->frame_samples = frame_samples;
   t->slot_pcm_samples = frame_samples * AUDIO_V2_MAX_CHANNELS;
+  t->pool_pcm_samples = (size_t)capacity * t->slot_pcm_samples;
+  /* Enough descriptors for the pool re-cut into the smallest supported frame,
+   * so switching codecs never has to reallocate under a live stream. */
+  t->max_capacity =
+      (uint16_t)(t->pool_pcm_samples /
+                 (AUDIO_TIMELINE_RT_FRAME_SAMPLES * AUDIO_V2_MAX_CHANNELS));
 
   /* Descriptors must stay in internal RAM: they are walked under a spinlock. */
-  t->desc = calloc(capacity, sizeof(*t->desc));
+  t->desc = calloc(t->max_capacity, sizeof(*t->desc));
   if (!t->desc) {
     audio_timeline_deinit(t);
     return ESP_ERR_NO_MEM;
   }
 
-  const size_t pcm_bytes =
-      (size_t)capacity * t->slot_pcm_samples * sizeof(int16_t);
+  const size_t pcm_bytes = t->pool_pcm_samples * sizeof(int16_t);
 #ifdef CONFIG_SPIRAM
   t->pcm_pool =
       heap_caps_malloc(pcm_bytes, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
@@ -182,7 +187,12 @@ void audio_timeline_clear(audio_timeline_t *t) {
 bool audio_timeline_set_frame_samples(audio_timeline_t *t,
                                       uint32_t frame_samples) {
   if (!t || !t->desc || frame_samples == 0U ||
-      frame_samples * AUDIO_V2_MAX_CHANNELS > t->slot_pcm_samples) {
+      frame_samples > AUDIO_PCM_BLOCK_MAX_SAMPLES) {
+    return false;
+  }
+  const uint32_t slot_pcm_samples = frame_samples * AUDIO_V2_MAX_CHANNELS;
+  const size_t slots = t->pool_pcm_samples / slot_pcm_samples;
+  if (slots == 0U || slots > t->max_capacity) {
     return false;
   }
   if (t->frame_samples == frame_samples) {
@@ -192,7 +202,15 @@ bool audio_timeline_set_frame_samples(audio_timeline_t *t,
   audio_timeline_clear(t);
 
   portENTER_CRITICAL(&t->lock);
+  /* Wipe every descriptor, not just the ones the old capacity covered: growing
+   * the slot count exposes stale flags above it, and shrinking it strands any
+   * writer above the new one.  Both are safe to drop here because commit() and
+   * cancel() no-op once `writing` is clear. */
+  memset(t->desc, 0, (size_t)t->max_capacity * sizeof(*t->desc));
+  t->writing_count = 0U;
   t->frame_samples = frame_samples;
+  t->slot_pcm_samples = slot_pcm_samples;
+  t->capacity = (uint16_t)slots;
   portEXIT_CRITICAL(&t->lock);
   return true;
 }

@@ -18,8 +18,11 @@
 #define AUDIO_TIMELINE_FRAME_SAMPLES 1024U
 /* AirPlay 1 realtime ALAC: one decoded packet is 352 samples. */
 #define AUDIO_TIMELINE_RT_FRAME_SAMPLES 352U
-/* ~4.46 s at 44.1 kHz for 192 AAC frames; the same 192 slots hold ~1.53 s of
- * ALAC, which is still six times the realtime path's 250 ms of lead. */
+/* PCM budget, expressed as AAC frames: ~4.46 s at 44.1 kHz.  The slot count is
+ * derived from this and the codec's frame length rather than fixed, so ALAC
+ * gets the same seconds of depth out of the same pool (558 x 352).  It needs
+ * them: latencyMin places playout 250 ms after the anchor, but the sender runs
+ * ~2 s ahead of that, so a 192-slot ALAC ring overflows continuously. */
 #define AUDIO_V2_TIMELINE_BLOCKS 192
 
 /* Slot metadata, kept separate from the PCM payload.
@@ -69,6 +72,11 @@ typedef struct {
   uint32_t frame_samples;
   uint32_t slot_pcm_samples;
 
+  /* Fixed at init.  `capacity` is pool_pcm_samples / slot_pcm_samples, and
+   * `desc` is sized for the smallest frame the pool can be re-cut into. */
+  size_t pool_pcm_samples;
+  uint16_t max_capacity;
+
   /* RTP origin for direct circular addressing.  Frame starts are
    * `frame_samples` apart but may sit at any phase.  Addressing is relative to
    * this origin so the ring also remains sequential across 32-bit RTP wrap. */
@@ -103,9 +111,10 @@ esp_err_t audio_timeline_init(audio_timeline_t *timeline, uint16_t capacity,
                               uint32_t frame_samples);
 void audio_timeline_deinit(audio_timeline_t *timeline);
 void audio_timeline_clear(audio_timeline_t *timeline);
-/* Re-point the timeline at another codec's frame length.  The slot stride is
- * fixed at init, so the new frame must fit inside it.  Block addressing is
- * derived from frame_samples, so everything held is dropped. */
+/* Re-cut the pool for another codec's frame length.  The PCM budget is fixed,
+ * so the slot count moves inversely with the frame size and the depth in
+ * seconds stays put.  Block addressing is derived from frame_samples, so
+ * everything held is dropped. */
 bool audio_timeline_set_frame_samples(audio_timeline_t *timeline,
                                       uint32_t frame_samples);
 size_t audio_timeline_count(audio_timeline_t *timeline);
