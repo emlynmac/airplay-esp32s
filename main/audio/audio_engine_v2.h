@@ -28,6 +28,7 @@ typedef struct {
   /* Conceal activity since the last status log, so the render path never has
    * to format a message itself. */
   uint64_t conceal_events_logged;
+  uint32_t drift_servo_trims_logged;
   uint32_t last_conceal_gap_rtp;
 
   /* Per-epoch ingress/decode diagnostics. Atomic increments are used because

@@ -79,9 +79,23 @@ static size_t quietest_frame_index(const int16_t *pcm, size_t frames,
  * timeline read is exact -- so an uncorrected 10-40 ppm offset walks playout
  * 40-140 ms per hour away from the rest of the group.
  *
- * Authority is one sample per DRIFT_SERVO_TRIM_INTERVAL renders: at the
- * 352-sample render quantum that is 1/(352*4) = 710 ppm, a 0.07 % pitch
- * deviation, comfortably under the ~0.2 % JND.
+ * The rate is proportional to the error, not gated on a hysteresis band.  Each
+ * render adds error*block_size to a running sum and a trim fires whenever that
+ * sum crosses DRIFT_SERVO_TRIM_THRESHOLD, which makes the trim rate
+ *   trims/s = |error| * sample_rate / THRESHOLD
+ * independently of the render size.  The loop settles where that equals the
+ * crystal drift, so the total trim count is set by the drift alone -- 21 ppm
+ * is 0.93 samples/s, i.e. ~1 trim/s no matter how the servo is tuned.  A
+ * hysteresis band cannot reduce that count, it only defers the same trims into
+ * a burst: a 5 ms / 1.5 ms band sat idle for 154 s and then ran 31 trims/s for
+ * 5 s, and a periodic 31 Hz disturbance is far more audible than one isolated
+ * seam per second.  Spreading them out is therefore both tighter and quieter.
+ *
+ * At the measured 21 ppm the error parks near 5 samples (0.1 ms) instead of
+ * sweeping the old 1.4-5.0 ms band, which is what keeps a stereo pair aligned.
+ * The closed-loop time constant is THRESHOLD / sample_rate, ~5 s, far slower
+ * than the ~1 sample of measurement noise, so the loop does not chase it; the
+ * sum is signed, so symmetric noise cancels rather than accumulating.
  *
  * No innovation clamp is needed here, unlike the servo this mirrors on the
  * realtime path.  That one measured error at whatever moment the playback task
@@ -91,9 +105,15 @@ static size_t quietest_frame_index(const int16_t *pcm, size_t frames,
  * a late call measures a correspondingly later playout instant and the error
  * stays put.  The 1/8 IIR above has only callback phase jitter left to
  * remove. */
-#define DRIFT_SERVO_ENGAGE_US     5000
-#define DRIFT_SERVO_DISENGAGE_US  1500
-#define DRIFT_SERVO_TRIM_INTERVAL 4
+#define DRIFT_SERVO_TRIM_THRESHOLD 237000
+/* Anti-windup: bound the queued correction so a transient unwinds in two trims
+ * rather than overshooting by however long it lasted. */
+#define DRIFT_SERVO_ACCUM_LIMIT (2 * DRIFT_SERVO_TRIM_THRESHOLD)
+/* Rate limit, in renders between trims.  At the 352-sample render quantum one
+ * sample per 4 renders is 710 ppm, a 0.07 % pitch deviation and comfortably
+ * under the ~0.2 % JND.  It binds only above ~3.8 ms of error, so recovery
+ * from a large transient is no slower than a pure bang-bang servo. */
+#define DRIFT_SERVO_MIN_TRIM_INTERVAL 4
 /* Stack scratch for the one spare frame a shrink trim needs. */
 #define AUDIO_SCHED_TRIM_MAX_CHANNELS 8
 /* Renders to ignore after an epoch starts.  The DMA ring is still filling, so
@@ -134,7 +154,7 @@ void audio_scheduler_begin_epoch(audio_scheduler_t *scheduler, uint32_t epoch,
   scheduler->drift_reference_network_ns = 0;
   scheduler->rendered_samples = 0;
   scheduler->error_filter_valid = false;
-  scheduler->drift_servo_engaged = false;
+  scheduler->drift_servo_accum = 0;
   scheduler->drift_servo_phase = 0;
   scheduler->drift_servo_warmup = 0;
   scheduler->drift_servo_trims = 0;
@@ -272,34 +292,32 @@ size_t audio_scheduler_render(audio_scheduler_t *scheduler,
       scheduler->drift_reference_network_ns = midpoint_network_ns;
     }
 
-    /* Engage outside the hysteresis band, then trim one sample every
-     * DRIFT_SERVO_TRIM_INTERVAL renders until the error falls back inside. */
-    const int32_t engage_samples =
-        (int32_t)(((uint64_t)clock_map->sample_rate * DRIFT_SERVO_ENGAGE_US) /
-                  1000000ULL);
-    const int32_t disengage_samples =
-        (int32_t)(((uint64_t)clock_map->sample_rate *
-                   DRIFT_SERVO_DISENGAGE_US) /
-                  1000000ULL);
-    if (!scheduler->drift_servo_engaged && abs_error > engage_samples &&
-        scheduler->drift_servo_warmup >= DRIFT_SERVO_WARMUP_RENDERS) {
-      scheduler->drift_servo_engaged = true;
-      scheduler->drift_servo_phase = 0;
-    } else if (scheduler->drift_servo_engaged &&
-               abs_error < disengage_samples) {
-      scheduler->drift_servo_engaged = false;
-    }
     if (scheduler->drift_servo_warmup < DRIFT_SERVO_WARMUP_RENDERS) {
       scheduler->drift_servo_warmup++;
-    }
-
-    if (scheduler->drift_servo_engaged &&
-        ++scheduler->drift_servo_phase >= DRIFT_SERVO_TRIM_INTERVAL) {
-      scheduler->drift_servo_phase = 0;
-      /* Cursor ahead of schedule means this device is playing early, so hold
-       * it back by repeating a sample; behind means skip one to catch up. */
-      drift_adjust = scheduler->playout_error_samples > 0 ? -1 : 1;
-      scheduler->drift_servo_trims++;
+    } else {
+      scheduler->drift_servo_accum +=
+          (int64_t)scheduler->playout_error_samples * (int64_t)samples;
+      if (scheduler->drift_servo_accum > DRIFT_SERVO_ACCUM_LIMIT) {
+        scheduler->drift_servo_accum = DRIFT_SERVO_ACCUM_LIMIT;
+      } else if (scheduler->drift_servo_accum < -DRIFT_SERVO_ACCUM_LIMIT) {
+        scheduler->drift_servo_accum = -DRIFT_SERVO_ACCUM_LIMIT;
+      }
+      if (scheduler->drift_servo_phase < DRIFT_SERVO_MIN_TRIM_INTERVAL) {
+        scheduler->drift_servo_phase++;
+      } else if (scheduler->drift_servo_accum >= DRIFT_SERVO_TRIM_THRESHOLD) {
+        /* Cursor ahead of schedule means this device is playing early, so
+         * hold it back by repeating a sample. */
+        scheduler->drift_servo_accum -= DRIFT_SERVO_TRIM_THRESHOLD;
+        drift_adjust = -1;
+        scheduler->drift_servo_phase = 0;
+        scheduler->drift_servo_trims++;
+      } else if (scheduler->drift_servo_accum <= -DRIFT_SERVO_TRIM_THRESHOLD) {
+        /* Behind schedule: skip one sample to catch up. */
+        scheduler->drift_servo_accum += DRIFT_SERVO_TRIM_THRESHOLD;
+        drift_adjust = 1;
+        scheduler->drift_servo_phase = 0;
+        scheduler->drift_servo_trims++;
+      }
     }
   }
 
@@ -340,7 +358,7 @@ size_t audio_scheduler_render(audio_scheduler_t *scheduler,
       scheduler->filtered_playout_error_q16 = 0;
       scheduler->drift_reference_error_q16 = 0;
       scheduler->drift_reference_network_ns = 0;
-      scheduler->drift_servo_engaged = false;
+      scheduler->drift_servo_accum = 0;
       scheduler->drift_servo_phase = 0;
       scheduler->drift_servo_warmup = 0;
     } else {
@@ -384,7 +402,7 @@ size_t audio_scheduler_render(audio_scheduler_t *scheduler,
         scheduler->filtered_playout_error_q16 = 0;
         scheduler->drift_reference_error_q16 = 0;
         scheduler->drift_reference_network_ns = 0;
-        scheduler->drift_servo_engaged = false;
+        scheduler->drift_servo_accum = 0;
         scheduler->drift_servo_phase = 0;
         scheduler->drift_servo_warmup = 0;
       } else {
@@ -415,7 +433,7 @@ size_t audio_scheduler_render(audio_scheduler_t *scheduler,
     scheduler->filtered_playout_error_q16 = 0;
     scheduler->drift_reference_error_q16 = 0;
     scheduler->drift_reference_network_ns = 0;
-    scheduler->drift_servo_engaged = false;
+    scheduler->drift_servo_accum = 0;
     scheduler->drift_servo_phase = 0;
     scheduler->drift_servo_warmup = 0;
     scheduler->silent_render_calls++;

@@ -163,7 +163,7 @@ void audio_engine_v2_wait_for_anchor(audio_engine_v2_t *engine,
   engine->scheduler.drift_reference_error_q16 = 0;
   engine->scheduler.drift_reference_network_ns = 0;
   engine->scheduler.error_filter_valid = false;
-  engine->scheduler.drift_servo_engaged = false;
+  engine->scheduler.drift_servo_accum = 0;
   engine->scheduler.drift_servo_phase = 0;
   engine->scheduler.drift_servo_warmup = 0;
   engine->scheduler.preroll_started_us = now_us;
@@ -476,17 +476,19 @@ size_t audio_engine_v2_render(audio_engine_v2_t *engine,
     const uint64_t new_conceals =
         engine->conceal_events - engine->conceal_events_logged;
     engine->conceal_events_logged = engine->conceal_events;
+    const uint32_t new_trims =
+        engine->scheduler.drift_servo_trims - engine->drift_servo_trims_logged;
+    engine->drift_servo_trims_logged = engine->scheduler.drift_servo_trims;
     ESP_LOGI(TAG,
              "playout: raw=%s%" PRIu32 ".%03" PRIu32 " ms span=%" PRId32
              " us filt=%s%" PRIu32 ".%03" PRIu32 " ms (%" PRId32
-             " smp) drift=%" PRId32 " ppm servo=%s/%" PRIu32
-             " buffered=%u concealed=%" PRIu64 " holes=%" PRIu64 " (+%" PRIu64
+             " smp) drift=%" PRId32 " ppm trims=%" PRIu32 "/s (%" PRIu32
+             ") buffered=%u concealed=%" PRIu64 " holes=%" PRIu64 " (+%" PRIu64
              ")",
              raw_us < 0 ? "-" : "", raw_abs_us / 1000U, raw_abs_us % 1000U,
              span_us, filtered_us < 0 ? "-" : "", filtered_abs_us / 1000U,
              filtered_abs_us % 1000U, filtered_samples,
-             engine->scheduler.estimated_drift_ppm,
-             engine->scheduler.drift_servo_engaged ? "on" : "off",
+             engine->scheduler.estimated_drift_ppm, new_trims,
              engine->scheduler.drift_servo_trims,
              (unsigned)audio_timeline_count(&engine->timeline),
              engine->concealed_samples, engine->conceal_events, new_conceals);

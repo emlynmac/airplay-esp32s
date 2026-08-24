@@ -52,7 +52,7 @@ typedef struct {
   bool error_filter_valid;
   /* Drift servo: closes the loop between the output crystal and the sender's
    * clock by trimming one sample at a time.  See audio_scheduler.c. */
-  bool drift_servo_engaged;
+  int64_t drift_servo_accum;
   uint32_t drift_servo_phase;
   uint32_t drift_servo_trims;
   uint32_t drift_servo_warmup;
