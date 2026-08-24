@@ -47,6 +47,32 @@ static void output_silence(int16_t *out, size_t samples, uint8_t channels) {
   memset(out, 0, samples * channels * sizeof(int16_t));
 }
 
+/* Index of the quietest frame in a block (smallest summed magnitude across the
+ * channels).  A servo trim duplicates or drops exactly one frame; doing that
+ * where the waveform is near zero leaves a seam proportional to the local
+ * slope, so it stays inaudible on loud tonal content that would click if the
+ * block's last frame were trimmed regardless of amplitude. */
+static size_t quietest_frame_index(const int16_t *pcm, size_t frames,
+                                   uint8_t channels) {
+  size_t best = frames > 0U ? frames - 1U : 0U;
+  int32_t best_mag = INT32_MAX;
+  for (size_t i = 0; i < frames; i++) {
+    int32_t mag = 0;
+    for (uint8_t ch = 0; ch < channels; ch++) {
+      const int32_t s = pcm[i * channels + ch];
+      mag += s < 0 ? -s : s;
+    }
+    if (mag < best_mag) {
+      best_mag = mag;
+      best = i;
+      if (mag == 0) {
+        break;
+      }
+    }
+  }
+  return best;
+}
+
 /* Drift servo.  The DAC and the sender run on independent crystals, so the RTP
  * cursor advances at the output's rate while the schedule advances at the
  * sender's.  Nothing else closes that loop -- cursor_rtp is monotonic and the
@@ -68,6 +94,8 @@ static void output_silence(int16_t *out, size_t samples, uint8_t channels) {
 #define DRIFT_SERVO_ENGAGE_US     5000
 #define DRIFT_SERVO_DISENGAGE_US  1500
 #define DRIFT_SERVO_TRIM_INTERVAL 4
+/* Stack scratch for the one spare frame a shrink trim needs. */
+#define AUDIO_SCHED_TRIM_MAX_CHANNELS 8
 /* Renders to ignore after an epoch starts.  The DMA ring is still filling, so
  * audio_output_get_pipeline_us() under-reports and the computed playout instant
  * lands early -- which reads as several ms of positive error that resolves
@@ -227,11 +255,12 @@ size_t audio_scheduler_render(audio_scheduler_t *scheduler,
           midpoint_network_ns - scheduler->drift_reference_network_ns;
       int64_t delta_q16 = scheduler->filtered_playout_error_q16 -
                           scheduler->drift_reference_error_q16;
-      int64_t delta_samples = delta_q16 / 65536LL;
       int64_t elapsed_samples =
           (elapsed_ns * (int64_t)clock_map->sample_rate) / 1000000000LL;
       if (elapsed_samples > 0) {
-        int64_t ppm = (delta_samples * 1000000LL) / elapsed_samples;
+        /* Divide in q16: truncating delta to whole samples first would
+         * quantise the result to one sample per window, 22 ppm at 44.1 kHz. */
+        int64_t ppm = (delta_q16 * 1000000LL) / (elapsed_samples * 65536LL);
         if (ppm > 20000)
           ppm = 20000;
         if (ppm < -20000)
@@ -394,12 +423,13 @@ size_t audio_scheduler_render(audio_scheduler_t *scheduler,
     return samples;
   }
 
-  /* Stretch: read one sample fewer and repeat the last one, so the block the
+  /* Stretch: read one sample fewer, then duplicate a frame so the block the
    * caller writes stays the same length while the source cursor advances one
-   * sample less.  Shrink is the mirror -- read the full block, then step the
-   * cursor one extra so that source sample is never played.  Only the stretch
-   * shortens the read; rewinding the cursor is not an option because
-   * audio_timeline_read() retires a block as soon as it is fully consumed. */
+   * sample less.  Shrink is the mirror -- read the full block plus one spare,
+   * then emit every frame but one.  Both pick the quietest frame in the block
+   * rather than its edge, so the seam is inaudible.  Rewinding the cursor is
+   * not an option because audio_timeline_read() retires a block as soon as it
+   * is fully consumed. */
   size_t request = samples;
   if (drift_adjust < 0 && request > 1U) {
     request--;
@@ -415,11 +445,27 @@ size_t audio_scheduler_render(audio_scheduler_t *scheduler,
     produced = request;
   }
   if (produced < samples) {
-    memcpy(&out[produced * channels], &out[(produced - 1U) * channels],
-           (size_t)channels * sizeof(int16_t));
+    const size_t m = quietest_frame_index(out, produced, channels);
+    memmove(&out[(m + 1U) * channels], &out[m * channels],
+            (produced - m) * channels * sizeof(int16_t));
     produced = samples;
   } else if (drift_adjust > 0) {
-    scheduler->cursor_rtp++;
+    int16_t spare[AUDIO_SCHED_TRIM_MAX_CHANNELS];
+    if (channels <= AUDIO_SCHED_TRIM_MAX_CHANNELS &&
+        audio_timeline_read(timeline, scheduler->epoch, scheduler->cursor_rtp,
+                            spare, 1U, channels, true,
+                            concealed_samples) == 1U) {
+      scheduler->cursor_rtp++;
+      scheduler->rendered_samples++;
+      const size_t m = quietest_frame_index(out, samples, channels);
+      memmove(&out[m * channels], &out[(m + 1U) * channels],
+              (samples - 1U - m) * channels * sizeof(int16_t));
+      memcpy(&out[(samples - 1U) * channels], spare,
+             (size_t)channels * sizeof(int16_t));
+    } else {
+      /* No spare frame available: fall back to skipping the next one. */
+      scheduler->cursor_rtp++;
+    }
   }
   return produced;
 }
