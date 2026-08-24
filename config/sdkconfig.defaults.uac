@@ -1,0 +1,41 @@
+# USB Audio Class input (host -> I2S DAC).
+#
+# The board enumerates on the attached computer as a stereo USB speaker and
+# plays the received audio through the same output path AirPlay uses. AirPlay
+# is suspended while the host streams and resumes once the stream goes idle.
+#
+# Layer this on top of a board's own defaults, e.g.
+#   -DSDKCONFIG_DEFAULTS="config/sdkconfig.defaults;config/sdkconfig.defaults.<board>;config/sdkconfig.defaults.uac"
+#
+# Requires a chip with USB OTG (ESP32-S2/S3/P4) and the USB D+/D- pins routed
+# to a device-role (CC pulldown) USB connector.
+
+CONFIG_USB_AUDIO_SINK=y
+CONFIG_USB_AUDIO_SINK_IDLE_MS=2000
+
+# Stereo speaker only — no microphone endpoint.
+CONFIG_UAC_SPEAKER_CHANNEL_NUM=2
+CONFIG_UAC_MIC_CHANNEL_NUM=0
+CONFIG_UAC_BIT_RESOLUTION_16=y
+
+# Must equal CONFIG_OUTPUT_SAMPLE_RATE_HZ: the UAC descriptor advertises a
+# single fixed rate and this path does not resample. TAS57xx/TAS58xx boards
+# force 44100.
+CONFIG_UAC_SAMPLE_RATE=44100
+
+# Build UAC as one function of a composite device so main/usb can add an HID
+# consumer-control interface (media keys back to the host). This makes
+# usb_device_uac withhold its own descriptors, tusb_config.h and
+# VID/PID/string/RHPORT options — CONFIG_USB_AUDIO_SINK_* replace the strings
+# and the root port defaults to full speed.
+CONFIG_USB_DEVICE_UAC_AS_PART=y
+CONFIG_USB_AUDIO_SINK_MANUFACTURER="Espressif"
+CONFIG_USB_AUDIO_SINK_PRODUCT="ESP32-S3 Audio Device"
+
+# Enable if the host is macOS (see the usb_device_uac README — the descriptor
+# cannot satisfy macOS and Windows/Linux at the same time).
+# CONFIG_UAC_SUPPORT_MACOS=y
+
+# TinyUSB claims the USB PHY, so USB-Serial-JTAG cannot also be a console.
+# Logs stay on UART0; hold BOOT while resetting to reflash over USB.
+CONFIG_ESP_CONSOLE_SECONDARY_NONE=y

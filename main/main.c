@@ -24,6 +24,10 @@
 #include "rtsp_events.h"
 #endif
 
+#ifdef CONFIG_USB_AUDIO_SINK
+#include "usb_audio_sink.h"
+#endif
+
 #ifdef CONFIG_DAC_TAS57XX
 #include "dac_tas57xx.h"
 #endif
@@ -78,7 +82,7 @@ static void start_airplay_services(void) {
   playback_control_set_source(PLAYBACK_SOURCE_AIRPLAY);
   ESP_LOGI(TAG, "AirPlay ready");
 }
-#ifdef CONFIG_BT_A2DP_ENABLE
+#if defined(CONFIG_BT_A2DP_ENABLE) || defined(CONFIG_USB_AUDIO_SINK)
 static void stop_airplay_services(void) {
   if (!s_airplay_started) {
     return;
@@ -154,6 +158,32 @@ static void network_monitor_task(void *pvParameters) {
     had_network = has_network;
   }
 }
+
+#ifdef CONFIG_USB_AUDIO_SINK
+// The USB host and AirPlay cannot both drive I2S, so hand the output
+// over for as long as the host is streaming.  Called from the sink's
+// writer task.
+static void on_usb_audio_state_changed(bool streaming) {
+  if (streaming) {
+    ESP_LOGI(TAG, "USB audio streaming — disabling AirPlay");
+    stop_airplay_services();
+    playback_control_set_source(PLAYBACK_SOURCE_USB);
+  } else {
+    ESP_LOGI(TAG, "USB audio idle — re-enabling AirPlay");
+    playback_control_set_source(PLAYBACK_SOURCE_NONE);
+#ifdef CONFIG_BT_A2DP_ENABLE
+    if (bt_a2dp_sink_is_connected()) {
+      // Bluetooth owns the output while connected; leave it alone.
+      playback_control_set_source(PLAYBACK_SOURCE_BLUETOOTH);
+      return;
+    }
+#endif
+    if (ethernet_is_connected() || wifi_is_connected()) {
+      start_airplay_services();
+    }
+  }
+}
+#endif
 
 #ifdef CONFIG_BT_A2DP_ENABLE
 static void on_bt_state_changed(bool connected) {
@@ -352,6 +382,15 @@ void app_main(void) {
         ESP_LOGE(TAG, "BT coexistence task start failed");
       }
       rtsp_events_register(on_airplay_client_event, NULL);
+    }
+  }
+#endif
+
+#ifdef CONFIG_USB_AUDIO_SINK
+  {
+    esp_err_t usb_err = usb_audio_sink_init(on_usb_audio_state_changed);
+    if (usb_err != ESP_OK) {
+      ESP_LOGE(TAG, "USB audio sink init failed: %s", esp_err_to_name(usb_err));
     }
   }
 #endif
