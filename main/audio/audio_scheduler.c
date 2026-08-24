@@ -47,6 +47,28 @@ static void output_silence(int16_t *out, size_t samples, uint8_t channels) {
   memset(out, 0, samples * channels * sizeof(int16_t));
 }
 
+/* Drift servo.  The DAC and the sender run on independent crystals, so the RTP
+ * cursor advances at the output's rate while the schedule advances at the
+ * sender's.  Nothing else closes that loop -- cursor_rtp is monotonic and the
+ * timeline read is exact -- so an uncorrected 10-40 ppm offset walks playout
+ * 40-140 ms per hour away from the rest of the group.
+ *
+ * Authority is one sample per DRIFT_SERVO_TRIM_INTERVAL renders: at the
+ * 352-sample render quantum that is 1/(352*4) = 710 ppm, a 0.07 % pitch
+ * deviation, comfortably under the ~0.2 % JND.
+ *
+ * No innovation clamp is needed here, unlike the servo this mirrors on the
+ * realtime path.  That one measured error at whatever moment the playback task
+ * happened to run, against a MODELLED queue depth, so a starved task always
+ * measured "late" and dragged the filter down.  playout_error_samples comes
+ * from audio_output_get_next_playout_time_ns(), which reads the live queue, so
+ * a late call measures a correspondingly later playout instant and the error
+ * stays put.  The 1/8 IIR above has only callback phase jitter left to
+ * remove. */
+#define DRIFT_SERVO_ENGAGE_US     5000
+#define DRIFT_SERVO_DISENGAGE_US  1500
+#define DRIFT_SERVO_TRIM_INTERVAL 4
+
 void audio_scheduler_init(audio_scheduler_t *scheduler,
                           uint32_t preroll_samples, int64_t fallback_after_us) {
   if (!scheduler) {
@@ -78,6 +100,9 @@ void audio_scheduler_begin_epoch(audio_scheduler_t *scheduler, uint32_t epoch,
   scheduler->drift_reference_ptp_ns = 0;
   scheduler->rendered_samples = 0;
   scheduler->error_filter_valid = false;
+  scheduler->drift_servo_engaged = false;
+  scheduler->drift_servo_phase = 0;
+  scheduler->drift_servo_trims = 0;
   scheduler->wait_reason = AUDIO_SCHED_WAIT_CLOCK_MAP;
   scheduler->render_calls = 0;
   scheduler->silent_render_calls = 0;
@@ -134,6 +159,9 @@ size_t audio_scheduler_render(audio_scheduler_t *scheduler,
 
   scheduler->wanted_rtp = wanted_rtp;
   scheduler->wait_reason = AUDIO_SCHED_WAIT_NONE;
+  /* +1 skips one source sample (playout speeds up), -1 repeats one (it slows
+   * down).  Applied at the timeline read below. */
+  int drift_adjust = 0;
   if (scheduler->state == AUDIO_SCHED_PLAYING) {
     /* Compare the midpoint of the block that is about to be submitted with
      * the RTP position scheduled for that same midpoint.  Measuring only the
@@ -192,6 +220,32 @@ size_t audio_scheduler_render(audio_scheduler_t *scheduler,
           scheduler->filtered_playout_error_q16;
       scheduler->drift_reference_ptp_ns = midpoint_ptp_ns;
     }
+
+    /* Engage outside the hysteresis band, then trim one sample every
+     * DRIFT_SERVO_TRIM_INTERVAL renders until the error falls back inside. */
+    const int32_t engage_samples =
+        (int32_t)(((uint64_t)clock_map->sample_rate * DRIFT_SERVO_ENGAGE_US) /
+                  1000000ULL);
+    const int32_t disengage_samples =
+        (int32_t)(((uint64_t)clock_map->sample_rate *
+                   DRIFT_SERVO_DISENGAGE_US) /
+                  1000000ULL);
+    if (!scheduler->drift_servo_engaged && abs_error > engage_samples) {
+      scheduler->drift_servo_engaged = true;
+      scheduler->drift_servo_phase = 0;
+    } else if (scheduler->drift_servo_engaged &&
+               abs_error < disengage_samples) {
+      scheduler->drift_servo_engaged = false;
+    }
+
+    if (scheduler->drift_servo_engaged &&
+        ++scheduler->drift_servo_phase >= DRIFT_SERVO_TRIM_INTERVAL) {
+      scheduler->drift_servo_phase = 0;
+      /* Cursor ahead of schedule means this device is playing early, so hold
+       * it back by repeating a sample; behind means skip one to catch up. */
+      drift_adjust = scheduler->playout_error_samples > 0 ? -1 : 1;
+      scheduler->drift_servo_trims++;
+    }
   }
 
   if (scheduler->state != AUDIO_SCHED_PLAYING) {
@@ -231,6 +285,8 @@ size_t audio_scheduler_render(audio_scheduler_t *scheduler,
       scheduler->filtered_playout_error_q16 = 0;
       scheduler->drift_reference_error_q16 = 0;
       scheduler->drift_reference_ptp_ns = 0;
+      scheduler->drift_servo_engaged = false;
+      scheduler->drift_servo_phase = 0;
     } else {
       /* fallback_after_us is an elapsed-time timeout.  Both timestamps
        * must use the same monotonic local clock.  preroll_started_us is set
@@ -272,6 +328,8 @@ size_t audio_scheduler_render(audio_scheduler_t *scheduler,
         scheduler->filtered_playout_error_q16 = 0;
         scheduler->drift_reference_error_q16 = 0;
         scheduler->drift_reference_ptp_ns = 0;
+        scheduler->drift_servo_engaged = false;
+        scheduler->drift_servo_phase = 0;
       } else {
         scheduler->state = AUDIO_SCHED_PREROLL;
         scheduler->wait_reason = fallback_due ? AUDIO_SCHED_WAIT_FALLBACK_DATA
@@ -300,19 +358,39 @@ size_t audio_scheduler_render(audio_scheduler_t *scheduler,
     scheduler->filtered_playout_error_q16 = 0;
     scheduler->drift_reference_error_q16 = 0;
     scheduler->drift_reference_ptp_ns = 0;
+    scheduler->drift_servo_engaged = false;
+    scheduler->drift_servo_phase = 0;
     scheduler->silent_render_calls++;
     output_silence(out, samples, channels);
     return samples;
   }
 
+  /* Stretch: read one sample fewer and repeat the last one, so the block the
+   * caller writes stays the same length while the source cursor advances one
+   * sample less.  Shrink is the mirror -- read the full block, then step the
+   * cursor one extra so that source sample is never played.  Only the stretch
+   * shortens the read; rewinding the cursor is not an option because
+   * audio_timeline_read() retires a block as soon as it is fully consumed. */
+  size_t request = samples;
+  if (drift_adjust < 0 && request > 1U) {
+    request--;
+  }
+
   size_t produced =
       audio_timeline_read(timeline, scheduler->epoch, scheduler->cursor_rtp,
-                          out, samples, channels, true, concealed_samples);
+                          out, request, channels, true, concealed_samples);
   scheduler->cursor_rtp += (uint32_t)produced;
   scheduler->rendered_samples += produced;
+  if (produced < request) {
+    output_silence(&out[produced * channels], request - produced, channels);
+    produced = request;
+  }
   if (produced < samples) {
-    output_silence(&out[produced * channels], samples - produced, channels);
+    memcpy(&out[produced * channels], &out[(produced - 1U) * channels],
+           (size_t)channels * sizeof(int16_t));
     produced = samples;
+  } else if (drift_adjust > 0) {
+    scheduler->cursor_rtp++;
   }
   return produced;
 }

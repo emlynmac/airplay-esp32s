@@ -22,11 +22,23 @@
 #define OUTPUT_PIPELINE_LATENCY_US 5000
 
 // Not weak: every backend wants the same answer, and it is derived entirely
-// from audio_output_get_hardware_latency_us(), which each one already
-// provides.
+// from the capability calls each one already provides.
+//
+// Prefer the LIVE queue depth over the modelled constant, for the same reason
+// compute_early_us() in audio_timing.c does: the model assumes the DMA ring
+// sits at its steady-state occupancy, so when the playback task is briefly
+// starved this call returns an instant that is too early and the caller reads
+// the stream as late.  That artifact is one-sided -- a delayed call can only
+// ever measure late -- so it biases any averaging filter downstream.  The live
+// depth moves with the delay and leaves the measured error where it was.
 int64_t audio_output_get_next_playout_time_ns(int64_t now_us) {
-  return (now_us + (int64_t)audio_output_get_hardware_latency_us() +
-          OUTPUT_PIPELINE_LATENCY_US) *
+  int64_t sampled_us = 0;
+  uint32_t pipeline_us = 0;
+  if (!audio_output_get_pipeline_us(&sampled_us, &pipeline_us)) {
+    sampled_us = now_us;
+    pipeline_us = audio_output_get_hardware_latency_us();
+  }
+  return (sampled_us + (int64_t)pipeline_us + OUTPUT_PIPELINE_LATENCY_US) *
          1000LL;
 }
 
