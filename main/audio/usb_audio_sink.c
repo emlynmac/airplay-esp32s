@@ -83,6 +83,11 @@ static usb_audio_sink_state_cb_t s_state_cb;
 static volatile bool s_streaming;
 static volatile int64_t s_last_rx_us;
 static uint32_t s_dropped;
+static uint32_t s_underruns;
+static _Atomic uint32_t s_rx_bytes;
+static int64_t s_stats_us;
+
+#define STATS_INTERVAL_US 2000000
 
 // Host feature-unit updates are handled on the TinyUSB task during a
 // control transfer; defer the (I2C) DAC writes to the sink task so USB
@@ -109,6 +114,7 @@ static esp_err_t uac_output_cb(uint8_t *buf, size_t len, void *cb_ctx) {
   }
 
   s_last_rx_us = esp_timer_get_time();
+  atomic_fetch_add(&s_rx_bytes, (uint32_t)len);
   led_audio_feed((const int16_t *)buf, len / BYTES_PER_FRAME);
 
   if (xRingbufferSend(ringbuf, buf, len, 0) != pdTRUE) {
@@ -177,6 +183,26 @@ static void ringbuf_drain(void) {
   }
 }
 
+// Diagnostic: the host's delivered frame rate should equal the I2S rate.  A
+// standing difference means the two clocks are not locked and the ring buffer
+// is absorbing the error until it runs dry or overflows.
+static void log_stats(void) {
+  int64_t now = esp_timer_get_time();
+  int64_t elapsed = now - s_stats_us;
+  if (elapsed < STATS_INTERVAL_US) {
+    return;
+  }
+  s_stats_us = now;
+  uint32_t bytes = atomic_exchange(&s_rx_bytes, 0);
+  uint32_t fps = (uint32_t)((uint64_t)(bytes / BYTES_PER_FRAME) * 1000000U /
+                            (uint64_t)elapsed);
+  ESP_LOGD(TAG,
+           "host %" PRIu32 " fps (i2s %d) ring %u/%u dropped %" PRIu32
+           " underruns %" PRIu32,
+           fps, CONFIG_OUTPUT_SAMPLE_RATE_HZ, (unsigned)ringbuf_filled(),
+           (unsigned)RINGBUF_SIZE, s_dropped, s_underruns);
+}
+
 static void usb_sink_task(void *arg) {
   (void)arg;
   static const int16_t silence[256] = {0};
@@ -204,10 +230,14 @@ static void usb_sink_task(void *arg) {
       snprintf(meta.metadata.title, METADATA_STRING_MAX, "USB Audio");
       rtsp_events_emit(RTSP_EVENT_METADATA, &meta);
       s_dropped = 0;
+      s_underruns = 0;
+      atomic_store(&s_rx_bytes, 0);
+      s_stats_us = esp_timer_get_time();
       continue;
     }
 
     apply_host_controls();
+    log_stats();
 
     size_t item_size = 0;
     void *data =
@@ -232,6 +262,7 @@ static void usb_sink_task(void *arg) {
     }
 
     // Short gap between USB packets — keep I2S fed rather than underrun.
+    s_underruns++;
     audio_output_write(silence, sizeof(silence), pdMS_TO_TICKS(10));
   }
 }
