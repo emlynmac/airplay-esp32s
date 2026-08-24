@@ -38,7 +38,7 @@ CONFIG_UAC_SAMPLE_RATE=48000
 # and the root port defaults to full speed.
 CONFIG_USB_DEVICE_UAC_AS_PART=y
 CONFIG_USB_AUDIO_SINK_MANUFACTURER="Espressif"
-CONFIG_USB_AUDIO_SINK_PRODUCT="ESP32-S3 Audio Device"
+CONFIG_USB_AUDIO_SINK_PRODUCT="ESP32 Audio Device"
 
 # Enable if the host is macOS (see the usb_device_uac README — the descriptor
 # cannot satisfy macOS and Windows/Linux at the same time).

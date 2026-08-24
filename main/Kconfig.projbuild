@@ -276,9 +276,10 @@ menu "Airplay ESP Configuration"
     config USB_AUDIO_SINK_PRODUCT
         string "USB product string"
         depends on USB_AUDIO_SINK
-        default "ESP32-S3 Audio Device"
+        default "ESP32 Audio Device"
         help
-            Name the host shows in its sound output list.
+            Name the host shows in its sound output list. Also used for the
+            audio interface, which is what Windows Device Manager displays.
 
     config USB_AUDIO_SINK_SERIAL
         string "USB serial number string"

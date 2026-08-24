@@ -34,7 +34,9 @@ static tusb_desc_device_t const desc_device = {
 
     .idVendor = CONFIG_USB_AUDIO_SINK_VID,
     .idProduct = CONFIG_USB_AUDIO_SINK_PID,
-    .bcdDevice = 0x0100,
+    // Bumped from 0x0100: Windows caches strings per VID/PID/revision and
+    // would keep showing the old interface name otherwise.
+    .bcdDevice = 0x0200,
 
     .iManufacturer = 0x01,
     .iProduct = 0x02,
@@ -91,9 +93,11 @@ static char const *string_desc_arr[] = {
     CONFIG_USB_AUDIO_SINK_MANUFACTURER, // 1
     CONFIG_USB_AUDIO_SINK_PRODUCT,      // 2
     CONFIG_USB_AUDIO_SINK_SERIAL,       // 3
-    "usb uac",                          // 4: UAC control interface
-    "speaker",                          // 5: UAC streaming interface
-    "media keys",                       // 6: HID interface
+    // Windows names a composite function from its interface string, not
+    // iProduct, so Device Manager shows this one rather than index 2.
+    CONFIG_USB_AUDIO_SINK_PRODUCT, // 4: UAC control interface
+    "speaker",                     // 5: UAC streaming interface
+    "media keys",                  // 6: HID interface
 };
 
 static uint16_t _desc_str[32];
