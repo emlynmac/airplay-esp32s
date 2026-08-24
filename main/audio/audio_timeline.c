@@ -5,27 +5,27 @@
 
 #include "esp_heap_caps.h"
 
-#define SLOT_PCM_SAMPLES (AUDIO_PCM_BLOCK_MAX_SAMPLES * AUDIO_V2_MAX_CHANNELS)
-
 static inline int32_t rtp_diff(uint32_t a, uint32_t b) {
   return (int32_t)(a - b);
 }
 
 static inline int16_t *slot_pcm(const audio_timeline_t *t, uint16_t index) {
-  return &t->pcm_pool[(size_t)index * SLOT_PCM_SAMPLES];
+  return &t->pcm_pool[(size_t)index * t->slot_pcm_samples];
 }
 
-/* Each valid AAC frame start advances by exactly 1024 RTP samples.  The low
- * 10 bits are therefore a stable frame phase for an epoch.  Physical ring
- * addressing is relative to base_rtp so it stays sequential across RTP wrap. */
+/* Each valid frame start advances by exactly `frame_samples` RTP samples, so
+ * every start in an epoch shares one phase relative to base_rtp.  Physical
+ * ring addressing is relative to base_rtp so it stays sequential across RTP
+ * wrap.  ALAC's 352-sample frame is not a power of two, so this is real
+ * division rather than a mask. */
 static inline uint16_t slot_index_for_start(const audio_timeline_t *t,
                                             uint32_t block_start) {
   /* rtp_diff() gives the short signed distance across 32-bit RTP wrap.  Every
-   * valid frame start has the same phase, so the distance is a multiple of
-   * 1024.  Normalize negative (out-of-order older) frames into the ring. */
+   * valid frame start has the same phase, so the distance is an exact multiple
+   * of frame_samples.  Normalize negative (out-of-order older) frames into the
+   * ring. */
   const int32_t delta_samples = rtp_diff(block_start, t->base_rtp);
-  const int32_t delta_blocks =
-      delta_samples / (int32_t)AUDIO_TIMELINE_FRAME_SAMPLES;
+  const int32_t delta_blocks = delta_samples / (int32_t)t->frame_samples;
   int32_t index = delta_blocks % (int32_t)t->capacity;
   if (index < 0) {
     index += t->capacity;
@@ -33,14 +33,18 @@ static inline uint16_t slot_index_for_start(const audio_timeline_t *t,
   return (uint16_t)index;
 }
 
+/* Round `cursor` down to the start of the frame containing it.  C division
+ * truncates toward zero, so negative distances need an explicit floor step;
+ * the multiply back is done unsigned so it wraps modulo 2^32 like RTP does. */
 static inline uint32_t block_start_for_cursor(const audio_timeline_t *t,
                                               uint32_t cursor) {
-  const uint32_t phase = t->base_rtp & AUDIO_TIMELINE_FRAME_MASK;
-  uint32_t start = (cursor & ~AUDIO_TIMELINE_FRAME_MASK) | phase;
-  if (rtp_diff(cursor, start) < 0) {
-    start -= AUDIO_TIMELINE_FRAME_SAMPLES;
+  const int32_t frame = (int32_t)t->frame_samples;
+  const int32_t delta = rtp_diff(cursor, t->base_rtp);
+  int32_t blocks = delta / frame;
+  if (delta % frame != 0 && delta < 0) {
+    blocks--;
   }
-  return start;
+  return t->base_rtp + (uint32_t)blocks * t->frame_samples;
 }
 
 static inline bool desc_ready_exact(const audio_timeline_desc_t *desc,
@@ -65,8 +69,8 @@ static bool ensure_base_locked(audio_timeline_t *t, uint32_t epoch,
     t->base_rtp = frame_start;
     return true;
   }
-  /* All AAC frame starts in one epoch must share the same low-10-bit phase. */
-  return ((t->base_rtp ^ frame_start) & AUDIO_TIMELINE_FRAME_MASK) == 0U;
+  /* All frame starts in one epoch must share the same phase. */
+  return rtp_diff(frame_start, t->base_rtp) % (int32_t)t->frame_samples == 0;
 }
 
 /* Find the READY block covering target, or the first READY block after it.
@@ -81,14 +85,13 @@ static bool find_covering_or_next_locked(audio_timeline_t *t, uint32_t epoch,
   uint32_t block_start = block_start_for_cursor(t, target);
   if (ready_index_for_start(t, epoch, block_start) != UINT16_MAX &&
       rtp_diff(target, block_start) >= 0 &&
-      rtp_diff(block_start + AUDIO_TIMELINE_FRAME_SAMPLES, target) > 0) {
+      rtp_diff(block_start + t->frame_samples, target) > 0) {
     *start_out = target;
     return true;
   }
 
-  uint32_t next = block_start + AUDIO_TIMELINE_FRAME_SAMPLES;
-  for (uint16_t i = 0; i < t->capacity;
-       ++i, next += AUDIO_TIMELINE_FRAME_SAMPLES) {
+  uint32_t next = block_start + t->frame_samples;
+  for (uint16_t i = 0; i < t->capacity; ++i, next += t->frame_samples) {
     if (ready_index_for_start(t, epoch, next) != UINT16_MAX) {
       *start_out = next;
       return true;
@@ -97,11 +100,16 @@ static bool find_covering_or_next_locked(audio_timeline_t *t, uint32_t epoch,
   return false;
 }
 
-esp_err_t audio_timeline_init(audio_timeline_t *t, uint16_t capacity) {
-  if (!t || capacity == 0U) {
+esp_err_t audio_timeline_init(audio_timeline_t *t, uint16_t capacity,
+                              uint32_t frame_samples) {
+  if (!t || capacity == 0U || frame_samples == 0U ||
+      frame_samples > AUDIO_PCM_BLOCK_MAX_SAMPLES) {
     return ESP_ERR_INVALID_ARG;
   }
   memset(t, 0, sizeof(*t));
+
+  t->frame_samples = frame_samples;
+  t->slot_pcm_samples = frame_samples * AUDIO_V2_MAX_CHANNELS;
 
   /* Descriptors must stay in internal RAM: they are walked under a spinlock. */
   t->desc = calloc(capacity, sizeof(*t->desc));
@@ -111,7 +119,7 @@ esp_err_t audio_timeline_init(audio_timeline_t *t, uint16_t capacity) {
   }
 
   const size_t pcm_bytes =
-      (size_t)capacity * SLOT_PCM_SAMPLES * sizeof(int16_t);
+      (size_t)capacity * t->slot_pcm_samples * sizeof(int16_t);
 #ifdef CONFIG_SPIRAM
   t->pcm_pool =
       heap_caps_malloc(pcm_bytes, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
@@ -197,7 +205,7 @@ size_t audio_timeline_discard_from(audio_timeline_t *t, uint32_t epoch,
     }
     /* Drop any block that extends past the cut point.  Blocks that end at or
      * before it belong to the outgoing track and must still play out. */
-    if (rtp_diff(d->rtp_start + AUDIO_TIMELINE_FRAME_SAMPLES, rtp) > 0) {
+    if (rtp_diff(d->rtp_start + t->frame_samples, rtp) > 0) {
       d->used = false;
       if (t->count > 0U) {
         t->count--;
@@ -231,7 +239,7 @@ size_t audio_timeline_trim_before(audio_timeline_t *t, uint32_t epoch,
     if (!d->used || d->reading || d->epoch != epoch) {
       continue;
     }
-    if (rtp_diff(d->rtp_start + AUDIO_TIMELINE_FRAME_SAMPLES, rtp) <= 0) {
+    if (rtp_diff(d->rtp_start + t->frame_samples, rtp) <= 0) {
       d->used = false;
       if (t->count > 0U) {
         t->count--;
@@ -325,8 +333,7 @@ bool audio_timeline_reserve(audio_timeline_t *t, uint32_t epoch,
   if (desc->used && desc->epoch == epoch) {
     /* Direct-ring collision: recycle only data the scheduler explicitly
      * jumped past. Unread/future PCM remains protected by backpressure. */
-    const uint32_t old_end =
-        desc->rtp_start + (uint32_t)AUDIO_TIMELINE_FRAME_SAMPLES;
+    const uint32_t old_end = desc->rtp_start + t->frame_samples;
     const bool stale = t->playback_floor_valid &&
                        t->playback_floor_epoch == epoch &&
                        rtp_diff(old_end, t->playback_floor_rtp) <= 0;
@@ -435,7 +442,7 @@ bool audio_timeline_find_contiguous_from(audio_timeline_t *t, uint32_t epoch,
       break;
     }
 
-    const uint32_t block_end = block_start + AUDIO_TIMELINE_FRAME_SAMPLES;
+    const uint32_t block_end = block_start + t->frame_samples;
     if (rtp_diff(cursor, block_start) < 0 || rtp_diff(block_end, cursor) <= 0) {
       break;
     }
@@ -478,9 +485,8 @@ bool audio_timeline_has_playable_from(audio_timeline_t *t, uint32_t epoch,
 static size_t conceal_span_locked(audio_timeline_t *t, uint32_t epoch,
                                   uint32_t cursor, uint32_t block_start,
                                   size_t limit) {
-  uint32_t next = block_start + AUDIO_TIMELINE_FRAME_SAMPLES;
-  for (uint16_t i = 0; i < t->capacity;
-       ++i, next += AUDIO_TIMELINE_FRAME_SAMPLES) {
+  uint32_t next = block_start + t->frame_samples;
+  for (uint16_t i = 0; i < t->capacity; ++i, next += t->frame_samples) {
     if (ready_index_for_start(t, epoch, next) != UINT16_MAX) {
       const int32_t gap = rtp_diff(next, cursor);
       if (gap > 0 && (uint32_t)gap < limit) {
@@ -545,12 +551,12 @@ size_t audio_timeline_read(audio_timeline_t *t, uint32_t epoch, uint32_t start,
     }
 
     off = (size_t)(cursor - block_start);
-    if (off >= AUDIO_TIMELINE_FRAME_SAMPLES) {
+    if (off >= t->frame_samples) {
       portEXIT_CRITICAL(&t->lock);
       break;
     }
     n = requested - produced;
-    const size_t avail = AUDIO_TIMELINE_FRAME_SAMPLES - off;
+    const size_t avail = t->frame_samples - off;
     if (n > avail) {
       n = avail;
     }
@@ -569,7 +575,7 @@ size_t audio_timeline_read(audio_timeline_t *t, uint32_t epoch, uint32_t start,
     const bool still_valid = desc->used && desc->epoch == epoch &&
                              desc->rtp_start == block_start && t->base_valid &&
                              t->base_epoch == epoch;
-    if (still_valid && off + n >= AUDIO_TIMELINE_FRAME_SAMPLES) {
+    if (still_valid && off + n >= t->frame_samples) {
       desc->used = false;
       if (t->count > 0U) {
         t->count--;
@@ -618,7 +624,7 @@ bool audio_timeline_get_diag(audio_timeline_t *t, uint32_t epoch,
       continue;
     }
     const uint32_t s = desc->rtp_start;
-    const uint32_t e = s + AUDIO_TIMELINE_FRAME_SAMPLES;
+    const uint32_t e = s + t->frame_samples;
 
     if (!have_any) {
       oldest = newest = s;
@@ -652,11 +658,11 @@ bool audio_timeline_get_diag(audio_timeline_t *t, uint32_t epoch,
     out->oldest_rtp = oldest;
     out->has_newest = true;
     out->newest_start_rtp = newest;
-    out->newest_end_rtp = newest + AUDIO_TIMELINE_FRAME_SAMPLES;
+    out->newest_end_rtp = newest + t->frame_samples;
   }
 
   /* Count contiguous real PCM from target when covered, otherwise from the
-   * first future block.  Fixed 1024-sample addressing makes this direct. */
+   * first future block.  Fixed-size frame addressing makes this direct. */
   if (t->base_valid && t->base_epoch == epoch &&
       (out->target_covered || out->has_next)) {
     uint32_t cursor = out->target_covered ? target : out->next_rtp;
@@ -665,7 +671,7 @@ bool audio_timeline_get_diag(audio_timeline_t *t, uint32_t epoch,
       if (ready_index_for_start(t, epoch, bs) == UINT16_MAX) {
         break;
       }
-      const uint32_t end = bs + AUDIO_TIMELINE_FRAME_SAMPLES;
+      const uint32_t end = bs + t->frame_samples;
       if (rtp_diff(cursor, bs) < 0 || rtp_diff(end, cursor) <= 0) {
         break;
       }

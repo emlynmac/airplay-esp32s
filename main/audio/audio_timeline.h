@@ -12,12 +12,16 @@
 #define AUDIO_V2_MAX_CHANNELS 2
 /* I2S render quantum. This is not a storage-block size. */
 #define AUDIO_V2_BLOCK_SAMPLES 352
+/* Largest storage block the slot pool is sized for. */
+#define AUDIO_PCM_BLOCK_MAX_SAMPLES 1024
 /* AirPlay 2 buffered AAC: one decoded AAC frame is exactly 1024 samples. */
-#define AUDIO_PCM_BLOCK_MAX_SAMPLES  1024
 #define AUDIO_TIMELINE_FRAME_SAMPLES 1024U
-#define AUDIO_TIMELINE_FRAME_MASK    (AUDIO_TIMELINE_FRAME_SAMPLES - 1U)
+/* AirPlay 1 realtime ALAC: one decoded packet is 352 samples. */
+#define AUDIO_TIMELINE_RT_FRAME_SAMPLES 352U
 /* ~4.46 s at 44.1 kHz for 192 AAC frames. */
 #define AUDIO_V2_TIMELINE_BLOCKS 192
+/* ~4.47 s at 44.1 kHz for 560 ALAC frames. */
+#define AUDIO_V2_TIMELINE_RT_BLOCKS 560
 
 /* Slot metadata, kept separate from the PCM payload.
  *
@@ -60,9 +64,15 @@ typedef struct {
   uint16_t writing_count;
   uint16_t capacity;
 
-  /* RTP origin for direct circular addressing.  Frame starts are 1024 samples
-   * apart but may have any low-10-bit phase.  Addressing is relative to this
-   * origin so the ring also remains sequential across 32-bit RTP wrap. */
+  /* Samples per storage block: 1024 for AAC, 352 for ALAC.  Held at runtime
+   * rather than as a constant because the two codecs use different frame
+   * lengths and neither may be assumed to be a power of two. */
+  uint32_t frame_samples;
+  uint32_t slot_pcm_samples;
+
+  /* RTP origin for direct circular addressing.  Frame starts are
+   * `frame_samples` apart but may sit at any phase.  Addressing is relative to
+   * this origin so the ring also remains sequential across 32-bit RTP wrap. */
   bool base_valid;
   uint32_t base_rtp;
   uint32_t base_epoch;
@@ -90,7 +100,8 @@ typedef struct {
   bool duplicate;
 } audio_timeline_reservation_t;
 
-esp_err_t audio_timeline_init(audio_timeline_t *timeline, uint16_t capacity);
+esp_err_t audio_timeline_init(audio_timeline_t *timeline, uint16_t capacity,
+                              uint32_t frame_samples);
 void audio_timeline_deinit(audio_timeline_t *timeline);
 void audio_timeline_clear(audio_timeline_t *timeline);
 size_t audio_timeline_count(audio_timeline_t *timeline);

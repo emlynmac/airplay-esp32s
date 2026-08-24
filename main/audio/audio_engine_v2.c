@@ -16,7 +16,8 @@ static const char *TAG = "audio_v2";
 #define AUDIO_V2_PUSH_WAIT_SLICE_MS 50U
 
 esp_err_t audio_engine_v2_init(audio_engine_v2_t *engine,
-                               const audio_format_t *format) {
+                               const audio_format_t *format,
+                               uint32_t frame_samples, uint16_t capacity) {
   if (!engine || !format || format->sample_rate <= 0 || format->channels <= 0 ||
       format->channels > AUDIO_V2_MAX_CHANNELS) {
     return ESP_ERR_INVALID_ARG;
@@ -27,7 +28,7 @@ esp_err_t audio_engine_v2_init(audio_engine_v2_t *engine,
   audio_epoch_init(&engine->epoch);
   audio_clock_map_reset(&engine->clock_map);
   esp_err_t err =
-      audio_timeline_init(&engine->timeline, AUDIO_V2_TIMELINE_BLOCKS);
+      audio_timeline_init(&engine->timeline, capacity, frame_samples);
   if (err != ESP_OK) {
     return err;
   }
@@ -40,8 +41,11 @@ esp_err_t audio_engine_v2_init(audio_engine_v2_t *engine,
   engine->initialized = true;
   audio_scheduler_begin_epoch(&engine->scheduler,
                               audio_epoch_get(&engine->epoch), 0);
-  ESP_LOGI(TAG, "initialized: %d Hz, %d ch, preroll=%" PRIu32,
-           format->sample_rate, format->channels, preroll_samples);
+  ESP_LOGI(TAG,
+           "initialized: %d Hz, %d ch, frame=%" PRIu32
+           " blocks=%u preroll=%" PRIu32,
+           format->sample_rate, format->channels, frame_samples,
+           (unsigned)capacity, preroll_samples);
   return ESP_OK;
 }
 
@@ -215,7 +219,7 @@ bool audio_engine_v2_push_pcm(audio_engine_v2_t *engine, uint32_t epoch,
                               uint32_t first_rtp, const int16_t *pcm,
                               size_t samples, uint8_t channels) {
   if (!engine || !engine->initialized || !pcm ||
-      samples != AUDIO_TIMELINE_FRAME_SAMPLES || channels == 0U ||
+      samples != engine->timeline.frame_samples || channels == 0U ||
       channels > AUDIO_V2_MAX_CHANNELS) {
     return false;
   }

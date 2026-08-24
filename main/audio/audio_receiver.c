@@ -78,8 +78,9 @@ static esp_err_t audio_receiver_ensure_engine_v2(void) {
   }
 
   if (!receiver.engine_v2_ready) {
-    esp_err_t err = audio_engine_v2_init(&receiver.engine_v2,
-                                         &receiver.buffered_stream->format);
+    esp_err_t err = audio_engine_v2_init(
+        &receiver.engine_v2, &receiver.buffered_stream->format,
+        AUDIO_TIMELINE_FRAME_SAMPLES, AUDIO_V2_TIMELINE_BLOCKS);
     if (err != ESP_OK) {
       ESP_LOGE(TAG, "Buffered engine init failed: %s", esp_err_to_name(err));
       return err;

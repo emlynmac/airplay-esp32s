@@ -205,15 +205,16 @@ bool audio_stream_decode_encoded_packet(audio_receiver_state_t *state,
   (void)__atomic_add_fetch(&state->engine_v2.diag_decode_ok, 1U,
                            __ATOMIC_RELAXED);
 
-  // AAC frames must advance by exactly one timeline frame.  A break means a
+  // Decoded frames must advance by exactly one timeline frame.  A break means a
   // packet was lost or reordered, which the timeline will show as a hole.
+  const uint32_t frame_samples = state->engine_v2.timeline.frame_samples;
   if (state->aac_diag_rtp_valid && state->aac_diag_epoch == packet->epoch) {
     const int32_t delta =
         (int32_t)(packet->rtp_timestamp - state->aac_diag_last_rtp);
-    if (delta != (int32_t)AUDIO_TIMELINE_FRAME_SAMPLES) {
-      ESP_LOGW(TAG, "AAC RTP step %" PRId32 " at rtp=%" PRIu32 " (expected %u)",
-               delta, packet->rtp_timestamp,
-               (unsigned)AUDIO_TIMELINE_FRAME_SAMPLES);
+    if (delta != (int32_t)frame_samples) {
+      ESP_LOGW(TAG,
+               "RTP step %" PRId32 " at rtp=%" PRIu32 " (expected %" PRIu32 ")",
+               delta, packet->rtp_timestamp, frame_samples);
     }
   }
   state->aac_diag_epoch = packet->epoch;

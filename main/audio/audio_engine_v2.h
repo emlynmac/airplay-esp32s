@@ -56,7 +56,8 @@ typedef struct {
 } audio_engine_v2_t;
 
 esp_err_t audio_engine_v2_init(audio_engine_v2_t *engine,
-                               const audio_format_t *format);
+                               const audio_format_t *format,
+                               uint32_t frame_samples, uint16_t capacity);
 void audio_engine_v2_deinit(audio_engine_v2_t *engine);
 uint32_t audio_engine_v2_begin_epoch(audio_engine_v2_t *engine, int64_t now_us);
 void audio_engine_v2_set_format(audio_engine_v2_t *engine,
