@@ -90,6 +90,8 @@ static uint32_t s_dropped;
 static _Atomic int32_t s_pending_volume = -1;
 static _Atomic int32_t s_pending_mute = -1;
 static float s_unmuted_db = -15.0f;
+// Latched mute state, owned by the sink task.
+static bool s_muted;
 
 // ============================================================================
 // UAC callbacks
@@ -137,21 +139,24 @@ static void uac_set_volume_cb(uint32_t volume, void *cb_ctx) {
 }
 
 static void apply_host_controls(void) {
+  int32_t mute = atomic_exchange(&s_pending_mute, -1);
+  if (mute >= 0) {
+    s_muted = (mute == 1);
+    ESP_LOGI(TAG, "Host %s", s_muted ? "muted" : "unmuted");
+  }
+
   int32_t volume = atomic_exchange(&s_pending_volume, -1);
   if (volume >= 0) {
     s_unmuted_db = VOLUME_MIN_DB +
                    ((float)volume / 100.0f) * (VOLUME_MAX_DB - VOLUME_MIN_DB);
-    if (atomic_load(&s_pending_mute) != 1) {
-      ESP_LOGI(TAG, "Host volume %" PRId32 " %% -> %.1f dB", volume,
-               s_unmuted_db);
-      dac_set_volume(s_unmuted_db);
-    }
+    ESP_LOGI(TAG, "Host volume %" PRId32 " %% -> %.1f dB", volume,
+             s_unmuted_db);
   }
 
-  int32_t mute = atomic_exchange(&s_pending_mute, -1);
-  if (mute >= 0) {
-    ESP_LOGI(TAG, "Host %s", mute ? "muted" : "unmuted");
-    dac_set_volume(mute ? VOLUME_MIN_DB : s_unmuted_db);
+  // Mute is a latched state, not an event: a volume change while muted must
+  // update s_unmuted_db without lifting the mute.
+  if (mute >= 0 || volume >= 0) {
+    dac_set_volume(s_muted ? VOLUME_MIN_DB : s_unmuted_db);
   }
 }
 
