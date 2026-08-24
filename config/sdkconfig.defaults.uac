@@ -19,9 +19,17 @@ CONFIG_UAC_MIC_CHANNEL_NUM=0
 CONFIG_UAC_BIT_RESOLUTION_16=y
 
 # Must equal CONFIG_OUTPUT_SAMPLE_RATE_HZ: the UAC descriptor advertises a
-# single fixed rate and this path does not resample. TAS57xx/TAS58xx boards
-# force 44100.
-CONFIG_UAC_SAMPLE_RATE=44100
+# single fixed rate and this path does not resample.
+#
+# 48000 rather than 44100 is deliberate. usb_device_uac drains the USB FIFO
+# by spk_bytes_per_ms = rate / 1000 * channels * bytes, an integer division
+# that truncates 44.1 frames/ms to 44. Because the feedback endpoint uses
+# AUDIO_FEEDBACK_METHOD_FIFO_COUNT, that FIFO is the control variable, so the
+# host is held at 44000 frames/s while I2S consumes 44100 — a ~100 frames/s
+# deficit that drains the ring buffer and then glitches continuously.
+# 48000 divides into 1 ms frames exactly, so the loop settles correctly.
+CONFIG_OUTPUT_SAMPLE_RATE_48000=y
+CONFIG_UAC_SAMPLE_RATE=48000
 
 # Build UAC as one function of a composite device so main/usb can add an HID
 # consumer-control interface (media keys back to the host). This makes
