@@ -63,10 +63,10 @@ uint32_t audio_engine_v2_begin_epoch(audio_engine_v2_t *engine, int64_t now_us);
 void audio_engine_v2_set_format(audio_engine_v2_t *engine,
                                 const audio_format_t *format);
 bool audio_engine_v2_set_anchor(audio_engine_v2_t *engine, uint32_t anchor_rtp,
-                                uint64_t anchor_ptp_ns,
+                                uint64_t anchor_network_ns,
                                 int64_t playout_offset_ns);
 // Invalidate the current clock map without discarding buffered PCM. Used when
-// an anchor is known but the matching PTP clock has not locked yet.
+// an anchor is known but the matching network clock has not locked yet.
 void audio_engine_v2_wait_for_anchor(audio_engine_v2_t *engine, int64_t now_us);
 void audio_engine_v2_set_playing(audio_engine_v2_t *engine, bool playing);
 bool audio_engine_v2_is_nearly_full(audio_engine_v2_t *engine);
@@ -92,5 +92,6 @@ bool audio_engine_v2_push_pcm_wait(audio_engine_v2_t *engine, uint32_t epoch,
                                    size_t samples, uint8_t channels,
                                    uint32_t timeout_ms);
 
-size_t audio_engine_v2_render(audio_engine_v2_t *engine, int64_t output_ptp_ns,
-                              int16_t *out, size_t samples);
+size_t audio_engine_v2_render(audio_engine_v2_t *engine,
+                              int64_t output_network_ns, int16_t *out,
+                              size_t samples);

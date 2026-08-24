@@ -42,7 +42,7 @@ typedef struct {
   int32_t max_abs_playout_error_samples;
   int32_t estimated_drift_ppm;
   int64_t drift_reference_error_q16;
-  int64_t drift_reference_ptp_ns;
+  int64_t drift_reference_network_ns;
   uint64_t rendered_samples;
   bool error_filter_valid;
   /* Drift servo: closes the loop between the output crystal and the sender's
@@ -66,7 +66,7 @@ void audio_scheduler_set_paused(audio_scheduler_t *scheduler, bool paused);
 size_t audio_scheduler_render(audio_scheduler_t *scheduler,
                               audio_timeline_t *timeline,
                               const audio_clock_map_t *clock_map,
-                              int64_t output_ptp_ns, int16_t *out,
+                              int64_t output_network_ns, int16_t *out,
                               size_t samples, uint8_t channels,
                               size_t *concealed_samples);
 

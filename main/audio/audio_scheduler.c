@@ -97,7 +97,7 @@ void audio_scheduler_begin_epoch(audio_scheduler_t *scheduler, uint32_t epoch,
   scheduler->max_abs_playout_error_samples = 0;
   scheduler->estimated_drift_ppm = 0;
   scheduler->drift_reference_error_q16 = 0;
-  scheduler->drift_reference_ptp_ns = 0;
+  scheduler->drift_reference_network_ns = 0;
   scheduler->rendered_samples = 0;
   scheduler->error_filter_valid = false;
   scheduler->drift_servo_engaged = false;
@@ -122,7 +122,7 @@ void audio_scheduler_set_paused(audio_scheduler_t *scheduler, bool paused) {
 size_t audio_scheduler_render(audio_scheduler_t *scheduler,
                               audio_timeline_t *timeline,
                               const audio_clock_map_t *clock_map,
-                              int64_t output_ptp_ns, int16_t *out,
+                              int64_t output_network_ns, int16_t *out,
                               size_t samples, uint8_t channels,
                               size_t *concealed_samples) {
   if (concealed_samples) {
@@ -150,7 +150,8 @@ size_t audio_scheduler_render(audio_scheduler_t *scheduler,
   }
 
   uint32_t wanted_rtp = 0;
-  if (!audio_clock_map_ptp_to_rtp(clock_map, output_ptp_ns, &wanted_rtp)) {
+  if (!audio_clock_map_network_to_rtp(clock_map, output_network_ns,
+                                      &wanted_rtp)) {
     scheduler->wait_reason = AUDIO_SCHED_WAIT_PTP_TO_RTP;
     scheduler->silent_render_calls++;
     output_silence(out, samples, channels);
@@ -168,12 +169,12 @@ size_t audio_scheduler_render(audio_scheduler_t *scheduler,
      * block start aliases the 352-frame callback cadence into a 0..8 ms
      * sawtooth even when the underlying clock is stable. */
     uint32_t midpoint_samples = (uint32_t)(samples / 2U);
-    int64_t midpoint_ptp_ns =
-        output_ptp_ns +
+    int64_t midpoint_network_ns =
+        output_network_ns +
         ((int64_t)midpoint_samples * 1000000000LL) / clock_map->sample_rate;
     uint32_t wanted_mid_rtp = wanted_rtp;
-    (void)audio_clock_map_ptp_to_rtp(clock_map, midpoint_ptp_ns,
-                                     &wanted_mid_rtp);
+    (void)audio_clock_map_network_to_rtp(clock_map, midpoint_network_ns,
+                                         &wanted_mid_rtp);
     uint32_t actual_mid_rtp = scheduler->cursor_rtp + midpoint_samples;
     int32_t raw_error = (int32_t)(actual_mid_rtp - wanted_mid_rtp);
     scheduler->raw_playout_error_samples = raw_error;
@@ -183,7 +184,7 @@ size_t audio_scheduler_render(audio_scheduler_t *scheduler,
       scheduler->filtered_playout_error_q16 = raw_q16;
       scheduler->error_filter_valid = true;
       scheduler->drift_reference_error_q16 = raw_q16;
-      scheduler->drift_reference_ptp_ns = midpoint_ptp_ns;
+      scheduler->drift_reference_network_ns = midpoint_network_ns;
     } else {
       /* alpha = 1/8: removes callback phase jitter while still following
        * real clock drift within a few hundred milliseconds. */
@@ -200,9 +201,11 @@ size_t audio_scheduler_render(audio_scheduler_t *scheduler,
       scheduler->max_abs_playout_error_samples = abs_error;
     }
 
-    if (scheduler->drift_reference_ptp_ns != 0 &&
-        midpoint_ptp_ns - scheduler->drift_reference_ptp_ns >= 1000000000LL) {
-      int64_t elapsed_ns = midpoint_ptp_ns - scheduler->drift_reference_ptp_ns;
+    if (scheduler->drift_reference_network_ns != 0 &&
+        midpoint_network_ns - scheduler->drift_reference_network_ns >=
+            1000000000LL) {
+      int64_t elapsed_ns =
+          midpoint_network_ns - scheduler->drift_reference_network_ns;
       int64_t delta_q16 = scheduler->filtered_playout_error_q16 -
                           scheduler->drift_reference_error_q16;
       int64_t delta_samples = delta_q16 / 65536LL;
@@ -218,7 +221,7 @@ size_t audio_scheduler_render(audio_scheduler_t *scheduler,
       }
       scheduler->drift_reference_error_q16 =
           scheduler->filtered_playout_error_q16;
-      scheduler->drift_reference_ptp_ns = midpoint_ptp_ns;
+      scheduler->drift_reference_network_ns = midpoint_network_ns;
     }
 
     /* Engage outside the hysteresis band, then trim one sample every
@@ -284,15 +287,15 @@ size_t audio_scheduler_render(audio_scheduler_t *scheduler,
       scheduler->playout_error_samples = 0;
       scheduler->filtered_playout_error_q16 = 0;
       scheduler->drift_reference_error_q16 = 0;
-      scheduler->drift_reference_ptp_ns = 0;
+      scheduler->drift_reference_network_ns = 0;
       scheduler->drift_servo_engaged = false;
       scheduler->drift_servo_phase = 0;
     } else {
       /* fallback_after_us is an elapsed-time timeout.  Both timestamps
        * must use the same monotonic local clock.  preroll_started_us is set
        * from esp_timer_get_time() when an epoch/anchor wait begins, while
-       * output_ptp_ns belongs to the PTP/network clock domain and must not be
-       * compared with it. */
+       * output_network_ns belongs to the sender's clock domain and must not
+       * be compared with it. */
       int64_t now_us = esp_timer_get_time();
       bool fallback_due = scheduler->fallback_after_us > 0 &&
                           scheduler->preroll_started_us > 0 &&
@@ -327,7 +330,7 @@ size_t audio_scheduler_render(audio_scheduler_t *scheduler,
         scheduler->playout_error_samples = 0;
         scheduler->filtered_playout_error_q16 = 0;
         scheduler->drift_reference_error_q16 = 0;
-        scheduler->drift_reference_ptp_ns = 0;
+        scheduler->drift_reference_network_ns = 0;
         scheduler->drift_servo_engaged = false;
         scheduler->drift_servo_phase = 0;
       } else {
@@ -357,7 +360,7 @@ size_t audio_scheduler_render(audio_scheduler_t *scheduler,
     scheduler->playout_error_samples = 0;
     scheduler->filtered_playout_error_q16 = 0;
     scheduler->drift_reference_error_q16 = 0;
-    scheduler->drift_reference_ptp_ns = 0;
+    scheduler->drift_reference_network_ns = 0;
     scheduler->drift_servo_engaged = false;
     scheduler->drift_servo_phase = 0;
     scheduler->silent_render_calls++;

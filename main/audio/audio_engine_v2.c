@@ -105,14 +105,14 @@ void audio_engine_v2_set_format(audio_engine_v2_t *engine,
 }
 
 bool audio_engine_v2_set_anchor(audio_engine_v2_t *engine, uint32_t anchor_rtp,
-                                uint64_t anchor_ptp_ns,
+                                uint64_t anchor_network_ns,
                                 int64_t playout_offset_ns) {
   if (!engine || !engine->initialized) {
     return false;
   }
-  bool ok = audio_clock_map_set(&engine->clock_map,
-                                (uint32_t)engine->format.sample_rate,
-                                anchor_rtp, anchor_ptp_ns, playout_offset_ns);
+  bool ok = audio_clock_map_set(
+      &engine->clock_map, (uint32_t)engine->format.sample_rate, anchor_rtp,
+      anchor_network_ns, playout_offset_ns);
   if (ok) {
     if (engine->scheduler.state == AUDIO_SCHED_WAIT_ANCHOR) {
       engine->scheduler.state = AUDIO_SCHED_PREROLL;
@@ -143,7 +143,7 @@ void audio_engine_v2_wait_for_anchor(audio_engine_v2_t *engine,
   engine->scheduler.max_abs_playout_error_samples = 0;
   engine->scheduler.estimated_drift_ppm = 0;
   engine->scheduler.drift_reference_error_q16 = 0;
-  engine->scheduler.drift_reference_ptp_ns = 0;
+  engine->scheduler.drift_reference_network_ns = 0;
   engine->scheduler.error_filter_valid = false;
   engine->scheduler.drift_servo_engaged = false;
   engine->scheduler.drift_servo_phase = 0;
@@ -324,8 +324,9 @@ bool audio_engine_v2_push_pcm_wait(audio_engine_v2_t *engine, uint32_t epoch,
   return false;
 }
 
-size_t audio_engine_v2_render(audio_engine_v2_t *engine, int64_t output_ptp_ns,
-                              int16_t *out, size_t samples) {
+size_t audio_engine_v2_render(audio_engine_v2_t *engine,
+                              int64_t output_network_ns, int16_t *out,
+                              size_t samples) {
   if (!engine || !engine->initialized || !out || samples == 0U) {
     return 0;
   }
@@ -338,8 +339,9 @@ size_t audio_engine_v2_render(audio_engine_v2_t *engine, int64_t output_ptp_ns,
   const uint32_t cursor_before = engine->scheduler.cursor_rtp;
   size_t concealed = 0;
   size_t produced = audio_scheduler_render(
-      &engine->scheduler, &engine->timeline, &engine->clock_map, output_ptp_ns,
-      out, samples, (uint8_t)engine->format.channels, &concealed);
+      &engine->scheduler, &engine->timeline, &engine->clock_map,
+      output_network_ns, out, samples, (uint8_t)engine->format.channels,
+      &concealed);
   if (engine->scheduler.state == AUDIO_SCHED_PLAYING) {
     engine->start_watchdog_armed = false;
   }
