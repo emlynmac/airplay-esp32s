@@ -54,19 +54,37 @@ static void audio_receiver_copy_stream_state(audio_stream_t *dst,
   dst->encrypt = src->encrypt;
 }
 
-// True when the AirPlay 2 buffered engine owns playback.  The realtime path
-// keeps using audio_buffer + audio_timing; the two never run at the same time.
+// True when the PCM timeline owns playback.  Both stream types use it; they
+// never run at the same time, and the engine is re-pointed at the right codec
+// frame length when each one starts.
 static inline bool engine_v2_active(void) {
-  return receiver.engine_v2_ready && receiver.stream &&
-         receiver.stream->type == AUDIO_STREAM_BUFFERED;
+  return receiver.engine_v2_ready && receiver.stream;
 }
 
-// Create the buffered engine on first use.  It costs ~790 KB of PSRAM, so a
-// device that only ever serves AirPlay 1 never pays for it, and it is never
+// AAC frames are always 1024 samples.  ALAC packet length comes from the SDP
+// (`a=fmtp` frame length), 352 on every sender seen so far.
+static uint32_t engine_v2_frame_samples(audio_stream_type_t type,
+                                        const audio_stream_t *stream) {
+  if (type == AUDIO_STREAM_BUFFERED) {
+    return AUDIO_TIMELINE_FRAME_SAMPLES;
+  }
+  return stream->format.frame_size > 0 ? (uint32_t)stream->format.frame_size
+                                       : AUDIO_TIMELINE_RT_FRAME_SAMPLES;
+}
+
+static void audio_receiver_reset_engine_v2(void);
+
+// Create the engine on first use.  It costs ~790 KB of PSRAM, and it is never
 // torn down afterwards: the playback task calls audio_engine_v2_render() on
-// every I2S refill and freeing the timeline underneath it would race.
-static esp_err_t audio_receiver_ensure_engine_v2(void) {
-  if (!receiver.buffered_stream) {
+// every I2S refill and freeing the timeline underneath it would race.  The
+// slot pool is therefore sized once for the longest frame either codec uses,
+// and switching streams only re-points the addressing quantum -- 192 slots
+// hold ~4.5 s of AAC or ~1.5 s of ALAC.
+static esp_err_t audio_receiver_ensure_engine_v2(audio_stream_type_t type) {
+  audio_stream_t *stream = type == AUDIO_STREAM_BUFFERED
+                               ? receiver.buffered_stream
+                               : receiver.realtime_stream;
+  if (!stream) {
     return ESP_ERR_INVALID_STATE;
   }
 
@@ -79,19 +97,33 @@ static esp_err_t audio_receiver_ensure_engine_v2(void) {
   }
 
   if (!receiver.engine_v2_ready) {
-    esp_err_t err = audio_engine_v2_init(
-        &receiver.engine_v2, &receiver.buffered_stream->format,
-        AUDIO_TIMELINE_FRAME_SAMPLES, AUDIO_V2_TIMELINE_BLOCKS);
+    esp_err_t err = audio_engine_v2_init(&receiver.engine_v2, &stream->format,
+                                         AUDIO_TIMELINE_FRAME_SAMPLES,
+                                         AUDIO_V2_TIMELINE_BLOCKS);
     if (err != ESP_OK) {
-      ESP_LOGE(TAG, "Buffered engine init failed: %s", esp_err_to_name(err));
+      ESP_LOGE(TAG, "Engine init failed: %s", esp_err_to_name(err));
       return err;
     }
     receiver.engine_v2_ready = true;
   }
 
-  // The worker is torn down by audio_receiver_stop() together with the
-  // decoder it uses, so it is recreated on every buffered SETUP.
-  if (!receiver.decode_worker) {
+  const bool codec_changed = receiver.engine_v2.timeline.frame_samples !=
+                             engine_v2_frame_samples(type, stream);
+
+  if (!audio_engine_v2_set_frame_samples(
+          &receiver.engine_v2, engine_v2_frame_samples(type, stream))) {
+    return ESP_ERR_INVALID_ARG;
+  }
+  if (codec_changed) {
+    // The outgoing stream's clock map and cursor describe nothing the
+    // timeline still holds.
+    audio_receiver_reset_engine_v2();
+  }
+
+  // Realtime decodes inline on the rx task; only buffered offloads.
+  if (type == AUDIO_STREAM_BUFFERED && !receiver.decode_worker) {
+    // The worker is torn down by audio_receiver_stop() together with the
+    // decoder it uses, so it is recreated on every buffered SETUP.
     esp_err_t err =
         audio_decode_worker_create(&receiver, &receiver.decode_worker);
     if (err != ESP_OK) {
@@ -582,6 +614,11 @@ void audio_receiver_set_stream_type(audio_stream_type_t type) {
 }
 
 esp_err_t audio_receiver_start(uint16_t data_port, uint16_t control_port) {
+  esp_err_t engine_err = audio_receiver_ensure_engine_v2(AUDIO_STREAM_REALTIME);
+  if (engine_err != ESP_OK) {
+    return engine_err;
+  }
+
   audio_receiver_set_stream_type(AUDIO_STREAM_REALTIME);
 
   if (!receiver.stream || !receiver.stream->ops ||
@@ -610,7 +647,7 @@ esp_err_t audio_receiver_start(uint16_t data_port, uint16_t control_port) {
 }
 
 esp_err_t audio_receiver_start_buffered(uint16_t tcp_port) {
-  esp_err_t engine_err = audio_receiver_ensure_engine_v2();
+  esp_err_t engine_err = audio_receiver_ensure_engine_v2(AUDIO_STREAM_BUFFERED);
   if (engine_err != ESP_OK) {
     return engine_err;
   }

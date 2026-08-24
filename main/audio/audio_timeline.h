@@ -18,10 +18,9 @@
 #define AUDIO_TIMELINE_FRAME_SAMPLES 1024U
 /* AirPlay 1 realtime ALAC: one decoded packet is 352 samples. */
 #define AUDIO_TIMELINE_RT_FRAME_SAMPLES 352U
-/* ~4.46 s at 44.1 kHz for 192 AAC frames. */
+/* ~4.46 s at 44.1 kHz for 192 AAC frames; the same 192 slots hold ~1.53 s of
+ * ALAC, which is still six times the realtime path's 250 ms of lead. */
 #define AUDIO_V2_TIMELINE_BLOCKS 192
-/* ~4.47 s at 44.1 kHz for 560 ALAC frames. */
-#define AUDIO_V2_TIMELINE_RT_BLOCKS 560
 
 /* Slot metadata, kept separate from the PCM payload.
  *
@@ -104,6 +103,11 @@ esp_err_t audio_timeline_init(audio_timeline_t *timeline, uint16_t capacity,
                               uint32_t frame_samples);
 void audio_timeline_deinit(audio_timeline_t *timeline);
 void audio_timeline_clear(audio_timeline_t *timeline);
+/* Re-point the timeline at another codec's frame length.  The slot stride is
+ * fixed at init, so the new frame must fit inside it.  Block addressing is
+ * derived from frame_samples, so everything held is dropped. */
+bool audio_timeline_set_frame_samples(audio_timeline_t *timeline,
+                                      uint32_t frame_samples);
 size_t audio_timeline_count(audio_timeline_t *timeline);
 
 /* Drop every READY block of `epoch` that extends past `rtp`, keeping earlier

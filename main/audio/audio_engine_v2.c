@@ -104,6 +104,24 @@ void audio_engine_v2_set_format(audio_engine_v2_t *engine,
       (uint32_t)((uint64_t)format->sample_rate * 180U / 1000U);
 }
 
+bool audio_engine_v2_set_frame_samples(audio_engine_v2_t *engine,
+                                       uint32_t frame_samples) {
+  if (!engine || !engine->initialized) {
+    return false;
+  }
+  if (engine->timeline.frame_samples == frame_samples) {
+    return true;
+  }
+  if (!audio_timeline_set_frame_samples(&engine->timeline, frame_samples)) {
+    ESP_LOGE(TAG, "frame=%" PRIu32 " does not fit the slot stride",
+             frame_samples);
+    return false;
+  }
+  ESP_LOGI(TAG, "frame=%" PRIu32 " (%u blocks)", frame_samples,
+           (unsigned)engine->timeline.capacity);
+  return true;
+}
+
 bool audio_engine_v2_set_anchor(audio_engine_v2_t *engine, uint32_t anchor_rtp,
                                 uint64_t anchor_network_ns,
                                 int64_t playout_offset_ns) {
@@ -220,8 +238,8 @@ size_t audio_engine_v2_deferred_flush(audio_engine_v2_t *engine, uint32_t epoch,
 bool audio_engine_v2_push_pcm(audio_engine_v2_t *engine, uint32_t epoch,
                               uint32_t first_rtp, const int16_t *pcm,
                               size_t samples, uint8_t channels) {
-  if (!engine || !engine->initialized || !pcm ||
-      samples != engine->timeline.frame_samples || channels == 0U ||
+  if (!engine || !engine->initialized || !pcm || samples == 0U ||
+      samples > engine->timeline.frame_samples || channels == 0U ||
       channels > AUDIO_V2_MAX_CHANNELS) {
     return false;
   }
@@ -262,6 +280,13 @@ bool audio_engine_v2_push_pcm(audio_engine_v2_t *engine, uint32_t epoch,
    * timeline metadata lock held.  The reservation is private/WRITING, so
    * playback cannot observe a partially copied block. */
   memcpy(timeline_pcm, pcm, samples * channels * sizeof(int16_t));
+  /* A short trailing packet still starts on a frame boundary, so keep the slot
+   * a whole block and silence the tail rather than replaying the last epoch. */
+  if (samples < engine->timeline.frame_samples) {
+    memset(&timeline_pcm[samples * channels], 0,
+           (engine->timeline.frame_samples - samples) * channels *
+               sizeof(int16_t));
+  }
 
   /* Phase 2: before publishing, revalidate stream identity. A FLUSH/seek can
    * advance epoch while PCM is copied outside the locks. */

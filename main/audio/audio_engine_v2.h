@@ -62,6 +62,10 @@ void audio_engine_v2_deinit(audio_engine_v2_t *engine);
 uint32_t audio_engine_v2_begin_epoch(audio_engine_v2_t *engine, int64_t now_us);
 void audio_engine_v2_set_format(audio_engine_v2_t *engine,
                                 const audio_format_t *format);
+/* Switch codecs on the shared slot pool.  Discards anything held, so call it
+ * at stream start, before PCM for the new stream arrives. */
+bool audio_engine_v2_set_frame_samples(audio_engine_v2_t *engine,
+                                       uint32_t frame_samples);
 bool audio_engine_v2_set_anchor(audio_engine_v2_t *engine, uint32_t anchor_rtp,
                                 uint64_t anchor_network_ns,
                                 int64_t playout_offset_ns);

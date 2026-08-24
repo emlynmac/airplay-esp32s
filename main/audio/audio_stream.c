@@ -95,6 +95,33 @@ static bool timestamp_is_gated(const audio_receiver_state_t *state,
   return false;
 }
 
+// Split a decoded packet across timeline blocks the way
+// audio_buffer_queue_decoded() does, so a sender whose packet length differs
+// from the SDP frame length still lands somewhere.
+static bool audio_stream_push_timeline_pcm(audio_receiver_state_t *state,
+                                           uint32_t timestamp,
+                                           const int16_t *pcm, size_t samples,
+                                           int channels) {
+  const size_t frame_samples = state->engine_v2.timeline.frame_samples;
+  const uint32_t epoch = audio_epoch_get(&state->engine_v2.epoch);
+  bool pushed = false;
+
+  for (size_t offset = 0; offset < samples; offset += frame_samples) {
+    size_t chunk = samples - offset;
+    if (chunk > frame_samples) {
+      chunk = frame_samples;
+    }
+    // Must not block: this runs on the UDP rx task, which drops packets while
+    // it is not reading the socket.
+    if (audio_engine_v2_push_pcm(
+            &state->engine_v2, epoch, timestamp + (uint32_t)offset,
+            &pcm[offset * (size_t)channels], chunk, (uint8_t)channels)) {
+      pushed = true;
+    }
+  }
+  return pushed;
+}
+
 bool audio_stream_process_accepted_frame(audio_receiver_state_t *state,
                                          uint32_t timestamp,
                                          const uint8_t *audio_data,
@@ -135,6 +162,12 @@ bool audio_stream_process_accepted_frame(audio_receiver_state_t *state,
   // seek just armed (which would let later backlog through).
   if (timestamp_is_gated(state, timestamp)) {
     return false;
+  }
+
+  if (state->engine_v2_ready) {
+    state->stats.packets_decoded++;
+    return audio_stream_push_timeline_pcm(state, timestamp, decode_buffer,
+                                          (size_t)decoded_samples, channels);
   }
 
   return audio_buffer_queue_decoded(&state->buffer, &state->stats, timestamp,

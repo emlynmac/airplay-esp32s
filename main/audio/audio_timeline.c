@@ -179,6 +179,24 @@ void audio_timeline_clear(audio_timeline_t *t) {
   }
 }
 
+bool audio_timeline_set_frame_samples(audio_timeline_t *t,
+                                      uint32_t frame_samples) {
+  if (!t || !t->desc || frame_samples == 0U ||
+      frame_samples * AUDIO_V2_MAX_CHANNELS > t->slot_pcm_samples) {
+    return false;
+  }
+  if (t->frame_samples == frame_samples) {
+    return true;
+  }
+
+  audio_timeline_clear(t);
+
+  portENTER_CRITICAL(&t->lock);
+  t->frame_samples = frame_samples;
+  portEXIT_CRITICAL(&t->lock);
+  return true;
+}
+
 size_t audio_timeline_count(audio_timeline_t *t) {
   if (!t || !t->desc) {
     return 0U;
