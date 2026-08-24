@@ -50,6 +50,21 @@ static const char *TAG = "main";
 
 static bool s_airplay_started = false;
 static bool s_airplay_infrastructure_ready = false;
+static bool s_audio_output_ready = false;
+
+// audio_output_init() creates the I2S channel and must run exactly once.
+// AirPlay does it lazily, but it is not the only consumer: the USB sink
+// writes to the same channel and can start with no network at all.
+static esp_err_t ensure_audio_output(void) {
+  if (s_audio_output_ready) {
+    return ESP_OK;
+  }
+  esp_err_t err = audio_output_init();
+  if (err == ESP_OK) {
+    s_audio_output_ready = true;
+  }
+  return err;
+}
 
 static void start_airplay_services(void) {
   if (s_airplay_started) {
@@ -69,7 +84,7 @@ static void start_airplay_services(void) {
 
     ESP_ERROR_CHECK(hap_init());
     ESP_ERROR_CHECK(audio_receiver_init());
-    ESP_ERROR_CHECK(audio_output_init());
+    ESP_ERROR_CHECK(ensure_audio_output());
     mdns_airplay_init();
     s_airplay_infrastructure_ready = true;
   }
@@ -143,7 +158,15 @@ static void network_monitor_task(void *pvParameters) {
     if (has_network) {
       ESP_LOGI(TAG, "Network up (eth=%s, wifi=%s)", eth_up ? "yes" : "no",
                wifi_up ? "yes" : "no");
-      start_airplay_services();
+      bool usb_owns_output = false;
+#ifdef CONFIG_USB_AUDIO_SINK
+      usb_owns_output = usb_audio_sink_is_streaming();
+#endif
+      // Starting AirPlay here would put its playback task back on I2S
+      // underneath the USB writer; the sink starts it when the host goes idle.
+      if (!usb_owns_output) {
+        start_airplay_services();
+      }
       if (dns_running) {
         dns_server_stop();
         dns_running = false;
@@ -388,6 +411,12 @@ void app_main(void) {
 
 #ifdef CONFIG_USB_AUDIO_SINK
   {
+    // The host can stream with no network configured, in which case
+    // start_airplay_services() has never run and I2S is still unopened.
+    esp_err_t out_err = ensure_audio_output();
+    if (out_err != ESP_OK) {
+      ESP_LOGE(TAG, "Audio output init failed: %s", esp_err_to_name(out_err));
+    }
     esp_err_t usb_err = usb_audio_sink_init(on_usb_audio_state_changed);
     if (usb_err != ESP_OK) {
       ESP_LOGE(TAG, "USB audio sink init failed: %s", esp_err_to_name(usb_err));
