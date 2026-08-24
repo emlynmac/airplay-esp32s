@@ -2127,7 +2127,7 @@ esp_err_t web_server_start(uint16_t port) {
   // Slots are allocated up front and httpd_register_uri_handler failures are
   // unchecked, so an undercount silently drops whatever registers last, which
   // is log_stream's /ws/logs. Keep these in step with the handlers below.
-  config.max_uri_handlers = 34; // 28 here + /ws/logs, plus 5 spare
+  config.max_uri_handlers = 38; // 32 here + /ws/logs, plus 5 spare
 #ifdef DAC_HAS_SUB_OFFSET
   config.max_uri_handlers += 2; // sub level get/post
 #endif
@@ -2139,9 +2139,7 @@ esp_err_t web_server_start(uint16_t port) {
   config.max_uri_handlers += 7;
 #endif
 #ifdef CONFIG_DAC_TAS57XX
-  config.max_uri_handlers += 1; // the shared tuning page
-  config.max_uri_handlers += 4; // HF1 get/post/commit/revert
-  config.max_uri_handlers += 4; // HF3 get/post/commit/revert
+  config.max_uri_handlers += 11; // tuning page + HF1/HF3 get/post/commit/revert
 #endif
   config.max_resp_headers = 8;
   config.stack_size = 8192;
