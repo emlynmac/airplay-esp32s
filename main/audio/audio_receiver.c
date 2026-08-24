@@ -107,17 +107,21 @@ static esp_err_t audio_receiver_ensure_engine_v2(audio_stream_type_t type) {
     receiver.engine_v2_ready = true;
   }
 
-  const bool codec_changed = receiver.engine_v2.timeline.frame_samples !=
-                             engine_v2_frame_samples(type, stream);
+  const uint32_t frame_samples = engine_v2_frame_samples(type, stream);
 
-  if (!audio_engine_v2_set_frame_samples(
-          &receiver.engine_v2, engine_v2_frame_samples(type, stream))) {
-    return ESP_ERR_INVALID_ARG;
-  }
-  if (codec_changed) {
-    // The outgoing stream's clock map and cursor describe nothing the
-    // timeline still holds.
+  if (receiver.engine_v2.timeline.frame_samples != frame_samples) {
+    // Bump the epoch and drop queued work *before* the pool is re-cut.  The
+    // re-cut moves every slot address, and a decode worker or the playback
+    // task can still be copying through a pointer it took under the old
+    // stride.  A stale epoch makes new pushes fail immediately, which lets
+    // the re-cut wait the stragglers out instead of racing them.  The
+    // outgoing stream's clock map and cursor describe nothing the timeline
+    // still holds either.
     audio_receiver_reset_engine_v2();
+  }
+
+  if (!audio_engine_v2_set_frame_samples(&receiver.engine_v2, frame_samples)) {
+    return ESP_ERR_INVALID_ARG;
   }
 
   // Realtime decodes inline on the rx task; only buffered offloads.
@@ -148,31 +152,30 @@ static void audio_receiver_reset_engine_v2(void) {
   receiver.engine_v2_anchor_pending = false;
 }
 
-// Local -> sender clock offset, and whether any clock is actually locked.
+// Local -> sender clock offset, and whether that clock is actually locked.
 //
 // The sender's anchor timestamps are PTP for AirPlay 2 (control packet 0x57)
 // and NTP for AirPlay 1 (0x54), so the engine cannot assume PTP the way it did
-// while only the buffered path used it.  Mirrors the selection
-// compute_early_us() makes in audio_timing.c, and like that one it must be
-// re-read on every render: before a lock the offset is 0, and freezing that
-// value places the anchor days from local time and wraps the int32 RTP delta.
+// while only the buffered path used it.  Which one applies is decided by the
+// anchor itself, not by whichever clock happens to be locked: a PTP lock left
+// over from a previous session (or kept alive by another sender on the
+// network) would otherwise map an AirPlay 1 anchor into the PTP timeline, and
+// vice versa, putting every block decades from its real playout time.  Like
+// compute_early_us() in audio_timing.c this must be re-read on every render:
+// before a lock the offset is 0, and freezing that value places the anchor
+// days from local time and wraps the int32 RTP delta.
 static int64_t audio_receiver_network_offset_ns(bool *locked) {
-  if (ptp_clock_is_locked()) {
-    if (locked) {
-      *locked = true;
-    }
-    return ptp_clock_get_offset_ns();
-  }
-  if (ntp_clock_is_locked()) {
-    if (locked) {
-      *locked = true;
-    }
-    return ntp_clock_get_offset_ns();
-  }
+  const bool have_lock = receiver.engine_v2_anchor_uses_ptp
+                             ? ptp_clock_is_locked()
+                             : ntp_clock_is_locked();
   if (locked) {
-    *locked = false;
+    *locked = have_lock;
   }
-  return 0;
+  if (!have_lock) {
+    return 0;
+  }
+  return receiver.engine_v2_anchor_uses_ptp ? ptp_clock_get_offset_ns()
+                                            : ntp_clock_get_offset_ns();
 }
 
 // Publish the pending anchor once a network clock is usable.  Before the first
@@ -478,6 +481,9 @@ void audio_receiver_set_anchor_time(uint64_t clock_id, uint64_t network_time_ns,
     // offset, so the anchor would sit days in the future and never be reached.
     receiver.engine_v2_anchor_rtp = rtp_time;
     receiver.engine_v2_anchor_network_ns = network_time_ns;
+    // A timeline ID is only present on the AirPlay 2 (PTP) anchors; the
+    // AirPlay 1 sync packet path passes 0.
+    receiver.engine_v2_anchor_uses_ptp = (clock_id != 0);
     receiver.engine_v2_playout_offset_ns =
         ((int64_t)receiver.timing.playout_latency_samples * 1000000000LL) /
         sample_rate;

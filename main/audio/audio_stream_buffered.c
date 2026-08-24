@@ -184,6 +184,7 @@ static void buffered_audio_task(void *pvParameters) {
           .rtp_timestamp = timestamp,
           .payload = decrypted,
           .payload_len = (size_t)decrypted_len,
+          .prime_mute = audio_stream_aac_prime_mute_wanted(state),
       };
 
       const audio_decode_enqueue_result_t enq = audio_decode_worker_enqueue(

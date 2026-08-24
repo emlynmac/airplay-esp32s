@@ -64,8 +64,11 @@ uint32_t audio_engine_v2_begin_epoch(audio_engine_v2_t *engine,
   }
   portENTER_CRITICAL(&engine->publish_lock);
   uint32_t next = audio_epoch_advance(&engine->epoch);
-  audio_timeline_clear(&engine->timeline);
+  audio_timeline_clear_slots(&engine->timeline);
   portEXIT_CRITICAL(&engine->publish_lock);
+  /* Outside the critical section: waking a producer blocked on a full
+   * timeline has to happen with interrupts enabled. */
+  audio_timeline_signal_space(&engine->timeline);
   audio_clock_map_reset(&engine->clock_map);
   audio_scheduler_begin_epoch(&engine->scheduler, next, now_us);
   engine->concealed_samples = 0;
@@ -74,6 +77,10 @@ uint32_t audio_engine_v2_begin_epoch(audio_engine_v2_t *engine,
   engine->last_status_log_us = 0;
   engine->conceal_events = 0;
   engine->conceal_events_logged = 0;
+  // audio_scheduler_begin_epoch() zeroed the live trim count, so the snapshot
+  // has to follow it: otherwise the next status line subtracts the old total
+  // from zero and reports the per-second rate as a wrapped uint32.
+  engine->drift_servo_trims_logged = 0;
   engine->last_conceal_gap_rtp = 0;
   __atomic_store_n(&engine->diag_rx_packets, 0, __ATOMIC_RELAXED);
   __atomic_store_n(&engine->diag_gate_drops, 0, __ATOMIC_RELAXED);

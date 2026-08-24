@@ -24,20 +24,27 @@ static const char *TAG = "audio_stream";
 extern const audio_stream_ops_t audio_stream_realtime_ops;
 extern const audio_stream_ops_t audio_stream_buffered_ops;
 
-static bool apply_aac_transient_mute(audio_receiver_state_t *state,
+// The first frames after a resume or seek come out of the AAC decoder with the
+// tail of the previous track still in its overlap buffers, so they are
+// silenced.  A fresh start needs no priming, which is what the second test
+// picks out: only a restart leaves the in-sequence count behind the total.
+//
+// Sampled where the counters are advanced, which for the buffered path is the
+// TCP reader rather than the decode worker.
+bool audio_stream_aac_prime_mute_wanted(const audio_receiver_state_t *state) {
+  return state && (state->blocks_read_in_sequence <= 2) &&
+         (state->blocks_read_in_sequence != state->blocks_read);
+}
+
+static bool apply_aac_transient_mute(audio_receiver_state_t *state, bool wanted,
                                      int16_t *buffer, size_t samples,
                                      int channels) {
-  if (!audio_decoder_is_aac(state->decoder)) {
+  if (!wanted || !audio_decoder_is_aac(state->decoder)) {
     return false;
   }
 
-  if ((state->blocks_read_in_sequence <= 2) &&
-      (state->blocks_read_in_sequence != state->blocks_read)) {
-    memset(buffer, 0, samples * channels * sizeof(int16_t));
-    return true;
-  }
-
-  return false;
+  memset(buffer, 0, samples * channels * sizeof(int16_t));
+  return true;
 }
 
 bool audio_stream_accept_timestamp(audio_receiver_state_t *state,
@@ -154,8 +161,8 @@ bool audio_stream_process_accepted_frame(audio_receiver_state_t *state,
     channels = 2;
   }
 
-  apply_aac_transient_mute(state, decode_buffer, (size_t)decoded_samples,
-                           channels);
+  apply_aac_transient_mute(state, audio_stream_aac_prime_mute_wanted(state),
+                           decode_buffer, (size_t)decoded_samples, channels);
 
   // Re-check the gates after decode.  A concurrent seek/anchor flush (RTSP
   // task) can set discard_all_until_anchor OR arm the RTP window gates
@@ -240,8 +247,8 @@ bool audio_stream_decode_encoded_packet(audio_receiver_state_t *state,
     channels = 2;
   }
 
-  apply_aac_transient_mute(state, decode_buffer, (size_t)decoded_samples,
-                           channels);
+  apply_aac_transient_mute(state, packet->prime_mute, decode_buffer,
+                           (size_t)decoded_samples, channels);
   xSemaphoreGive(state->decoder_mutex);
 
   (void)__atomic_add_fetch(&state->engine_v2.diag_decode_ok, 1U,
@@ -287,7 +294,9 @@ bool audio_stream_decode_encoded_packet(audio_receiver_state_t *state,
     return false;
   }
 
-  state->stats.packets_received++;
+  // The arrival was already counted by the TCP reader that enqueued it; this
+  // path owns the decode side of the tally.
+  state->stats.packets_decoded++;
   return true;
 }
 

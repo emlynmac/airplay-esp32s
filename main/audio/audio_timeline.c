@@ -1,9 +1,14 @@
 #include "audio_timeline.h"
 
+#include <inttypes.h>
 #include <stdlib.h>
 #include <string.h>
 
 #include "esp_heap_caps.h"
+#include "esp_log.h"
+#include "freertos/task.h"
+
+static const char *TAG = "audio_timeline";
 
 static inline int32_t rtp_diff(uint32_t a, uint32_t b) {
   return (int32_t)(a - b);
@@ -173,7 +178,7 @@ void audio_timeline_deinit(audio_timeline_t *t) {
   memset(t, 0, sizeof(*t));
 }
 
-void audio_timeline_clear(audio_timeline_t *t) {
+void audio_timeline_clear_slots(audio_timeline_t *t) {
   if (!t || !t->desc) {
     return;
   }
@@ -190,11 +195,32 @@ void audio_timeline_clear(audio_timeline_t *t) {
   t->playback_floor_valid = false;
 
   portEXIT_CRITICAL(&t->lock);
+}
 
+void audio_timeline_signal_space(audio_timeline_t *t) {
   /* A producer blocked on a full timeline must observe the flush promptly. */
-  if (t->space_available) {
+  if (t && t->space_available) {
     xSemaphoreGive(t->space_available);
   }
+}
+
+void audio_timeline_clear(audio_timeline_t *t) {
+  audio_timeline_clear_slots(t);
+  audio_timeline_signal_space(t);
+}
+
+/* True once no task can still be holding a raw slot pointer: no reservation is
+ * open and nothing is being copied out. */
+static bool timeline_slots_idle(audio_timeline_t *t) {
+  portENTER_CRITICAL(&t->lock);
+  bool idle = (t->writing_count == 0U);
+  for (uint16_t i = 0; idle && i < t->capacity; ++i) {
+    if (t->desc[i].reading) {
+      idle = false;
+    }
+  }
+  portEXIT_CRITICAL(&t->lock);
+  return idle;
 }
 
 bool audio_timeline_set_frame_samples(audio_timeline_t *t,
@@ -213,6 +239,24 @@ bool audio_timeline_set_frame_samples(audio_timeline_t *t,
   }
 
   audio_timeline_clear(t);
+
+  /* Slot addresses are derived from the stride, so re-cutting under a task
+   * that is still copying through a pointer it took under the old one lets
+   * that straggler land on a slot the new layout has already handed out.  The
+   * caller bumps the epoch first, which stops new reservations, so this only
+   * has to outlast the copies already running -- a few microseconds each. */
+  bool idle = false;
+  for (int i = 0; i < 50; ++i) {
+    idle = timeline_slots_idle(t);
+    if (idle) {
+      break;
+    }
+    vTaskDelay(1);
+  }
+  if (!idle) {
+    ESP_LOGW(TAG, "re-cut to frame=%" PRIu32 " with copies still in flight",
+             frame_samples);
+  }
 
   portENTER_CRITICAL(&t->lock);
   /* Wipe every descriptor, not just the ones the old capacity covered: growing

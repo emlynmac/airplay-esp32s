@@ -1,5 +1,6 @@
 #pragma once
 
+#include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
 
@@ -12,4 +13,9 @@ typedef struct {
   uint32_t rtp_timestamp;
   const uint8_t *payload;
   size_t payload_len;
+  /* Sampled at ingress, where the block counters are coherent: by the time the
+   * decode worker reaches this packet the reader has already counted the ones
+   * behind it, so the worker cannot re-derive whether this is a priming frame
+   * that must be silenced. */
+  bool prime_mute;
 } audio_encoded_packet_t;

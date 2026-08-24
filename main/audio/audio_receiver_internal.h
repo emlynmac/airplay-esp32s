@@ -54,6 +54,10 @@ typedef struct audio_receiver_state {
   // re-armed once the PTP clock locks.  An anchor that arrives while the
   // offset is still 0 maps to a wrapped RTP position and must not be used.
   bool engine_v2_anchor_pending;
+  // Which clock the anchor above is expressed in, taken from the timeline ID
+  // the sender supplied.  PTP and NTP are unrelated absolute timelines, so
+  // reading the offset from the other one puts the anchor decades away.
+  bool engine_v2_anchor_uses_ptp;
   uint32_t engine_v2_anchor_rtp;
   uint64_t engine_v2_anchor_network_ns;
   int64_t engine_v2_playout_offset_ns;
@@ -139,6 +143,11 @@ bool audio_stream_process_accepted_frame(audio_receiver_state_t *state,
                                          uint32_t timestamp,
                                          const uint8_t *audio_data,
                                          size_t audio_len);
+
+// True when the next decoded AAC frame is a post-seek/resume priming frame and
+// must be silenced.  Read where the block counters are advanced, because the
+// buffered path advances them on the TCP reader and decodes elsewhere.
+bool audio_stream_aac_prime_mute_wanted(const audio_receiver_state_t *state);
 
 // Buffered path: decode one encoded access unit and publish the PCM into the
 // engine timeline.  Runs on the decode worker task.

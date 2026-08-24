@@ -111,6 +111,11 @@ esp_err_t audio_timeline_init(audio_timeline_t *timeline, uint16_t capacity,
                               uint32_t frame_samples);
 void audio_timeline_deinit(audio_timeline_t *timeline);
 void audio_timeline_clear(audio_timeline_t *timeline);
+/* clear() split in two so a caller that already holds a spinlock can drop the
+ * blocks there and wake the producer after it leaves the critical section:
+ * xSemaphoreGive() must not be called with interrupts disabled. */
+void audio_timeline_clear_slots(audio_timeline_t *timeline);
+void audio_timeline_signal_space(audio_timeline_t *timeline);
 /* Re-cut the pool for another codec's frame length.  The PCM budget is fixed,
  * so the slot count moves inversely with the frame size and the depth in
  * seconds stays put.  Block addressing is derived from frame_samples, so
