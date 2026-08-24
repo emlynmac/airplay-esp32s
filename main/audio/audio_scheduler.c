@@ -97,6 +97,7 @@ void audio_scheduler_begin_epoch(audio_scheduler_t *scheduler, uint32_t epoch,
   scheduler->preroll_started_us = now_us;
   scheduler->wanted_rtp = 0;
   scheduler->raw_playout_error_samples = 0;
+  scheduler->raw_error_span_valid = false;
   scheduler->playout_error_samples = 0;
   scheduler->filtered_playout_error_q16 = 0;
   scheduler->max_abs_playout_error_samples = 0;
@@ -184,6 +185,18 @@ size_t audio_scheduler_render(audio_scheduler_t *scheduler,
     uint32_t actual_mid_rtp = scheduler->cursor_rtp + midpoint_samples;
     int32_t raw_error = (int32_t)(actual_mid_rtp - wanted_mid_rtp);
     scheduler->raw_playout_error_samples = raw_error;
+    if (!scheduler->raw_error_span_valid) {
+      scheduler->raw_error_span_valid = true;
+      scheduler->raw_error_min_samples = raw_error;
+      scheduler->raw_error_max_samples = raw_error;
+    } else {
+      if (raw_error < scheduler->raw_error_min_samples) {
+        scheduler->raw_error_min_samples = raw_error;
+      }
+      if (raw_error > scheduler->raw_error_max_samples) {
+        scheduler->raw_error_max_samples = raw_error;
+      }
+    }
 
     int64_t raw_q16 = (int64_t)raw_error * 65536LL;
     if (!scheduler->error_filter_valid) {

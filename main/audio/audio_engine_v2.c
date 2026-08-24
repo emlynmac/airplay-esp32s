@@ -452,13 +452,21 @@ size_t audio_engine_v2_render(audio_engine_v2_t *engine,
     engine->last_status_log_us = now_us;
     int32_t filtered_samples = engine->scheduler.playout_error_samples;
     int32_t raw_samples = engine->scheduler.raw_playout_error_samples;
+    int32_t span_samples = engine->scheduler.raw_error_span_valid
+                               ? engine->scheduler.raw_error_max_samples -
+                                     engine->scheduler.raw_error_min_samples
+                               : 0;
+    engine->scheduler.raw_error_span_valid = false;
     int32_t filtered_us = 0;
     int32_t raw_us = 0;
+    int32_t span_us = 0;
     if (engine->format.sample_rate > 0) {
       filtered_us = (int32_t)(((int64_t)filtered_samples * 1000000LL) /
                               engine->format.sample_rate);
       raw_us = (int32_t)(((int64_t)raw_samples * 1000000LL) /
                          engine->format.sample_rate);
+      span_us = (int32_t)(((int64_t)span_samples * 1000000LL) /
+                          engine->format.sample_rate);
     }
     uint32_t raw_abs_us =
         (uint32_t)(raw_us < 0 ? -(int64_t)raw_us : (int64_t)raw_us);
@@ -469,12 +477,13 @@ size_t audio_engine_v2_render(audio_engine_v2_t *engine,
         engine->conceal_events - engine->conceal_events_logged;
     engine->conceal_events_logged = engine->conceal_events;
     ESP_LOGI(TAG,
-             "playout: raw=%s%" PRIu32 ".%03" PRIu32 " ms filt=%s%" PRIu32
-             ".%03" PRIu32 " ms (%" PRId32 " smp) drift=%" PRId32
-             " ppm servo=%s/%" PRIu32 " buffered=%u concealed=%" PRIu64
-             " holes=%" PRIu64 " (+%" PRIu64 ")",
+             "playout: raw=%s%" PRIu32 ".%03" PRIu32 " ms span=%" PRId32
+             " us filt=%s%" PRIu32 ".%03" PRIu32 " ms (%" PRId32
+             " smp) drift=%" PRId32 " ppm servo=%s/%" PRIu32
+             " buffered=%u concealed=%" PRIu64 " holes=%" PRIu64 " (+%" PRIu64
+             ")",
              raw_us < 0 ? "-" : "", raw_abs_us / 1000U, raw_abs_us % 1000U,
-             filtered_us < 0 ? "-" : "", filtered_abs_us / 1000U,
+             span_us, filtered_us < 0 ? "-" : "", filtered_abs_us / 1000U,
              filtered_abs_us % 1000U, filtered_samples,
              engine->scheduler.estimated_drift_ppm,
              engine->scheduler.drift_servo_engaged ? "on" : "off",

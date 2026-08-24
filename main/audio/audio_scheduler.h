@@ -37,6 +37,11 @@ typedef struct {
    * expected callback/DMA phase sawtooth. filtered_playout_error_q16 tracks
    * the same error at the rendered block midpoint with a 1/8 IIR filter. */
   int32_t raw_playout_error_samples;
+  /* Peak-to-peak span of the raw error since the last status log, i.e. the
+   * measurement noise floor the servo thresholds have to clear. */
+  int32_t raw_error_min_samples;
+  int32_t raw_error_max_samples;
+  bool raw_error_span_valid;
   int32_t playout_error_samples;
   int64_t filtered_playout_error_q16;
   int32_t max_abs_playout_error_samples;
