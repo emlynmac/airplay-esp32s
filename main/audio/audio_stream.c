@@ -95,9 +95,8 @@ static bool timestamp_is_gated(const audio_receiver_state_t *state,
   return false;
 }
 
-// Split a decoded packet across timeline blocks the way
-// audio_buffer_queue_decoded() does, so a sender whose packet length differs
-// from the SDP frame length still lands somewhere.
+// Split a decoded packet across timeline blocks, so a sender whose packet
+// length differs from the SDP frame length still lands somewhere.
 static bool audio_stream_push_timeline_pcm(audio_receiver_state_t *state,
                                            uint32_t timestamp,
                                            const int16_t *pcm, size_t samples,
@@ -164,15 +163,21 @@ bool audio_stream_process_accepted_frame(audio_receiver_state_t *state,
     return false;
   }
 
-  if (state->engine_v2_ready) {
-    state->stats.packets_decoded++;
-    return audio_stream_push_timeline_pcm(state, timestamp, decode_buffer,
-                                          (size_t)decoded_samples, channels);
+  // Deferred FLUSHBUFFERED boundary, as the buffered decode path applies it.
+  // audio_timing_read() used to own this for the realtime stream; the check
+  // has to live wherever the PCM is queued now.
+  uint32_t flush_until_ts = 0;
+  if (audio_timing_take_deferred_flush(&state->timing, timestamp,
+                                       &flush_until_ts)) {
+    (void)audio_engine_v2_deferred_flush(
+        &state->engine_v2, audio_epoch_get(&state->engine_v2.epoch),
+        flush_until_ts);
+    state->blocks_read_in_sequence = 0;
   }
 
-  return audio_buffer_queue_decoded(&state->buffer, &state->stats, timestamp,
-                                    decode_buffer, (size_t)decoded_samples,
-                                    channels);
+  state->stats.packets_decoded++;
+  return audio_stream_push_timeline_pcm(state, timestamp, decode_buffer,
+                                        (size_t)decoded_samples, channels);
 }
 
 bool audio_stream_process_frame(audio_receiver_state_t *state,

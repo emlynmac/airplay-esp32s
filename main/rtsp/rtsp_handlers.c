@@ -1749,7 +1749,7 @@ static void handle_flushbuffered(int socket, rtsp_conn_t *conn,
   // If flushFromSeq is present → deferred flush: keep playing existing buffered
   //   content until flushUntilTS is reached, then discard and start fresh.
   //   The phone simultaneously starts streaming the new track, which fills the
-  //   buffer beyond flushUntilTS; audio_timing_read detects the boundary and
+  //   buffer beyond flushUntilTS; the decode task detects the boundary and
   //   triggers the bulk-flush at the right moment.
   bool has_deferred = false;
   if (body && body_len >= 8 && memcmp(body, "bplist00", 8) == 0) {
