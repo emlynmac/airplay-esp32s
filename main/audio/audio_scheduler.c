@@ -68,6 +68,11 @@ static void output_silence(int16_t *out, size_t samples, uint8_t channels) {
 #define DRIFT_SERVO_ENGAGE_US     5000
 #define DRIFT_SERVO_DISENGAGE_US  1500
 #define DRIFT_SERVO_TRIM_INTERVAL 4
+/* Renders to ignore after an epoch starts.  The DMA ring is still filling, so
+ * audio_output_get_pipeline_us() under-reports and the computed playout instant
+ * lands early -- which reads as several ms of positive error that resolves
+ * itself once the ring reaches steady occupancy.  ~2 s at any block size. */
+#define DRIFT_SERVO_WARMUP_RENDERS 250
 
 void audio_scheduler_init(audio_scheduler_t *scheduler,
                           uint32_t preroll_samples, int64_t fallback_after_us) {
@@ -102,6 +107,7 @@ void audio_scheduler_begin_epoch(audio_scheduler_t *scheduler, uint32_t epoch,
   scheduler->error_filter_valid = false;
   scheduler->drift_servo_engaged = false;
   scheduler->drift_servo_phase = 0;
+  scheduler->drift_servo_warmup = 0;
   scheduler->drift_servo_trims = 0;
   scheduler->wait_reason = AUDIO_SCHED_WAIT_CLOCK_MAP;
   scheduler->render_calls = 0;
@@ -233,12 +239,16 @@ size_t audio_scheduler_render(audio_scheduler_t *scheduler,
         (int32_t)(((uint64_t)clock_map->sample_rate *
                    DRIFT_SERVO_DISENGAGE_US) /
                   1000000ULL);
-    if (!scheduler->drift_servo_engaged && abs_error > engage_samples) {
+    if (!scheduler->drift_servo_engaged && abs_error > engage_samples &&
+        scheduler->drift_servo_warmup >= DRIFT_SERVO_WARMUP_RENDERS) {
       scheduler->drift_servo_engaged = true;
       scheduler->drift_servo_phase = 0;
     } else if (scheduler->drift_servo_engaged &&
                abs_error < disengage_samples) {
       scheduler->drift_servo_engaged = false;
+    }
+    if (scheduler->drift_servo_warmup < DRIFT_SERVO_WARMUP_RENDERS) {
+      scheduler->drift_servo_warmup++;
     }
 
     if (scheduler->drift_servo_engaged &&
@@ -290,6 +300,7 @@ size_t audio_scheduler_render(audio_scheduler_t *scheduler,
       scheduler->drift_reference_network_ns = 0;
       scheduler->drift_servo_engaged = false;
       scheduler->drift_servo_phase = 0;
+      scheduler->drift_servo_warmup = 0;
     } else {
       /* fallback_after_us is an elapsed-time timeout.  Both timestamps
        * must use the same monotonic local clock.  preroll_started_us is set
@@ -333,6 +344,7 @@ size_t audio_scheduler_render(audio_scheduler_t *scheduler,
         scheduler->drift_reference_network_ns = 0;
         scheduler->drift_servo_engaged = false;
         scheduler->drift_servo_phase = 0;
+        scheduler->drift_servo_warmup = 0;
       } else {
         scheduler->state = AUDIO_SCHED_PREROLL;
         scheduler->wait_reason = fallback_due ? AUDIO_SCHED_WAIT_FALLBACK_DATA
@@ -363,6 +375,7 @@ size_t audio_scheduler_render(audio_scheduler_t *scheduler,
     scheduler->drift_reference_network_ns = 0;
     scheduler->drift_servo_engaged = false;
     scheduler->drift_servo_phase = 0;
+    scheduler->drift_servo_warmup = 0;
     scheduler->silent_render_calls++;
     output_silence(out, samples, channels);
     return samples;

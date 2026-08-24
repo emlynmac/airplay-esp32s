@@ -50,6 +50,7 @@ typedef struct {
   bool drift_servo_engaged;
   uint32_t drift_servo_phase;
   uint32_t drift_servo_trims;
+  uint32_t drift_servo_warmup;
   audio_scheduler_wait_reason_t wait_reason;
   uint64_t render_calls;
   uint64_t silent_render_calls;

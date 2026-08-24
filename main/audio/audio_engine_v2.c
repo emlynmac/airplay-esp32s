@@ -165,6 +165,7 @@ void audio_engine_v2_wait_for_anchor(audio_engine_v2_t *engine,
   engine->scheduler.error_filter_valid = false;
   engine->scheduler.drift_servo_engaged = false;
   engine->scheduler.drift_servo_phase = 0;
+  engine->scheduler.drift_servo_warmup = 0;
   engine->scheduler.preroll_started_us = now_us;
 }
 
