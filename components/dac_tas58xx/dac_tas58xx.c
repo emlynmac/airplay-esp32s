@@ -248,6 +248,9 @@ typedef struct {
   bool dsp_defaults_written;      /* signal-path coeffs programmed */
   bool pbtl_mono;                 /* bridged (PBTL) mono output stage */
   tas58xx_mix_t mix;              /* input-mixer routing */
+  uint8_t *hf_buf;                /* cached PPC3 dump (NULL if none) */
+  size_t hf_size;                 /* bytes in hf_buf */
+  char hf_path[48];               /* where the dump came from */
 } tas58xx_dev_t;
 
 static tas58xx_dev_t s_devs[TAS58XX_MAX_DEVICES];
@@ -308,6 +311,7 @@ static esp_err_t tas58xx_write_reg(uint8_t reg, uint8_t value);
 static esp_err_t tas58xx_read_reg(uint8_t reg, uint8_t *value);
 static esp_err_t tas58xx_init_one(tas58xx_dev_t *dev);
 static esp_err_t tas58xx_apply_input_mix(void);
+static esp_err_t tas58xx_run_init_seq(tas58xx_dev_t *dev);
 
 /* Linear scale the input mixer should apply to one output path. */
 static float tas58xx_ch_scale(int dev, int ch) {
@@ -662,6 +666,120 @@ static esp_err_t tas58xx_apply_pbtl(tas58xx_dev_t *dev) {
 }
 
 /*
+ * A tuned PPC3 dump is a complete device configuration — clocking, I2S format,
+ * the process flow select and every coefficient — so it stands in for the
+ * built-in init sequence rather than running alongside it. That is what makes
+ * it the full configuration option: a flow whose coefficient map TI never
+ * published is still reachable, because the dump replays TI's own writes.
+ *
+ * Stream format matches the TAS57xx loader: [reg, len, data[0..len-1]]
+ * repeated, terminated by 0xFF 0xFF. [0xFE, 1, ms] pauses. Register addresses
+ * are 7-bit, so neither opcode can collide with a real write.
+ */
+#define HF_OP_DELAY 0xFE
+#define HF_OP_END   0xFF
+
+static esp_err_t tas58xx_write_hf(tas58xx_dev_t *dev, const uint8_t *stream,
+                                  size_t size) {
+  size_t pos = 0;
+  int writes = 0;
+
+  while (pos + 1 < size) {
+    const uint8_t reg = stream[pos];
+    const uint8_t len = stream[pos + 1];
+
+    if (reg == HF_OP_END && len == HF_OP_END) {
+      ESP_LOGI(TAG, "@0x%02X PPC3 dump applied (%d writes)", dev->addr, writes);
+      return ESP_OK;
+    }
+    if (pos + 2 + (size_t)len > size) {
+      ESP_LOGE(TAG, "@0x%02X PPC3 dump truncated at offset %u", dev->addr,
+               (unsigned)pos);
+      return ESP_ERR_INVALID_SIZE;
+    }
+    if (reg == HF_OP_DELAY) {
+      vTaskDelay(pdMS_TO_TICKS(len ? stream[pos + 2] : 1));
+      pos += 2 + (size_t)len;
+      continue;
+    }
+
+    const esp_err_t err =
+        board_i2c_write(dev->handle, reg, &stream[pos + 2], len);
+    if (err != ESP_OK) {
+      ESP_LOGE(TAG,
+               "@0x%02X PPC3 dump write failed at offset %u (reg 0x%02X): %s",
+               dev->addr, (unsigned)pos, reg, esp_err_to_name(err));
+      return err;
+    }
+    writes++;
+    pos += 2 + (size_t)len;
+  }
+
+  ESP_LOGE(TAG, "@0x%02X PPC3 dump has no terminator", dev->addr);
+  return ESP_ERR_INVALID_SIZE;
+}
+
+/*
+ * Load a tuned PPC3 dump for device index i.
+ *   single device    -> /spiffs/hf/tas58xx_fw.bin
+ *   multiple devices -> /spiffs/hf/tas58xx_fw<i>.bin, with the first device
+ *                       falling back to the unindexed name.
+ * Absent is the normal case: the chip then runs the built-in init sequence.
+ */
+static void tas58xx_load_hf(int i, bool multi) {
+  tas58xx_dev_t *d = &s_devs[i];
+  char path[48];
+
+  /* Re-init without a deinit would otherwise strand the previous dump. */
+  free(d->hf_buf);
+  d->hf_buf = NULL;
+  d->hf_size = 0;
+
+  if (multi) {
+    snprintf(path, sizeof(path), "/spiffs/hf/tas58xx_fw%d.bin", i);
+  } else {
+    snprintf(path, sizeof(path), "/spiffs/hf/tas58xx_fw.bin");
+  }
+
+  FILE *f = fopen(path, "rb");
+  if (!f && multi && i == 0) {
+    snprintf(path, sizeof(path), "/spiffs/hf/tas58xx_fw.bin");
+    f = fopen(path, "rb");
+  }
+  if (!f) {
+    ESP_LOGI(TAG, "No PPC3 dump at %s — @0x%02X runs the built-in flow", path,
+             d->addr);
+    return;
+  }
+
+  fseek(f, 0, SEEK_END);
+  const long size = ftell(f);
+  fseek(f, 0, SEEK_SET);
+
+  /* tas58xx_write_hf() reads a two-byte header before any payload. */
+  if (size < 2) {
+    ESP_LOGE(TAG, "PPC3 dump %s is empty or unreadable", path);
+    fclose(f);
+    return;
+  }
+
+  uint8_t *buf = malloc((size_t)size);
+  if (!buf || fread(buf, 1, (size_t)size, f) != (size_t)size) {
+    ESP_LOGE(TAG, "Failed to read PPC3 dump %s", path);
+    free(buf);
+    fclose(f);
+    return;
+  }
+  fclose(f);
+
+  d->hf_buf = buf;
+  d->hf_size = (size_t)size;
+  snprintf(d->hf_path, sizeof(d->hf_path), "%s", path);
+  ESP_LOGI(TAG, "Loaded PPC3 dump %s (%ld bytes) for @0x%02X", path, size,
+           d->addr);
+}
+
+/*
  * Initialize a single TAS58xx chip: add it to the I2C bus, verify its die
  * ID, run the model-specific register init sequence, and (for the sub)
  * enable PBTL mono output. Assumes REG_LOCK is held; sets s_cur to dev.
@@ -692,7 +810,48 @@ static esp_err_t tas58xx_init_one(tas58xx_dev_t *dev) {
              esp_err_to_name(err));
   }
 
-  // Run the model-specific init sequence
+  // A tuned dump owns the whole configuration, so it stands in for the
+  // built-in sequence rather than running after it.
+  if (dev->hf_buf) {
+    ESP_LOGI(TAG, "@0x%02X applying PPC3 dump %s (%s)...", dev->addr,
+             dev->hf_path, dev->pbtl_mono ? "PBTL mono" : "BTL stereo");
+    err = tas58xx_write_hf(dev, dev->hf_buf, dev->hf_size);
+    if (err != ESP_OK) {
+      return err;
+    }
+    // The dump brought its own coefficients; ours would overwrite the tuning.
+    dev->dsp_defaults_written = true;
+  } else {
+    err = tas58xx_run_init_seq(dev);
+    if (err != ESP_OK) {
+      return err;
+    }
+  }
+
+  /*
+   * Configure the PBTL (mono) output stage while still in HiZ. The channel
+   * routing is a DSP-coefficient change applied once the device reaches
+   * PLAY (see tas58xx_apply_input_mix()).
+   */
+  err = tas58xx_apply_pbtl(dev);
+  if (err != ESP_OK) {
+    return err;
+  }
+
+  // Give the device time to settle
+  vTaskDelay(pdMS_TO_TICKS(10));
+
+  tas58xx_dump_status("post-init");
+
+  ESP_LOGI(TAG, "%s @0x%02X initialized",
+           dev->model == TAS58XX_MODEL_TAS5805M ? "TAS5805M" : "TAS5825M",
+           dev->addr);
+  return ESP_OK;
+}
+
+/* Run the built-in register init sequence for dev's model. */
+static esp_err_t tas58xx_run_init_seq(tas58xx_dev_t *dev) {
+  esp_err_t err;
   const struct tas58xx_cmd_s *seq = (dev->model == TAS58XX_MODEL_TAS5825M)
                                         ? tas5825m_init_seq
                                         : tas5805m_init_seq;
@@ -721,24 +880,6 @@ static esp_err_t tas58xx_init_one(tas58xx_dev_t *dev) {
     }
   }
 
-  /*
-   * Configure the PBTL (mono) output stage while still in HiZ. The channel
-   * routing is a DSP-coefficient change applied once the device reaches
-   * PLAY (see tas58xx_apply_input_mix()).
-   */
-  err = tas58xx_apply_pbtl(dev);
-  if (err != ESP_OK) {
-    return err;
-  }
-
-  // Give the device time to settle
-  vTaskDelay(pdMS_TO_TICKS(10));
-
-  tas58xx_dump_status("post-init");
-
-  ESP_LOGI(TAG, "%s @0x%02X initialized",
-           dev->model == TAS58XX_MODEL_TAS5805M ? "TAS5805M" : "TAS5825M",
-           dev->addr);
   return ESP_OK;
 }
 
@@ -805,6 +946,12 @@ static esp_err_t tas58xx_init(void *i2c_bus) {
     s_dev_mix[i] = s_devs[i].mix;
   }
 
+  /* Read the dumps before taking the register lock — SPIFFS is slow and
+   * nothing here touches the bus. */
+  for (int i = 0; i < s_dev_count; i++) {
+    tas58xx_load_hf(i, s_dev_count > 1);
+  }
+
   REG_LOCK();
   for (int i = 0; i < s_dev_count; i++) {
     err = tas58xx_init_one(&s_devs[i]);
@@ -838,6 +985,9 @@ static esp_err_t tas58xx_deinit(void) {
   REG_LOCK();
   for (int i = 0; i < s_dev_count; i++) {
     tas58xx_dev_t *dev = &s_devs[i];
+    free(dev->hf_buf);
+    dev->hf_buf = NULL;
+    dev->hf_size = 0;
     if (!dev->handle) {
       continue;
     }

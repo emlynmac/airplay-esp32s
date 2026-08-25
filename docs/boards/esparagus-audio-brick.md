@@ -161,6 +161,53 @@ DSP input mixer ahead of the filters — so they only ever attenuate and cost no
 headroom. Use them to match drivers of differing sensitivity. Levels and mutes take
 effect immediately and are stored in NVS, independently of the filter commit.
 
+## Full PPC3 tuning
+
+The Equaliser page covers the fifteen biquads per channel, the crossover and the levels,
+which is the whole signal path for most builds. A tuned dump from TI PurePath Console 3
+goes further: it is the complete device configuration — clocking, I2S format, the process
+flow select and every coefficient — so it reaches blocks the web interface does not
+expose. That includes flows whose coefficient map TI never published, because a dump
+replays TI's own register writes rather than addresses we would have to know.
+
+At boot the driver looks for a dump on SPIFFS and, if one is present, replays it *instead
+of* the built-in init sequence:
+
+| File | Applies to |
+| --- | --- |
+| `/spiffs/hf/tas58xx_fw.bin` | the only amplifier, or the first of two |
+| `/spiffs/hf/tas58xx_fw0.bin` | first amplifier on a dual-DAC board |
+| `/spiffs/hf/tas58xx_fw1.bin` | second amplifier on a dual-DAC board |
+
+To install one:
+
+1. Tune the part in PPC3 and export either the I2C log (`.cfg`) or the C header.
+2. Convert it:
+   ```bash
+   python3 components/dac_tas58xx/ppc3_convert.py my_tuning.cfg -o tas58xx_fw.bin
+   ```
+   A log that drives both amplifiers carries writes for each, so pick one with
+   `--dev 98` or `--dev 9a` and convert it twice.
+3. Copy the result to `data/hf/` for a serial flash, or upload it over WiFi:
+   ```bash
+   curl -X POST "http://<device-ip>/api/fs/upload?path=/spiffs/hf/tas58xx_fw.bin" \
+        --data-binary @tas58xx_fw.bin
+   ```
+4. Reboot.
+
+Delete the file to go back to the built-in flow.
+
+!!! warning
+
+    A dump owns the configuration, so the driver stops writing its own signal-path
+    defaults and trusts the tuning instead. Get the clocking or the I2S format wrong
+    and the part will not play — keep a serial console attached the first time.
+
+The biquad addresses are identical in every documented flow on both the TAS5825M and the
+TAS5805M, so the Equaliser page keeps working on top of a dump. A dump that selects an
+undocumented flow is the exception: nothing guarantees its coefficients live where the
+page expects them.
+
 ## Variants
 
 | Environment | Chip | Notes |
