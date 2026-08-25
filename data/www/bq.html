@@ -151,10 +151,7 @@ them to match drivers of differing sensitivity.</p>
 <input type='number' id='xo-freq' min='20' max='16000' step='10' value='2500'></div>
 <div class='trim'>
 <label for='xo-align'>Slope</label>
-<select id='xo-align' onchange='xoAlign()'></select></div>
-<label class='gang'>
-<input type='checkbox' id='xo-inv'>
-<span>Invert the low branch</span></label>
+<select id='xo-align' onchange='xoSync()'></select></div>
 <p class='hint' id='xo-hint'></p>
 <div class='actions'>
 <button class='btn btn-primary' id='xo-go' onclick='xoBuild()'>Build</button>
@@ -946,8 +943,10 @@ function graphicEq(){
 
 /* ---- crossover ----
    Sections cascade, so a Linkwitz-Riley 4th order is two Butterworth 2
-   sections, not two Linkwitz-Riley 2 sections. `inv` is whether the two
-   halves need opposite polarity to sum flat through the corner. */
+   sections, not two Linkwitz-Riley 2 sections. `inv` is not a preference: at
+   the corner the branches sit n*180 degrees apart, so the 12 dB/oct pairs need
+   opposite polarity and the 24 dB/oct pairs are already back in phase and
+   would null if we inverted them anyway. */
 var XOA=[{n:'Linkwitz-Riley 24 dB/oct',s:[[S_BW2,0.7071],[S_BW2,0.7071]],inv:0},
          {n:'Linkwitz-Riley 12 dB/oct',s:[[S_LR2,0.5]],inv:1},
          {n:'Butterworth 24 dB/oct',s:[[S_VARQ,0.5412],[S_VARQ,1.3065]],inv:0},
@@ -991,13 +990,6 @@ function xoToggle(){
   for(i=0;i<XOA.length;i++)h+="<option value='"+i+"'>"+XOA[i].n+'</option>';
   $('xo-align').innerHTML=h;
   $('xo-align').value='0';
-  xoAlign();
-}
-/* Each alignment carries the polarity that makes it sum flat, but it is only
-   a starting point — driver offset and cabinet decide the rest. */
-function xoAlign(){
-  var p=xoPick();
-  if(p.al)$('xo-inv').checked=!!p.al.inv;
   xoSync();
 }
 function xoSync(){
@@ -1006,7 +998,10 @@ function xoSync(){
   $('xo-go').disabled=!p.lay.ok;
   $('xo-hint').textContent=p.lay.ok
     ? 'Takes '+p.al.s.length+' of the '+SLOTS+' slots on each output and '+
-      'clears the rest.'+(p.lay.mix?' Input routing is set to match.':'')+
+      'clears the rest.'+
+      (p.al.inv?' The low branch is inverted, which this slope needs to sum '+
+                'flat through the corner.':'')+
+      (p.lay.mix?' Input routing is set to match.':'')+
       ' Filters are staged only \u2014 press Apply to hear them.'
     : p.lay.why;
 }
@@ -1019,6 +1014,8 @@ function xoFill(c,f,al,hi,inv){
     c[i].sub=al.s[i][0];
     c[i].freq=f;
     c[i].q=al.s[i][1];
+    /* Polarity belongs to the chain, not to a section: the sections multiply,
+       so inverting an even number of them would cancel back to no inversion. */
     c[i].invert=!hi&&inv&&i===0;
   }
 }
@@ -1028,7 +1025,7 @@ function xoBuild(){
   var f=num('xo-freq');
   if(!isFinite(f)){show($('msg'),'Enter a crossover frequency.','err');return;}
   f=clamp(f,F_MIN,fs()*0.45);
-  var inv=$('xo-inv').checked,i,k;
+  var inv=p.al.inv,i,k;
   for(i=0;i<p.lay.parts.length;i++){
     var pt=p.lay.parts[i],am=data.amps[pt.a];
     var outs=pt.o<0?[0,1]:[pt.o];

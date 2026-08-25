@@ -94,11 +94,23 @@ amplifiers, so a crossover spanning both can never go live by halves. Layouts th
 wiring rules out are not offered — a bridged amplifier has no separate A and B to
 split across.
 
-Each section also has an **Inv** box that flips its polarity. The 12 dB per octave
-alignments come out of the crossover 180° apart and need one branch inverted to sum
-flat, which the builder ticks for you; it is also there for drivers wired out of
-phase. A section left on Bypass with Inv ticked is a plain polarity flip and costs
-nothing else.
+Steeper alignments cost more slots, because sections cascade. A Linkwitz-Riley is two
+cascaded Butterworths of half its order, so LR2 is two 1st-order Butterworths — real
+poles, which collapse into a single biquad at Q 0.5 — while LR4 is two Butterworth 2
+sections at Q 0.707 and cannot be folded into one. That is why a 24 dB per octave
+split shows two Butterworth 2 sections rather than one Linkwitz-Riley 2: both would
+slope at 24 dB per octave, but only the Butterworth pair sits 6 dB down at the corner,
+which is what lets the two branches sum flat. Two Linkwitz-Riley 2 sections would be
+12 dB down there and sum 6 dB short.
+
+Each section also has an **Inv** box that flips its polarity. The builder sets this
+itself and does not offer it as a choice, because the alignment decides it: at the
+corner the branches sit 180° apart at 12 dB per octave and need opposite polarity to
+sum flat, but they are back in phase at 24, where inverting would instead dig a notch.
+Only one section of a branch ever carries it — polarity belongs to the chain, and
+since sections multiply, inverting an even number of them cancels back to none. The
+box is still there by hand for drivers wired out of phase. A section left on Bypass
+with Inv ticked is a plain polarity flip and costs nothing else.
 
 ### Fitting to a measurement
 
