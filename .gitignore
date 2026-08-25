@@ -28,3 +28,6 @@ user_platformio.ini
 # macOS metadata
 .DS_Store
 **/.DS_Store
+
+# 8.8 MB reference doc — download from ti.com rather than tracking it
+components/dac_tas58xx/TAS58xx Tuning Guide.pdf
