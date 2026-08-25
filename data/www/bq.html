@@ -1,0 +1,726 @@
+<!DOCTYPE html><html><head>
+<meta charset='UTF-8'>
+<meta name='viewport' content='width=device-width,initial-scale=1'>
+<title>Biquad EQ - AirPlay Receiver</title>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:-apple-system,system-ui,sans-serif;background:linear-gradient(135deg,#1a1a2e 0%,#16213e 100%);min-height:100vh;padding:20px;color:#fff}
+.wrap{max-width:900px;margin:0 auto}
+.header{text-align:center;padding:20px 0}
+.header h1{font-size:24px;font-weight:600;margin-bottom:4px}
+.header p{color:#888;font-size:13px}
+.nav{text-align:center;margin-bottom:16px}
+.nav a{color:#e94560;text-decoration:none;font-size:13px;margin:0 8px}
+.card{background:rgba(255,255,255,0.05);border-radius:16px;padding:20px;margin-bottom:16px;border:1px solid rgba(255,255,255,0.1)}
+.card h2{font-size:16px;font-weight:600;margin-bottom:16px;color:#e94560}
+.btn{display:inline-block;padding:10px 16px;border:none;border-radius:8px;font-size:13px;font-weight:500;cursor:pointer;transition:all 0.2s}
+.btn-primary{background:#e94560;color:#fff}
+.btn-primary:hover{background:#d63850}
+.btn-secondary{background:rgba(255,255,255,0.1);color:#fff}
+.btn-secondary:hover{background:rgba(255,255,255,0.2)}
+.btn:disabled{opacity:0.5;cursor:not-allowed}
+.actions{display:flex;gap:10px;flex-wrap:wrap;align-items:center;margin-top:16px}
+.msg{padding:8px;border-radius:6px;margin-top:10px;font-size:13px}
+.msg.ok{background:rgba(27,67,50,0.5)}
+.msg.err{background:rgba(92,26,26,0.5)}
+.msg.info{background:rgba(15,52,96,0.5)}
+.hint{color:#888;font-size:12px;margin-top:8px;line-height:1.5}
+input[type=number],select{background:rgba(0,0,0,0.3);border:1px solid rgba(255,255,255,0.1);border-radius:6px;color:#fff;padding:7px 8px;font-size:12px;width:100%}
+select option{background:#16213e}
+input:disabled,select:disabled{opacity:0.25}
+.tabs{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:12px}
+.tab{background:rgba(255,255,255,0.08);border:1px solid rgba(255,255,255,0.1);border-radius:8px;color:#aaa;padding:8px 12px;font-size:12px;cursor:pointer}
+.tab.on{background:#e94560;border-color:#e94560;color:#fff}
+.gang{display:flex;align-items:center;gap:8px;font-size:12px;color:#aaa;margin-bottom:14px}
+.gang input{accent-color:#e94560;width:16px;height:16px}
+.trim{display:flex;align-items:center;gap:10px;font-size:12px;color:#aaa;margin-bottom:14px}
+.trim input[type=range]{accent-color:#e94560;flex:1;max-width:260px}
+.trim select{width:auto;min-width:220px}
+.trim b{color:#fff;font-weight:600;min-width:52px;text-align:right}
+.chainwrap{overflow-x:auto}
+.chaininner{min-width:720px}
+.bq,.bqhead{display:grid;grid-template-columns:24px 1.5fr 1.3fr .8fr .7fr .8fr .7fr .7fr;gap:6px;align-items:center;margin-bottom:6px}
+.bqhead{font-size:10px;color:#666;text-transform:uppercase;letter-spacing:.5px}
+.bq .n{font-size:11px;color:#666;text-align:right}
+.bqc{display:none;grid-template-columns:24px repeat(5,1fr);gap:6px;align-items:center;margin:-2px 0 8px;min-width:720px}
+.bqc .n{font-size:10px;color:#666;text-align:right}
+.plot{width:100%;height:230px;display:block;background:rgba(0,0,0,0.25);border:1px solid rgba(255,255,255,0.08);border-radius:10px;margin-bottom:14px;cursor:crosshair}
+.plotlab{font-size:10px;color:#666;text-transform:uppercase;letter-spacing:.5px;margin-bottom:4px}
+.legend{display:flex;gap:14px;flex-wrap:wrap;font-size:11px;color:#999;margin-bottom:6px}
+.legend span{display:flex;align-items:center;gap:5px}
+.legend i{width:11px;height:11px;border-radius:3px}
+.bar{position:sticky;bottom:0;background:rgba(22,33,62,0.95);backdrop-filter:blur(10px);border:1px solid rgba(255,255,255,0.1);border-radius:16px;padding:16px;margin-top:16px;display:flex;gap:10px;flex-wrap:wrap;align-items:center}
+.bar .state{font-size:12px;color:#aaa;margin-left:auto}
+.dot{display:inline-block;width:8px;height:8px;border-radius:50%;background:#4a4;margin-right:6px}
+.dot.dirty{background:#e94560}
+</style></head><body>
+<div class='wrap'>
+<div class='header'><h1>Biquad EQ</h1><p id='sub'>Loading&hellip;</p></div>
+<div class='nav'><a href='/'>&#8592; Back to Settings</a></div>
+
+<div id='banner'></div>
+
+<div class='card'>
+<h2>Response</h2>
+<div class='legend' id='legend'></div>
+<div class='plotlab'>Magnitude</div>
+<canvas id='mag' class='plot' width='1640' height='460'></canvas>
+<div class='plotlab'>Phase</div>
+<canvas id='phase' class='plot' width='1640' height='460'></canvas>
+<div id='all-wrap'>
+<div class='plotlab'>All channels</div>
+<div class='legend' id='all-legend'></div>
+<canvas id='all' class='plot' width='1640' height='460'></canvas>
+</div>
+<p class='hint'>Curves are computed with the same model the firmware uses, at
+the rate the I2S link is running. Faint lines are individual sections, bold is
+the cascade.</p>
+</div>
+
+<div class='card'>
+<h2>Filter Chain</h2>
+<div class='tabs' id='amp-tabs'></div>
+<div class='trim' id='mix-row'>
+<label for='mix'>Input channels</label>
+<select id='mix' onchange='mixChanged()'></select></div>
+<div class='trim' id='trim-row'>
+<label for='trim'>Amplifier level</label>
+<input type='range' id='trim' step='0.5' oninput='trimChanged()'
+       onchange='trimCommit()'>
+<b id='trim-val'>0.0 dB</b></div>
+<label class='gang' id='gang-row'>
+<input type='checkbox' id='gang' onchange='gangChanged()'>
+<span>Gang left and right channels</span></label>
+<div class='tabs' id='ch-tabs'></div>
+<div class='chainwrap'><div class='chaininner'>
+<div class='bqhead'><span></span><span>Type</span><span>Alignment</span>
+<span>Freq Hz</span><span>Q</span><span>BW Hz</span><span>Gain dB</span>
+<span>Ripple dB</span></div>
+<div id='rows'></div>
+</div></div>
+<div class='actions'>
+<button class='btn btn-primary' onclick='apply()'>Apply</button>
+<button class='btn btn-secondary' onclick='resetChain()'>Clear chain</button>
+<button class='btn btn-secondary' id='copy-btn' onclick='copyChannel()'>Copy to other channel</button>
+</div>
+<div id='msg'></div>
+</div>
+
+<div class='bar'>
+<button class='btn btn-primary' onclick='commit()'>Commit to flash</button>
+<button class='btn btn-secondary' onclick='revert()'>Revert</button>
+<span class='state' id='state'><span class='dot'></span>In sync with flash</span>
+</div>
+</div>
+
+<script>
+var TYPES=['Bypass','Peaking (Q)','Peaking (bandwidth)','Bass shelf',
+           'Treble shelf','Low pass','High pass','Band pass','Notch',
+           'Phase shift','Custom'];
+var SUBS=['Butterworth 1','Butterworth 2','Bessel 2','Linkwitz-Riley 2',
+          'Variable Q 2','Chebyshev 2'];
+var T_BYPASS=0,T_LP=5,T_HP=6,T_CUSTOM=10;
+var S_VARQ=4,S_CHEB=5;
+var SLOTS=15;
+/* Field visibility per filter type. Low and high pass defer to the alignment
+   for Q and ripple, so those two are decided in bqSync() instead. */
+var HAS_SUB =[0,0,0,0,0,1,1,0,0,0,0];
+var HAS_FREQ=[0,1,1,1,1,1,1,1,1,1,0];
+var HAS_Q   =[0,1,0,0,0,0,0,0,0,0,0];
+var HAS_BW  =[0,0,1,0,0,0,0,1,1,1,0];
+var HAS_GAIN=[0,1,1,1,1,0,0,0,0,0,0];
+/* Matches the clamps in tas58xx_bq_design(), so the plot cannot promise a
+   filter the part will not be given. */
+var F_MIN=1,Q_MIN=0.1,Q_MAX=20,G_MIN=-20,G_MAX=20,R_MIN=0.1,R_MAX=3;
+
+var data=null,amp=0,ch=0,dirty=false;
+var P=Math.PI,S2=Math.sqrt(2);
+
+function $(id){return document.getElementById(id);}
+function num(id){return parseFloat($(id).value);}
+function clamp(v,lo,hi){return v<lo?lo:(v>hi?hi:v);}
+function show(el,text,cls){
+  el.innerHTML=text?"<div class='msg "+cls+"'>"+text+'</div>':'';
+}
+function setDirty(d){
+  dirty=d;
+  $('state').innerHTML="<span class='dot"+(d?' dirty':'')+"'></span>"+
+    (d?'Uncommitted changes':'In sync with flash');
+}
+function fs(){return (data&&data.rate)||48000;}
+function fMax(){return fs()*0.49;}
+
+/* ---- PPC3 filter models ----
+   Transcribed from biquad.model.js in PurePath Console 3 and checked against
+   the firmware's C port. a1 and a2 come back already negated, which is the
+   form the part stores, so the response below subtracts them. */
+function eqBq(gain,freq,q,sr){
+  var g=Math.pow(10,gain/20),t0=2*P*freq/sr;
+  var beta=(g>=1)?t0/(2*q):t0/(2*g*q);
+  var a2=-0.5*(1-beta)/(1+beta);
+  var a1=(0.5-a2)*Math.cos(t0);
+  var b0=(g-1)*(0.25+0.5*a2)+0.5;
+  var b1=-a1;
+  var b2=-(g-1)*(0.25+0.5*a2)-a2;
+  return {b0:2*b0,b1:2*b1,b2:2*b2,a1:2*a1,a2:2*a2};
+}
+function shelfG(g){
+  var A=Math.pow(10,g/20);
+  var F=(g>=-6&&g<=6)?Math.sqrt(A):(A>1?A/S2:A*S2);
+  var D=Math.pow((F*F-1)/(A*A-F*F),0.25);
+  return [Math.sqrt(A)*D,D];
+}
+function shelfBq(gain,freq,sr,treble){
+  if(gain===0)return unity();
+  var gg=shelfG(gain),gN=gg[0],gD=gg[1],s=S2/2;
+  var a=Math.tan(P*(freq/sr-0.25)),aP=a*a,nP=gN*gN,dP=gD*gD,den;
+  if(treble){
+    den=1+dP+2*s*gD-2*s*gD*aP+dP*aP-2*dP*a+aP+2*a;
+    return {b0:(nP*aP+2*s*gN-2*nP*a+1-2*s*gN*aP+aP+nP+2*a)/den,
+            b1:(2-2*nP*aP+4*nP*a+4*a-2*nP+2*aP)/den,
+            b2:(1+2*s*gN*aP-2*s*gN+2*a+aP+nP-2*nP*a+nP*aP)/den,
+            a1:-(2-2*dP*aP+4*dP*a+2*aP-2*dP+4*a)/den,
+            a2:-(1-2*dP*a+2*a+dP-2*s*gD+aP+dP*aP+2*s*gD*aP)/den};
+  }
+  den=2*s*gD+1-2*s*gD*aP+dP*aP+2*dP*a+aP+dP-2*a;
+  return {b0:(1+nP*aP+aP+2*nP*a+nP+2*s*gN-2*s*gN*aP-2*a)/den,
+          b1:(-2+4*a+4*nP*a+2*nP*aP+2*nP-2*aP)/den,
+          b2:(1+2*s*gN*aP-2*a+nP-2*s*gN+2*nP*a+aP+nP*aP)/den,
+          a1:(2-2*dP*aP-4*dP*a+2*aP-2*dP-4*a)/den,
+          a2:(-dP*aP+2*a-1-2*dP*a+2*s*gD-aP-2*s*gD*aP-dP)/den};
+}
+function cheby(r){
+  var eps=Math.sqrt(Math.pow(10,Math.abs(r)/10)-1),t=1/eps;
+  var al=Math.log(t+Math.sqrt(t*t+1))/2;
+  var sh=(Math.exp(al)-Math.exp(-al))/2,chh=(Math.exp(al)+Math.exp(-al))/2;
+  return [-S2*sh,0.5*(sh*sh+chh*chh),
+          r>0?0.5*(sh*sh+chh*chh)/Math.sqrt(1+eps*eps):0.5*(sh*sh+chh*chh)];
+}
+function bilinear(k,A1,A2,n,hp){
+  var den=k*k+A2+A1*k;
+  return {b0:n/den,b1:(hp?-2:2)*n/den,b2:n/den,
+          a1:(2*k*k-2*A2)/den,a2:(A1*k-k*k-A2)/den};
+}
+/* PPC3 normalises the Chebyshev prototype differently for the two
+   directions; the others share one form. */
+function passBq(sub,freq,sr,q,ripple,hp){
+  var wc=2*P*freq,k=wc/Math.tan(P*freq/sr);
+  if(sub===0)return hp
+    ?{b0:k/(k+wc),b1:-k/(k+wc),b2:0,a1:(k-wc)/(k+wc),a2:0}
+    :{b0:wc/(k+wc),b1:wc/(k+wc),b2:0,a1:(k-wc)/(k+wc),a2:0};
+  if(sub===S_CHEB){
+    var t=cheby(ripple),a=t[0],b=t[1],c=t[2];
+    return hp?bilinear(k,-wc*a/b,wc*wc/b,(c/b)*k*k,true)
+             :bilinear(k,-wc*a,b*wc*wc,c*wc*wc,false);
+  }
+  var A1=sub===1?wc*S2:sub===2?wc*Math.sqrt(3):sub===3?2*wc:wc/q;
+  return bilinear(k,A1,wc*wc,hp?k*k:wc*wc,hp);
+}
+function bandBq(freq,bw,sr){
+  var fl=freq-bw/2,fu=freq+bw/2;
+  var Wu=2*P*fu/sr,Wl=2*P*fl/sr;
+  var Wc=Math.sqrt(Wu*Wl),C=Math.tan(Wc/2);
+  var K=C/Math.tan((Wu-Wl)/2);
+  var al=Math.cos((Wu+Wl)/2)/Math.cos((Wu-Wl)/2);
+  var p1=-2*al*K/(K+1),p2=(K-1)/(K+1);
+  var A0=(p2+1)+C*(1-p2);
+  return {b0:C*(1-p2)/A0,b1:0,b2:C*(p2-1)/A0,
+          a1:-2*p1/A0,a2:(-C*(p2-1)-(1+p2))/A0};
+}
+function notchBq(freq,bw,sr,allpass){
+  var it=Math.tan(P*bw/sr),a=(1-it)/(1+it);
+  var D=-Math.cos(2*P*freq/sr);
+  return allpass?{b0:a,b1:D*(1+a),b2:1,a1:-D*(1+a),a2:-a}
+                :{b0:(1+a)/2,b1:D*(1+a),b2:(1+a)/2,a1:-D*(1+a),a2:-a};
+}
+function unity(){return {b0:1,b1:0,b2:0,a1:0,a2:0};}
+
+/* Mirrors tas58xx_bq_design(): same clamps, same fall back to unity when a
+   filter cannot be built. */
+function designBq(b,sr){
+  var t=b.type;
+  if(t===T_BYPASS)return unity();
+  if(t===T_CUSTOM){
+    for(var k=0;k<5;k++)if(!isFinite(b.coeff[k]))return unity();
+    return {b0:b.coeff[0],b1:b.coeff[1],b2:b.coeff[2],
+            a1:b.coeff[3],a2:b.coeff[4]};
+  }
+  var fmax=sr*0.49;
+  var f=clamp(b.freq,F_MIN,fmax);
+  var q=clamp(b.q,Q_MIN,Q_MAX);
+  var g=clamp(b.gain,G_MIN,G_MAX);
+  var r=clamp(b.ripple,R_MIN,R_MAX);
+  var bwMax=2*Math.min(f-F_MIN,fmax-f);
+  var bw=clamp(b.bw,1,bwMax>1?bwMax:1);
+  if(!isFinite(f))return unity();
+  var o;
+  switch(t){
+    case 1: o=eqBq(g,f,q,sr);break;
+    case 2: o=eqBq(g,f,f/Math.max(bw,1),sr);break;
+    case 3: o=shelfBq(g,f,sr,false);break;
+    case 4: o=shelfBq(g,f,sr,true);break;
+    case T_LP: o=passBq(b.sub,f,sr,q,r,false);break;
+    case T_HP: o=passBq(b.sub,f,sr,q,r,true);break;
+    case 7: o=bandBq(f,bw,sr);break;
+    case 8: o=notchBq(f,bw,sr,false);break;
+    case 9: o=notchBq(f,bw,sr,true);break;
+    default: return unity();
+  }
+  if(!isFinite(o.b0)||!isFinite(o.b1)||!isFinite(o.b2)||
+     !isFinite(o.a1)||!isFinite(o.a2))return unity();
+  return o;
+}
+
+/* ---- response ----
+   a1 and a2 are stored negated, so the denominator subtracts them. */
+function response(c,w){
+  var c1=Math.cos(w),s1=Math.sin(w),c2=Math.cos(2*w),s2=Math.sin(2*w);
+  return {nr:c.b0+c.b1*c1+c.b2*c2, ni:-(c.b1*s1+c.b2*s2),
+          dr:1-c.a1*c1-c.a2*c2,    di:c.a1*s1+c.a2*s2};
+}
+function magDb(c,w){
+  var r=response(c,w);
+  var n=Math.sqrt(r.nr*r.nr+r.ni*r.ni),d=Math.sqrt(r.dr*r.dr+r.di*r.di);
+  if(!(d>1e-12)||!(n>1e-12))return -60;
+  return Math.max(-60,Math.min(60,20*Math.log10(n/d)));
+}
+function phaseDeg(c,w){
+  var r=response(c,w);
+  return Math.atan2(r.ni*r.dr-r.nr*r.di, r.nr*r.dr+r.ni*r.di)*180/P;
+}
+/* Phase is unwrapped as it goes, so an all-pass reads -360 rather than
+   folding back to 0. */
+function sweep(secs,sr,fn,unwrap){
+  var N=360,F0=20,F1=Math.min(20000,sr/2),k;
+  var curves=[],prev=[],total=[];
+  for(k=0;k<secs.length;k++){curves.push([]);prev.push(0);}
+  for(var i=0;i<=N;i++){
+    var w=2*P*F0*Math.pow(F1/F0,i/N)/sr,sum=0;
+    for(k=0;k<secs.length;k++){
+      var v=fn(secs[k],w);
+      if(unwrap){
+        while(v-prev[k]>180)v-=360;
+        while(v-prev[k]<-180)v+=360;
+        prev[k]=v;
+      }
+      curves[k].push(v);sum+=v;
+    }
+    total.push(sum);
+  }
+  return {n:N,f0:F0,f1:F1,curves:curves,total:total};
+}
+
+var TRACE=[['#e94560','rgba(233,69,96,0.25)'],['#4ecca3','rgba(78,204,163,0.25)'],
+           ['#f0a202','rgba(240,162,2,0.25)'],['#5b8ff9','rgba(91,143,249,0.25)']];
+function drawGraph(cv,sweeps,lo,hi,step,fmt,totalsOnly){
+  var g=cv.getContext('2d'),W=cv.width,H=cv.height;
+  /* The hover readout restores a snapshot rather than re-sweeping, so drop
+     the stale one whenever the picture underneath changes. */
+  cv._snap=null;
+  var PL=54,PR=12,PT=12,PB=26,PW=W-PL-PR,PH=H-PT-PB,i,k,d,f;
+  var f0=sweeps[0].f0,f1=sweeps[0].f1,N=sweeps[0].n;
+  function x(v){return PL+PW*Math.log(v/f0)/Math.log(f1/f0);}
+  function y(v){return PT+PH*(hi-v)/(hi-lo);}
+  g.clearRect(0,0,W,H);
+  g.font='20px sans-serif';g.textBaseline='middle';g.lineWidth=2;
+  g.strokeStyle='rgba(255,255,255,0.09)';g.fillStyle='#777';g.textAlign='center';
+  var ticks=[10,20,50,100,200,500,1000,2000,5000,10000,20000];
+  for(i=0;i<ticks.length;i++){
+    f=ticks[i];if(f>f1)break;
+    if(f<f0)continue;
+    g.beginPath();g.moveTo(x(f),PT);g.lineTo(x(f),PT+PH);g.stroke();
+    g.fillText(f>=1000?(f/1000)+'k':''+f,x(f),H-12);
+  }
+  g.textAlign='right';
+  for(d=lo;d<=hi+1e-6;d+=step){
+    g.strokeStyle=d===0?'rgba(255,255,255,0.22)':'rgba(255,255,255,0.09)';
+    g.beginPath();g.moveTo(PL,y(d));g.lineTo(PL+PW,y(d));g.stroke();
+    g.fillText(fmt(d),PL-8,y(d));
+  }
+  g.save();g.beginPath();g.rect(PL,PT,PW,PH);g.clip();
+  function trace(vals,style,width){
+    var pen=false;
+    g.strokeStyle=style;g.lineWidth=width;g.beginPath();
+    for(i=0;i<=N;i++){
+      f=f0*Math.pow(f1/f0,i/N);
+      if(vals[i]===null||vals[i]===undefined){pen=false;continue;}
+      if(pen)g.lineTo(x(f),y(vals[i]));else{g.moveTo(x(f),y(vals[i]));pen=true;}
+    }
+    g.stroke();
+  }
+  for(var s=0;s<sweeps.length;s++){
+    var col=TRACE[s%TRACE.length];
+    if(!totalsOnly)
+      for(k=0;k<sweeps[s].curves.length;k++)trace(sweeps[s].curves[k],col[1],2);
+    trace(sweeps[s].total,col[0],4);
+  }
+  g.restore();
+  var series=[];
+  for(k=0;k<sweeps.length;k++)
+    series.push({v:sweeps[k].total,c:TRACE[k%TRACE.length][0],
+                 n:sweeps[k].name||''});
+  cv._rd={f0:f0,f1:f1,N:N,lo:lo,hi:hi,PL:PL,PW:PW,PT:PT,PH:PH,
+          fmt:fmt,series:series};
+  hoverInit(cv);
+}
+function hoverAt(cv,px){
+  var d=cv._rd,g=cv.getContext('2d'),W=cv.width,H=cv.height,k,v;
+  if(!d)return;
+  if(!cv._snap){
+    var s=document.createElement('canvas');
+    s.width=W;s.height=H;s.getContext('2d').drawImage(cv,0,0);
+    cv._snap=s;
+  }
+  g.clearRect(0,0,W,H);g.drawImage(cv._snap,0,0);
+  var t=(px-d.PL)/d.PW;
+  if(t<0||t>1)return;
+  /* Snap to a swept point so the value shown is one that was computed. */
+  var i=Math.round(t*d.N),f=d.f0*Math.pow(d.f1/d.f0,i/d.N);
+  var x=d.PL+d.PW*i/d.N;
+  g.save();
+  g.strokeStyle='rgba(255,255,255,0.35)';g.lineWidth=2;
+  g.beginPath();g.moveTo(x,d.PT);g.lineTo(x,d.PT+d.PH);g.stroke();
+  g.font='20px sans-serif';g.textBaseline='middle';g.textAlign='left';
+  var rows=[];
+  for(k=0;k<d.series.length;k++){
+    v=d.series[k].v[i];
+    if(v===null||v===undefined||!isFinite(v))continue;
+    rows.push({c:d.series[k].c,
+               t:(d.series[k].n?d.series[k].n+'  ':'')+
+                 d.fmt(Math.round(v*10)/10)});
+    g.fillStyle=d.series[k].c;
+    g.beginPath();
+    g.arc(x,d.PT+d.PH*(d.hi-v)/(d.hi-d.lo),6,0,6.2832);
+    g.fill();
+  }
+  var head=f<1000?Math.round(f)+' Hz':(f/1000).toFixed(f<10000?2:1)+' kHz';
+  var LH=26,PX=10,PY=8,SW=14,wm=g.measureText(head).width;
+  for(k=0;k<rows.length;k++)
+    wm=Math.max(wm,SW+8+g.measureText(rows[k].t).width);
+  var bw=wm+PX*2,bh=PY*2+LH*(rows.length+1),bx=x+14,by=d.PT+10;
+  if(bx+bw>d.PL+d.PW)bx=x-14-bw;
+  g.fillStyle='rgba(16,20,28,0.88)';
+  g.strokeStyle='rgba(255,255,255,0.18)';g.lineWidth=2;
+  g.beginPath();g.rect(bx,by,bw,bh);g.fill();g.stroke();
+  g.fillStyle='#cfd6e4';g.fillText(head,bx+PX,by+PY+LH/2);
+  for(k=0;k<rows.length;k++){
+    var ry=by+PY+LH*(k+1)+LH/2;
+    g.fillStyle=rows[k].c;g.fillRect(bx+PX,ry-5,SW,10);
+    g.fillStyle='#cfd6e4';g.fillText(rows[k].t,bx+PX+SW+8,ry);
+  }
+  g.restore();
+}
+function hoverOff(cv){
+  if(!cv._snap)return;
+  var g=cv.getContext('2d');
+  g.clearRect(0,0,cv.width,cv.height);g.drawImage(cv._snap,0,0);
+}
+function hoverInit(cv){
+  if(cv._hov)return;
+  cv._hov=1;
+  cv.addEventListener('pointermove',function(ev){
+    if(ev.pointerType!=='mouse')return;
+    var r=cv.getBoundingClientRect();
+    hoverAt(cv,(ev.clientX-r.left)*cv.width/r.width);
+  });
+  cv.addEventListener('pointerleave',function(){hoverOff(cv);});
+}
+
+/* ---- rows ---- */
+function bqRow(i){
+  var opts='',t;
+  for(t=0;t<TYPES.length;t++)opts+="<option value='"+t+"'>"+TYPES[t]+'</option>';
+  var subs='';
+  for(t=0;t<SUBS.length;t++)subs+="<option value='"+t+"'>"+SUBS[t]+'</option>';
+  var co='',names=['b0','b1','b2','-a1','-a2'];
+  for(t=0;t<5;t++)
+    co+="<input type='number' id='c"+i+'-'+t+"' step='0.000001' title='"+
+        names[t]+"' placeholder='"+names[t]+"' oninput='touch()'>";
+  var chg='bqSync('+i+');touch()';
+  return "<div class='bq'><span class='n'>"+(i+1)+'</span>'+
+    "<select id='r"+i+"-t' onchange='"+chg+"'>"+opts+'</select>'+
+    "<select id='r"+i+"-s' onchange='"+chg+"'>"+subs+'</select>'+
+    "<input type='number' id='r"+i+"-f' min='10' max='20000' step='1' oninput='touch()'>"+
+    "<input type='number' id='r"+i+"-q' min='"+Q_MIN+"' max='"+Q_MAX+"' step='0.01' oninput='touch()'>"+
+    "<input type='number' id='r"+i+"-b' min='1' max='5000' step='1' oninput='touch()'>"+
+    "<input type='number' id='r"+i+"-g' min='"+G_MIN+"' max='"+G_MAX+"' step='0.5' oninput='touch()'>"+
+    "<input type='number' id='r"+i+"-r' min='"+R_MIN+"' max='"+R_MAX+"' step='0.1' oninput='touch()'>"+
+    "</div><div class='bqc' id='r"+i+"-c'><span class='n'>coef</span>"+co+'</div>';
+}
+function bqSync(i){
+  var t=parseInt($('r'+i+'-t').value,10);
+  var sub=parseInt($('r'+i+'-s').value,10);
+  var pass=(t===T_LP||t===T_HP);
+  $('r'+i+'-s').style.visibility=HAS_SUB[t]?'visible':'hidden';
+  $('r'+i+'-f').disabled=!HAS_FREQ[t];
+  $('r'+i+'-q').disabled=!(HAS_Q[t]||(pass&&sub===S_VARQ));
+  $('r'+i+'-b').disabled=!HAS_BW[t];
+  $('r'+i+'-g').disabled=!HAS_GAIN[t];
+  $('r'+i+'-r').disabled=!(pass&&sub===S_CHEB);
+  $('r'+i+'-c').style.display=(t===T_CUSTOM)?'grid':'none';
+  plot();
+}
+function bqSet(i,b){
+  $('r'+i+'-t').value=b.type;
+  $('r'+i+'-s').value=b.sub||0;
+  $('r'+i+'-f').value=b.freq;
+  $('r'+i+'-q').value=b.q;
+  $('r'+i+'-b').value=b.bw;
+  $('r'+i+'-g').value=b.gain;
+  $('r'+i+'-r').value=b.ripple;
+  for(var k=0;k<5;k++)
+    $('c'+i+'-'+k).value=(b.coeff&&b.coeff[k]!==undefined)?b.coeff[k]
+                                                          :(k===0?1:0);
+  bqSync(i);
+}
+function bqGet(i){
+  var c=[];
+  for(var k=0;k<5;k++)c.push(num('c'+i+'-'+k));
+  return {type:parseInt($('r'+i+'-t').value,10),
+          sub:parseInt($('r'+i+'-s').value,10),
+          freq:num('r'+i+'-f'),q:num('r'+i+'-q'),bw:num('r'+i+'-b'),
+          gain:num('r'+i+'-g'),ripple:num('r'+i+'-r'),coeff:c};
+}
+/* Blanks read back as NaN, which would travel to the firmware as null. */
+function bqClean(b){
+  b.freq=isFinite(b.freq)?b.freq:1000;
+  b.q=isFinite(b.q)?b.q:0.707;
+  b.bw=isFinite(b.bw)?b.bw:100;
+  b.gain=isFinite(b.gain)?b.gain:0;
+  b.ripple=isFinite(b.ripple)?b.ripple:0.5;
+  for(var k=0;k<5;k++)
+    if(!isFinite(b.coeff[k]))b.coeff[k]=(k===0?1:0);
+  return b;
+}
+function touch(){setDirty(true);storeRows();plot();}
+
+/* ---- model ---- */
+function chan(){return data.amps[amp].channels[ch];}
+function storeRows(){
+  var c=chan();
+  for(var i=0;i<SLOTS;i++)c[i]=bqClean(bqGet(i));
+}
+function loadRows(){
+  var c=chan();
+  for(var i=0;i<SLOTS;i++)bqSet(i,c[i]);
+}
+function ampLabel(a){
+  var role=data.amps[a].role;
+  if(role==='mono')return 'Bridged mono';
+  return data.devices>1?('Amp '+(a+1)):'Speakers';
+}
+/* A bridged amplifier sums its two output paths into one driver, so the two
+   chains must match — there is nothing to un-gang. */
+function isGanged(a){return !!(a.ganged||a.pbtl);}
+var MIXES=['Stereo \u2014 L and R separately','Mono \u2014 (L+R)/2',
+           'Left channel only','Right channel only'];
+var MIX_SHORT=['L/R','(L+R)/2','L','R'];
+/* What the single ganged curve represents: the chain is shared, so name it
+   after whatever the input mixer is feeding the amplifier. */
+function chainLabel(a){
+  return a.mix===0?'Left + Right':MIX_SHORT[a.mix];
+}
+function drawMix(){
+  var a=data.amps[amp],sel=$('mix'),h='';
+  for(var m=0;m<MIXES.length;m++){
+    if(a.pbtl&&m===0)continue; /* one driver cannot carry a stereo pair */
+    h+="<option value='"+m+"'>"+MIXES[m]+'</option>';
+  }
+  sel.innerHTML=h;
+  sel.value=String(a.mix);
+}
+function mixChanged(){
+  data.amps[amp].mix=Number.parseInt($('mix').value,10);
+  drawTabs();plot();
+  post({dev:amp,mix:data.amps[amp].mix},
+       'Input routing: '+MIXES[data.amps[amp].mix]);
+}
+function drawTabs(){
+  var h='',a;
+  for(a=0;a<data.amps.length;a++)
+    h+="<button class='tab"+(a===amp?' on':'')+"' onclick='pickAmp("+a+
+       ")'>"+ampLabel(a)+'</button>';
+  $('amp-tabs').innerHTML=data.amps.length>1?h:'';
+  var ganged=isGanged(data.amps[amp]);
+  $('gang').checked=ganged;
+  $('gang-row').style.display=data.amps[amp].pbtl?'none':'';
+  var names=['Left','Right'];
+  h='';
+  for(a=0;a<2;a++)
+    h+="<button class='tab"+(a===ch?' on':'')+"' onclick='pickCh("+a+
+       ")'>"+names[a]+'</button>';
+  $('ch-tabs').innerHTML=ganged?'':h;
+  $('copy-btn').style.display=ganged?'none':'';
+  $('legend').innerHTML=ganged
+    ?"<span><i style='background:#e94560'></i>"+chainLabel(data.amps[amp])+
+     '</span>'
+    :"<span><i style='background:#e94560'></i>Left</span>"+
+     "<span><i style='background:#4ecca3'></i>Right</span>";
+}
+function pickAmp(a){storeRows();amp=a;if(isGanged(data.amps[a]))ch=0;
+                    drawTabs();drawTrim();drawMix();loadRows();plot();}
+function pickCh(c){storeRows();ch=c;drawTabs();loadRows();plot();}
+/* Level trim is a register write rather than a coefficient, so it takes
+   effect straight away and does not go through commit/revert. */
+function drawTrim(){
+  var t=$('trim');
+  t.min=data.trim_min;t.max=data.trim_max;
+  t.value=data.amps[amp].trim;
+  $('trim-val').textContent=Number(t.value).toFixed(1)+' dB';
+}
+function trimChanged(){
+  data.amps[amp].trim=Number($('trim').value);
+  $('trim-val').textContent=data.amps[amp].trim.toFixed(1)+' dB';
+}
+function trimCommit(){
+  post({dev:amp,trim:data.amps[amp].trim},
+       'Level set to '+data.amps[amp].trim.toFixed(1)+' dB');
+}
+function gangChanged(){
+  storeRows();
+  data.amps[amp].ganged=$('gang').checked;
+  if(data.amps[amp].ganged)ch=0;
+  drawTabs();loadRows();
+  post({dev:amp,ganged:data.amps[amp].ganged},'Channels '+
+       (data.amps[amp].ganged?'ganged':'split'));
+  plot();
+}
+
+function sectionsOf(c){
+  var secs=[];
+  for(var i=0;i<SLOTS;i++){
+    var b=c[i];
+    if(b.type===T_BYPASS)continue;
+    secs.push(designBq(b,fs()));
+  }
+  return secs;
+}
+function plot(){
+  if(!data)return;
+  var a=data.amps[amp],groups=[],names=[];
+  if(isGanged(a)){groups.push(sectionsOf(a.channels[0]));
+                  names.push(chainLabel(a));}
+  else{
+    groups.push(sectionsOf(a.channels[0]));names.push('Left');
+    groups.push(sectionsOf(a.channels[1]));names.push('Right');
+  }
+  var mag=[],ph=[],lim=0,k,i;
+  for(k=0;k<groups.length;k++){
+    var m=sweep(groups[k],fs(),magDb,false);
+    var p=sweep(groups[k],fs(),phaseDeg,true);
+    m.name=names[k];p.name=names[k];
+    for(i=0;i<=p.n;i++)lim=Math.max(lim,Math.abs(p.total[i]));
+    mag.push(m);ph.push(p);
+  }
+  drawGraph($('mag'),mag,-24,24,6,function(d){return d>0?'+'+d:''+d;});
+  var range=180;
+  while(range<lim&&range<1440)range*=2;
+  drawGraph($('phase'),ph,-range,range,range/2,
+            function(d){return d+'\u00b0';});
+  plotAll();
+}
+
+/* Every chain that is actually driving a driver, across both amplifiers, so
+   a crossover split over two amps can be read as one picture. */
+function activeChains(){
+  var out=[];
+  for(var a=0;a<data.amps.length;a++){
+    var am=data.amps[a],pre=data.amps.length>1?ampLabel(a)+' ':'';
+    if(isGanged(am))out.push({c:am.channels[0],n:pre+chainLabel(am)});
+    else{
+      out.push({c:am.channels[0],n:pre+'L'});
+      out.push({c:am.channels[1],n:pre+'R'});
+    }
+  }
+  return out;
+}
+function plotAll(){
+  var chains=activeChains();
+  /* With a single chain the combined view would just repeat the one above. */
+  $('all-wrap').style.display=chains.length>1?'':'none';
+  if(chains.length<2)return;
+  var sweeps=[],leg='';
+  for(var k=0;k<chains.length;k++){
+    var s=sweep(sectionsOf(chains[k].c),fs(),magDb,false);
+    s.name=chains[k].n;
+    sweeps.push(s);
+    leg+="<span><i style='background:"+TRACE[k%TRACE.length][0]+"'></i>"+
+         chains[k].n+'</span>';
+  }
+  $('all-legend').innerHTML=leg;
+  drawGraph($('all'),sweeps,-24,24,6,
+            function(d){return d>0?'+'+d:''+d;},true);
+}
+
+/* ---- server ---- */
+function post(body,okText){
+  return fetch('/api/bq',{method:'POST',
+                          headers:{'Content-Type':'application/json'},
+                          body:JSON.stringify(body)})
+    .then(function(r){
+      if(!r.ok)return r.text().then(function(t){throw new Error(t||r.status);});
+      if(okText)show($('msg'),okText,'ok');
+      return true;
+    })
+    .catch(function(e){show($('msg'),'Failed: '+e.message,'err');return false;});
+}
+function apply(){
+  storeRows();
+  var a=data.amps[amp];
+  var jobs=isGanged(a)
+    ? [post({dev:amp,ch:0,ganged:true,filters:a.channels[0]},null)]
+    : [post({dev:amp,ch:0,ganged:false,filters:a.channels[0]},null),
+       post({dev:amp,ch:1,ganged:false,filters:a.channels[1]},null)];
+  Promise.all(jobs).then(function(r){
+    if(r.every(Boolean))show($('msg'),'Applied. Commit to keep it.','ok');
+  });
+}
+function resetChain(){
+  var c=chan();
+  for(var i=0;i<SLOTS;i++)
+    c[i]={type:0,sub:0,freq:1000,q:0.707,bw:100,gain:0,ripple:0.5,
+          coeff:[1,0,0,0,0]};
+  loadRows();setDirty(true);plot();
+}
+function copyChannel(){
+  storeRows();
+  var a=data.amps[amp];
+  a.channels[1-ch]=JSON.parse(JSON.stringify(a.channels[ch]));
+  setDirty(true);plot();
+  show($('msg'),'Copied to the other channel. Apply to hear it.','info');
+}
+function commit(){
+  fetch('/api/bq/commit',{method:'POST'}).then(function(r){
+    if(!r.ok)throw new Error(r.status);
+    setDirty(false);show($('msg'),'Saved to flash.','ok');
+  }).catch(function(e){show($('msg'),'Commit failed: '+e.message,'err');});
+}
+function revert(){
+  fetch('/api/bq/revert',{method:'POST'}).then(function(r){
+    if(!r.ok)throw new Error(r.status);
+    return load();
+  }).then(function(){
+    setDirty(false);show($('msg'),'Reverted to the stored tuning.','ok');
+  }).catch(function(e){show($('msg'),'Revert failed: '+e.message,'err');});
+}
+
+function load(){
+  return fetch('/api/bq').then(function(r){return r.json();}).then(function(d){
+    data=d;
+    if(amp>=data.amps.length)amp=0;
+    if(isGanged(data.amps[amp]))ch=0;
+    $('sub').textContent='15 biquads per channel at '+d.rate+' Hz';
+    drawTabs();drawTrim();drawMix();loadRows();plot();
+  });
+}
+window.onload=function(){
+  $('rows').innerHTML=(function(){
+    var h='';
+    for(var i=0;i<SLOTS;i++)h+=bqRow(i);
+    return h;
+  })();
+  load().catch(function(e){
+    show($('msg'),'Could not read the current tuning: '+e.message,'err');
+  });
+};
+</script></body></html>

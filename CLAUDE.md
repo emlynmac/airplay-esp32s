@@ -64,8 +64,7 @@ main/
 │   ├── audio_output_spdif.c # S/PDIF output
 │   ├── audio_output_usb.c  # USB audio output
 │   ├── audio_crypto.c      # AirPlay encryption
-│   ├── a2dp_sink.c         # Bluetooth A2DP sink
-│   └── eq_events.c         # EQ parameter changes (TAS58xx)
+│   └── a2dp_sink.c         # Bluetooth A2DP sink
 ├── rtsp/                   # RTSP protocol server
 │   ├── rtsp_server.c       # RTSP connection handler
 │   ├── rtsp_conn.c         # Connection management

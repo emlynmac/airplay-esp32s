@@ -29,7 +29,8 @@ Every PlatformIO environment defined in `platformio.ini`. The default is `esp32s
 | `smartamp` | ESP32 | — | 4 MB | yes |
 
 The dual-DAC environment drives a rev D board with two TAS5825M chips: stereo at I2C
-address 0x4C and a PBTL mono subwoofer at 0x4D.
+address 0x4C and a second amplifier at 0x4D, wired either as a bridged (PBTL) mono
+output or as a second stereo pair.
 
 ## Targets without a PlatformIO environment
 

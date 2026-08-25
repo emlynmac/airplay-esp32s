@@ -352,7 +352,7 @@ esp_err_t audio_output_init(void) {
   // MCLK/BCLK/LRCK are now running. Some codecs need this edge to finish their
   // clock setup; amplifiers that manage power from board RTSP events can ignore
   // the hook.
-  dac_on_i2s_started();
+  dac_on_i2s_started(OUTPUT_RATE);
 
   audio_resample_init(44100, OUTPUT_RATE, 2);
 
@@ -405,7 +405,7 @@ void audio_output_set_sample_rate(uint32_t rate) {
   i2s_channel_reconfig_std_clock(tx_handle, &clk_cfg);
   output_cursor_reset();
   i2s_channel_enable(tx_handle);
-  dac_on_i2s_started();
+  dac_on_i2s_started(rate);
 }
 
 void audio_output_flush(void) {

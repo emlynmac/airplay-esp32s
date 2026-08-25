@@ -77,14 +77,14 @@ input:focus{outline:none;border-color:#e94560}
 </select></div>
 <div id='chan-msg'></div></div>
 <div id='dual-group' style='display:none;margin-top:18px'>
-<div class='form-group'><label for='dual-mode'>DAC Configuration</label>
+<div class='form-group'><label for='dual-mode'>Second Amplifier</label>
 <select id='dual-mode' onchange='saveDual()'>
-<option value='0'>2.1 (Satellites / Sub)</option>
-<option value='1'>Bi-Amp</option>
+<option value='1'>Bridged mono (PBTL)</option>
+<option value='0'>Stereo (BTL)</option>
 </select></div>
 <div id='dual-msg'></div></div>
 <div id='eq-link' style='display:none;margin-top:18px'>
-<a href='/eq' class='btn btn-secondary'>EQ Settings</a></div>
+<a href='/bq' class='btn btn-secondary'>Biquad EQ</a></div>
 </div>
 <div class='card'><h2>Firmware Update</h2>
 <div class='file-row'><input type='file' id='fw-file' accept='.bin' style='display:none'>
@@ -152,12 +152,12 @@ async function loadChannel(){
   applyChanLabels();
   applyAmpLayout();}
 var dualDevices=1;
-var dualMode=0;
+var dualPbtl=true;
 var dualLoaded=false;
 var chanLocked=false;
 var chanDsp=false;
-/* A bi-amp flow crosses the two outputs over into one speaker, so the choice
-   is which input channel to feed it — there is no stereo to pass through. */
+/* When the DSP crosses the two outputs over into one speaker there is no
+   stereo to pass through, so the choice is which input channel to feed it. */
 function applyChanLabels(){
   document.getElementById('chan-label').textContent=
     chanDsp?'Input Channel':'Output Channel';
@@ -166,8 +166,8 @@ function applyChanLabels(){
   o[3].text=chanDsp?'Both (L+R)/2':'Mono (L+R)';
 }
 var DUAL_WARN={
-  0:'Switch to 2.1 (Satellites / Sub)?\n\nThe second amplifier is reconfigured as PBTL mono: its OUT_A and OUT_B terminals must be bridged together and wired to a single subwoofer.\n\nRewire before restarting.',
-  1:'Switch to Bi-Amp?\n\nBoth amplifiers run as stereo BTL, with OUT_A driving the woofer and OUT_B the tweeter of one speaker.\n\nIf OUT_A and OUT_B are still bridged for a PBTL subwoofer you MUST unbridge them first — leaving them shorted drives the two outputs against each other and can damage the amplifier and its output filters.'
+  1:'Bridge the second amplifier?\n\nIt is reconfigured as PBTL mono: its OUT_A and OUT_B terminals must be bridged together and wired to a single driver.\n\nRewire before restarting.',
+  0:'Unbridge the second amplifier?\n\nIt runs as a stereo BTL pair, driving two separate speakers.\n\nIf OUT_A and OUT_B are still bridged for PBTL you MUST unbridge them first — leaving them shorted drives the two outputs against each other and can damage the amplifier and its output filters.'
 };
 /* With two amps the DAC configuration already fixes the routing, so per-output
    channel selection has no meaning. */
@@ -186,26 +186,22 @@ async function saveChannel(){
   catch(e){msg('chan-msg','Error','err');console.error('saveChannel failed',e);}}
 async function loadDual(){
   try{var r=await fetch('/api/audio/dual');if(!r.ok)return;var d=await r.json();
-    if(d.success&&d.devices>1){dualDevices=d.devices;dualMode=d.mode;
-      var sel=document.getElementById('dual-mode');
-      sel.value=String(d.mode);
-      if(!d.biamp){
-        sel.querySelector('option[value="1"]').disabled=true;
-        sel.querySelector('option[value="1"]').textContent='Bi-Amp (unavailable)';
-      }
+    if(d.success&&d.devices>1){dualDevices=d.devices;dualPbtl=!!d.pbtl;
+      document.getElementById('dual-mode').value=d.pbtl?'1':'0';
       document.getElementById('dual-group').style.display='';
       if(d.restart_required){msg('dual-msg','Restart to apply the new wiring.','err');}}}
-  catch(e){console.warn('Could not load dual DAC mode',e);}
+  catch(e){console.warn('Could not load second amplifier wiring',e);}
   applyAmpLayout();}
 async function saveDual(){
   var sel=document.getElementById('dual-mode');
   var v=Number.parseInt(sel.value,10);
-  if(v!==dualMode&&!confirm(DUAL_WARN[v])){sel.value=String(dualMode);return;}
-  try{var r=await fetch('/api/audio/dual',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({mode:v})});
+  var pbtl=v===1;
+  if(pbtl!==dualPbtl&&!confirm(DUAL_WARN[v])){sel.value=dualPbtl?'1':'0';return;}
+  try{var r=await fetch('/api/audio/dual',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({pbtl:pbtl})});
     var d=await r.json();
-    if(d.success){dualMode=v;msg('dual-msg','Saved! Rewire the speakers, then restart to apply.','ok');}
-    else{sel.value=String(dualMode);msg('dual-msg',d.error,'err');}}
-  catch(e){sel.value=String(dualMode);msg('dual-msg','Error','err');console.error('saveDual failed',e);}}
+    if(d.success){dualPbtl=pbtl;msg('dual-msg','Saved! Rewire the speakers, then restart to apply.','ok');}
+    else{sel.value=dualPbtl?'1':'0';msg('dual-msg',d.error,'err');}}
+  catch(e){sel.value=dualPbtl?'1':'0';msg('dual-msg','Error','err');console.error('saveDual failed',e);}}
 async function saveName(){
   var n=document.getElementById('dev-name').value.trim();if(!n){msg('name-msg','Enter a name','err');return;}
   try{var r=await fetch('/api/device/name',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name:n})});

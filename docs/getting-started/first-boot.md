@@ -27,7 +27,8 @@ its IP address in your router's list of connected clients, or via the serial mon
 | --- | --- |
 | `/` | Setup and control panel — device name, WiFi, volume |
 | `/logs.html` | Live log viewer |
-| `/eq.html` | 15-band equaliser, on TAS5825M boards |
+| `/bq.html` | Parametric biquad chains, on TAS5825M boards |
+| `/bq.html` | Per-section biquad EQ, on TAS5825M boards |
 
 The same interface is used for [OTA firmware updates](../reference/ota.md), so USB is only
 needed for the very first flash.

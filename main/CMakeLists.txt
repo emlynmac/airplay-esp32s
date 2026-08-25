@@ -45,7 +45,6 @@ set( SRC_FILES
     "network/dns_server.c"
     "network/log_stream.c"
     "led.c"
-    "audio/eq_events.c"
     "buttons.c"
     "playback_control.c"
     "dacp_client.c"

@@ -68,9 +68,22 @@ auto-detects the TAS5825M I2C address in the range 0x4C–0x4F at startup.
 
 ## Equaliser
 
-TAS5825M boards expose a 15-band parametric EQ through the device's web interface at
-`/eq.html`. Changes are applied to the DAC's on-chip DSP in real time and persisted to
-NVS.
+TAS5825M boards expose the DAC's 15 cascaded biquad sections through the device's web
+interface at `/bq.html`, one filter per section, per channel and per amplifier. Each
+section can be a peaking filter, a shelf, a low or high pass in six alignments, a band
+pass, a notch, a phase shift, or five raw coefficients. The filter models match
+PurePath Console 3, and coefficients are recomputed whenever the I2S sample rate
+changes. Left and right can be ganged or tuned separately; edits take effect
+immediately and are written to flash only when committed.
+
+Crossovers are built from these same sections, so a two-way or subwoofer split is just
+a high pass on one amplifier and a low pass on the other. Each amplifier also carries
+its own level trim, applied on top of the master volume, so the two can be matched, and
+its own input routing: the stereo pair as-is, summed to `(L+R)/2`, or one channel fed to
+both outputs. A bridged amplifier drives a single voice coil, so it is always fed a
+single channel and defaults to the sum; ganging is implicit and the stereo option is not
+offered. A combined response graph plots every active chain together, so a crossover
+spread across both amplifiers can be read as one picture.
 
 ## Variants
 
@@ -79,7 +92,7 @@ NVS.
 | `esparagus-audio-brick` | ESP32 | AirPlay only |
 | `esparagus-audio-brick-bt` | ESP32 | Bluetooth + Ethernet, prebuilt binary published |
 | `esparagus-audio-brick-s3` | ESP32-S3 | S3-based revision, no Bluetooth |
-| `esparagus-audio-brick-dual-dac` | ESP32-S3 | Rev D with two TAS5825M: stereo at 0x4C, PBTL mono subwoofer at 0x4D |
+| `esparagus-audio-brick-dual-dac` | ESP32-S3 | Rev D with two TAS5825M: stereo at 0x4C, second at 0x4D, bridged mono or stereo |
 
 ### Esparagus Louder
 
