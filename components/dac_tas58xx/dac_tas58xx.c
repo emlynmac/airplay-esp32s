@@ -1858,10 +1858,15 @@ static esp_err_t tas58xx_apply_input_mix(void) {
   }
 
   /*
-   * Input mixer gains live in Book 0x8C, Page 0x0B as 9.23 fixed point.
+   * Input mixer gains live in Book 0x8C as 9.23 fixed point, but on a
+   * different page per part (SLAA786A Table 9 vs SLOA263A Table 5).
    * In PBTL the paralleled output follows one channel, so feeding both
    * output paths makes the content independent of PBTL_CH_SEL.
    */
+  const bool is_5805 = (s_cur->model == TAS58XX_MODEL_TAS5805M);
+  const uint8_t mix_page = is_5805 ? 0x29 : 0x0B;
+  const uint8_t mix_base = is_5805 ? 0x18 : 0x14;
+
   static const int32_t UNITY_9_23 = 0x00800000; /*  0 dB */
   static const int32_t HALF_9_23 = 0x00400000;  /* -6 dB */
 
@@ -1898,15 +1903,15 @@ static esp_err_t tas58xx_apply_input_mix(void) {
   l_to_r = (int32_t)lrintf((float)l_to_r * sb);
   r_to_r = (int32_t)lrintf((float)r_to_r * sb);
 
-  err = select_book_page(0x8C, 0x0B);
+  err = select_book_page(0x8C, mix_page);
   if (err != ESP_OK) {
     select_default_page();
     return err;
   }
-  write_dsp_coeff32(0x0B, 0x14, l_to_l);
-  write_dsp_coeff32(0x0B, 0x18, r_to_l);
-  write_dsp_coeff32(0x0B, 0x1C, l_to_r);
-  write_dsp_coeff32(0x0B, 0x20, r_to_r);
+  write_dsp_coeff32(mix_page, (uint8_t)(mix_base + 0), l_to_l);
+  write_dsp_coeff32(mix_page, (uint8_t)(mix_base + 4), r_to_l);
+  write_dsp_coeff32(mix_page, (uint8_t)(mix_base + 8), l_to_r);
+  write_dsp_coeff32(mix_page, (uint8_t)(mix_base + 12), r_to_r);
   err = select_default_page();
 
   ESP_LOGI(TAG, "@0x%02X input mixer applied (%s, A %+.1f dB%s, B %+.1f dB%s)",
