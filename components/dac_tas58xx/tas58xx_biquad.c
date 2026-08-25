@@ -416,6 +416,13 @@ void tas58xx_bq_design(const tas58xx_bq_t *bq, double sample_rate_hz,
     o = bq_unity;
   }
 
+  /* Polarity is the numerator's sign, so a bypassed slot inverts on its own. */
+  if (bq->invert) {
+    o.b0 = -o.b0;
+    o.b1 = -o.b1;
+    o.b2 = -o.b2;
+  }
+
   out[0] = o.b0;
   out[1] = o.b1;
   out[2] = o.b2;

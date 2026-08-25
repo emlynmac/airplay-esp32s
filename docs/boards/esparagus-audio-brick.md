@@ -75,20 +75,37 @@ pass, a notch, a phase shift, or five raw coefficients. The filter models match
 PurePath Console 3, and coefficients are recomputed whenever the I2S sample rate
 changes. The chip's two outputs are named A and B — which of them carries left, right
 or a sum is the routing setting, not a fixed assignment. A and B can be ganged or
-tuned separately; edits take effect immediately and are written to flash only when
-committed. For plain tone shaping, **Load 15-band EQ** fills the chain with a flat
-graphic equaliser — one peaking section per band from 20 Hz to 16 kHz — leaving only
-the gains to set. It fills in the form and nothing more, so the amplifier hears it
-only once applied.
+tuned separately. Editing only redraws the response graph: **Apply** sends the filters
+to the amplifiers so you can hear them, and **Commit to flash** makes them survive a
+reboot. **Revert** goes back to what is in flash. For plain tone shaping, **Load
+15-band EQ** fills the chain with a flat graphic equaliser — one peaking section per
+band from 20 Hz to 16 kHz — leaving only the gains to set. It fills in the form and
+nothing more, so the amplifier hears it only once applied.
 
 Crossovers are built from these same sections, so a two-way or subwoofer split is just
-a high pass on one amplifier and a low pass on the other. Each amplifier also carries
-its own input routing: the stereo pair as-is, summed to `(L+R)/2`, or one channel fed
-to both outputs. A bridged amplifier drives a single voice coil, so it is always fed a
-single channel and defaults to the sum; ganging is implicit and the stereo option is
-not offered. A combined response graph at the top of the page plots every active
-output together, so a crossover spread across both amplifiers can be read as one
-picture.
+a high pass on one amplifier and a low pass on the other. **Build crossover** does that
+for you: pick how the drivers are wired — both bands on one amplifier, one amplifier per
+speaker, tweeters on one amplifier and woofers on the other, or satellites plus a
+subwoofer — then a crossover frequency and an alignment: Linkwitz-Riley at 12 or
+24 dB per octave, Butterworth at 6, 12 or 24, or Bessel at 12. It writes the filters
+into every output the split touches, sets ganging and input routing to match, and
+leaves the filters staged so nothing is heard until applied. Apply always pushes all
+amplifiers, so a crossover spanning both can never go live by halves. Layouts the
+wiring rules out are not offered — a bridged amplifier has no separate A and B to
+split across.
+
+Each section also has an **Inv** box that flips its polarity. The 12 dB per octave
+alignments come out of the crossover 180° apart and need one branch inverted to sum
+flat, which the builder ticks for you; it is also there for drivers wired out of
+phase. A section left on Bypass with Inv ticked is a plain polarity flip and costs
+nothing else.
+
+Each amplifier carries its own input routing: the stereo pair as-is, summed to
+`(L+R)/2`, or one channel fed to both outputs. A bridged amplifier drives a single voice
+coil, so it is always fed a single channel and defaults to the sum; ganging is implicit
+and the stereo option is not offered. A combined response graph at the top of the page
+plots every active output together, so a crossover spread across both amplifiers can be
+read as one picture.
 
 Levels are set in the Volume section. Master is the AirPlay volume and moves
 everything together. Below it each output has its own level and mute, applied in the

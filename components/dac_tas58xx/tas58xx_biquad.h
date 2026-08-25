@@ -48,15 +48,16 @@ typedef enum {
 
 /** One configurable biquad section. */
 typedef struct {
-  uint8_t type;        /**< tas58xx_bq_type_t */
-  uint8_t sub;         /**< tas58xx_bq_sub_t, low/high pass only */
-  uint8_t reserved[2]; /**< keeps the struct 4-byte aligned on flash */
-  float freq_hz;       /**< corner or centre frequency */
-  float q;             /**< Q, where the shape uses one */
-  float bandwidth_hz;  /**< bandwidth, where the shape uses one */
-  float gain_db;       /**< boost or cut, where the shape uses one */
-  float ripple_db;     /**< Chebyshev passband ripple */
-  float coeff[5];      /**< {b0, b1, b2, -a1, -a2} for CUSTOM */
+  uint8_t type;       /**< tas58xx_bq_type_t */
+  uint8_t sub;        /**< tas58xx_bq_sub_t, low/high pass only */
+  uint8_t invert;     /**< flip polarity: negates the numerator */
+  uint8_t reserved;   /**< keeps the struct 4-byte aligned on flash */
+  float freq_hz;      /**< corner or centre frequency */
+  float q;            /**< Q, where the shape uses one */
+  float bandwidth_hz; /**< bandwidth, where the shape uses one */
+  float gain_db;      /**< boost or cut, where the shape uses one */
+  float ripple_db;    /**< Chebyshev passband ripple */
+  float coeff[5];     /**< {b0, b1, b2, -a1, -a2} for CUSTOM */
 } tas58xx_bq_t;
 
 /** Limits accepted by tas58xx_bq_design(). */

@@ -44,12 +44,17 @@ input:disabled,select:disabled{opacity:0.25}
 .mute.on{background:#e94560;border-color:#e94560;color:#fff}
 .muted{opacity:.45}
 .chainwrap{overflow-x:auto}
-.chaininner{min-width:720px}
-.bq,.bqhead{display:grid;grid-template-columns:24px 1.5fr 1.3fr .8fr .7fr .8fr .7fr .7fr;gap:6px;align-items:center;margin-bottom:6px}
+.chaininner{min-width:770px}
+.bq,.bqhead{display:grid;grid-template-columns:24px 1.5fr 1.3fr .8fr .7fr .8fr .7fr .7fr 34px;gap:6px;align-items:center;margin-bottom:6px}
 .bqhead{font-size:10px;color:#666;text-transform:uppercase;letter-spacing:.5px}
 .bq .n{font-size:11px;color:#666;text-align:right}
-.bqc{display:none;grid-template-columns:24px repeat(5,1fr);gap:6px;align-items:center;margin:-2px 0 8px;min-width:720px}
+.bq input[type=checkbox]{accent-color:#e94560;width:16px;height:16px;cursor:pointer}
+.bqc{display:none;grid-template-columns:24px repeat(5,1fr);gap:6px;align-items:center;margin:-2px 0 8px;min-width:770px}
 .bqc .n{font-size:10px;color:#666;text-align:right}
+.xo{display:none;margin-top:14px;padding:16px;border:1px solid rgba(255,255,255,0.1);border-radius:10px;background:rgba(0,0,0,0.2)}
+.xo.on{display:block}
+.xo .actions{margin-top:12px}
+.xo input[type=number]{width:auto;min-width:120px}
 .plot{width:100%;height:230px;display:block;background:rgba(0,0,0,0.25);border:1px solid rgba(255,255,255,0.08);border-radius:10px;margin-bottom:14px;cursor:crosshair}
 .plotlab{font-size:10px;color:#666;text-transform:uppercase;letter-spacing:.5px;margin-bottom:4px}
 .legend{display:flex;gap:14px;flex-wrap:wrap;font-size:11px;color:#999;margin-bottom:6px}
@@ -113,14 +118,34 @@ them to match drivers of differing sensitivity.</p>
 <div class='chainwrap'><div class='chaininner'>
 <div class='bqhead'><span></span><span>Type</span><span>Alignment</span>
 <span>Freq Hz</span><span>Q</span><span>BW Hz</span><span>Gain dB</span>
-<span>Ripple dB</span></div>
+<span>Ripple dB</span><span>Inv</span></div>
 <div id='rows'></div>
 </div></div>
 <div class='actions'>
 <button class='btn btn-primary' onclick='apply()'>Apply</button>
 <button class='btn btn-secondary' onclick='resetChain()'>Clear chain</button>
 <button class='btn btn-secondary' onclick='graphicEq()'>Load 15-band EQ</button>
+<button class='btn btn-secondary' onclick='xoToggle()'>Build crossover&hellip;</button>
 <button class='btn btn-secondary' id='copy-btn' onclick='copyChannel()'>Copy to other output</button>
+</div>
+<div class='xo' id='xo'>
+<div class='trim'>
+<label for='xo-layout'>Layout</label>
+<select id='xo-layout' onchange='xoSync()'></select></div>
+<div class='trim'>
+<label for='xo-freq'>Crossover Hz</label>
+<input type='number' id='xo-freq' min='20' max='16000' step='10' value='2500'></div>
+<div class='trim'>
+<label for='xo-align'>Slope</label>
+<select id='xo-align' onchange='xoAlign()'></select></div>
+<label class='gang'>
+<input type='checkbox' id='xo-inv'>
+<span>Invert the low branch</span></label>
+<p class='hint' id='xo-hint'></p>
+<div class='actions'>
+<button class='btn btn-primary' id='xo-go' onclick='xoBuild()'>Build</button>
+<button class='btn btn-secondary' onclick='xoToggle()'>Cancel</button>
+</div>
 </div>
 <div id='msg'></div>
 </div>
@@ -139,7 +164,7 @@ var TYPES=['Bypass','Peaking (Q)','Peaking (bandwidth)','Bass shelf',
 var SUBS=['Butterworth 1','Butterworth 2','Bessel 2','Linkwitz-Riley 2',
           'Variable Q 2','Chebyshev 2'];
 var T_BYPASS=0,T_PEAK_Q=1,T_LP=5,T_HP=6,T_CUSTOM=10;
-var S_VARQ=4,S_CHEB=5;
+var S_BW1=0,S_BW2=1,S_BESS2=2,S_LR2=3,S_VARQ=4,S_CHEB=5;
 var SLOTS=15;
 /* Field visibility per filter type. Low and high pass defer to the alignment
    for Q and ripple, so those two are decided in bqSync() instead. */
@@ -255,8 +280,13 @@ function notchBq(freq,bw,sr,allpass){
 function unity(){return {b0:1,b1:0,b2:0,a1:0,a2:0};}
 
 /* Mirrors tas58xx_bq_design(): same clamps, same fall back to unity when a
-   filter cannot be built. */
+   filter cannot be built. Polarity is the numerator's sign, so it applies to
+   a bypassed slot too — that is how a slot becomes a plain phase flip. */
 function designBq(b,sr){
+  var o=designShape(b,sr);
+  return b.invert?{b0:-o.b0,b1:-o.b1,b2:-o.b2,a1:o.a1,a2:o.a2}:o;
+}
+function designShape(b,sr){
   var t=b.type;
   if(t===T_BYPASS)return unity();
   if(t===T_CUSTOM){
@@ -464,6 +494,7 @@ function bqRow(i){
     "<input type='number' id='r"+i+"-b' min='1' max='5000' step='1' oninput='touch()'>"+
     "<input type='number' id='r"+i+"-g' min='"+G_MIN+"' max='"+G_MAX+"' step='0.5' oninput='touch()'>"+
     "<input type='number' id='r"+i+"-r' min='"+R_MIN+"' max='"+R_MAX+"' step='0.1' oninput='touch()'>"+
+    "<input type='checkbox' id='r"+i+"-i' title='Invert polarity' onchange='touch()'>"+
     "</div><div class='bqc' id='r"+i+"-c'><span class='n'>coef</span>"+co+'</div>';
 }
 function bqSync(i){
@@ -487,6 +518,7 @@ function bqSet(i,b){
   $('r'+i+'-b').value=b.bw;
   $('r'+i+'-g').value=b.gain;
   $('r'+i+'-r').value=b.ripple;
+  $('r'+i+'-i').checked=!!b.invert;
   for(var k=0;k<5;k++)
     $('c'+i+'-'+k).value=(b.coeff&&b.coeff[k]!==undefined)?b.coeff[k]
                                                           :(k===0?1:0);
@@ -498,7 +530,8 @@ function bqGet(i){
   return {type:parseInt($('r'+i+'-t').value,10),
           sub:parseInt($('r'+i+'-s').value,10),
           freq:num('r'+i+'-f'),q:num('r'+i+'-q'),bw:num('r'+i+'-b'),
-          gain:num('r'+i+'-g'),ripple:num('r'+i+'-r'),coeff:c};
+          gain:num('r'+i+'-g'),ripple:num('r'+i+'-r'),
+          invert:$('r'+i+'-i').checked,coeff:c};
 }
 /* Blanks read back as NaN, which would travel to the firmware as null. */
 function bqClean(b){
@@ -507,6 +540,7 @@ function bqClean(b){
   b.bw=isFinite(b.bw)?b.bw:100;
   b.gain=isFinite(b.gain)?b.gain:0;
   b.ripple=isFinite(b.ripple)?b.ripple:0.5;
+  b.invert=!!b.invert;
   for(var k=0;k<5;k++)
     if(!isFinite(b.coeff[k]))b.coeff[k]=(k===0?1:0);
   return b;
@@ -669,7 +703,7 @@ function sectionsOf(c){
   var secs=[];
   for(var i=0;i<SLOTS;i++){
     var b=c[i];
-    if(b.type===T_BYPASS)continue;
+    if(b.type===T_BYPASS&&!b.invert)continue;
     secs.push(designBq(b,fs()));
   }
   return secs;
@@ -748,22 +782,39 @@ function post(body,okText){
     })
     .catch(function(e){show($('msg'),'Failed: '+e.message,'err');return false;});
 }
+/* One at a time: a crossover can span four chains, and the device serves far
+   fewer sockets than that. */
+function postSeq(bodies,i,all){
+  if(i>=bodies.length)return Promise.resolve(all);
+  return post(bodies[i],null).then(function(ok){
+    return postSeq(bodies,i+1,all&&ok);
+  });
+}
+/* Every amplifier, not just the visible tab — a crossover split across two of
+   them must never go live by halves. */
 function apply(){
   storeRows();
-  var a=data.amps[amp];
-  var jobs=isGanged(a)
-    ? [post({dev:amp,ch:0,ganged:true,filters:a.channels[0]},null)]
-    : [post({dev:amp,ch:0,ganged:false,filters:a.channels[0]},null),
-       post({dev:amp,ch:1,ganged:false,filters:a.channels[1]},null)];
-  Promise.all(jobs).then(function(r){
-    if(r.every(Boolean))show($('msg'),'Applied. Commit to keep it.','ok');
+  var bodies=[],a,am;
+  for(a=0;a<data.amps.length;a++){
+    am=data.amps[a];
+    if(isGanged(am)){
+      bodies.push({dev:a,ch:0,ganged:true,filters:am.channels[0]});
+    }else{
+      bodies.push({dev:a,ch:0,ganged:false,filters:am.channels[0]});
+      bodies.push({dev:a,ch:1,ganged:false,filters:am.channels[1]});
+    }
+  }
+  postSeq(bodies,0,true).then(function(ok){
+    if(ok)show($('msg'),'Applied. Commit to keep it.','ok');
   });
+}
+function blankBq(){
+  return {type:T_BYPASS,sub:0,freq:1000,q:0.707,bw:100,gain:0,ripple:0.5,
+          invert:false,coeff:[1,0,0,0,0]};
 }
 function resetChain(){
   var c=chan();
-  for(var i=0;i<SLOTS;i++)
-    c[i]={type:0,sub:0,freq:1000,q:0.707,bw:100,gain:0,ripple:0.5,
-          coeff:[1,0,0,0,0]};
+  for(var i=0;i<SLOTS;i++)c[i]=blankBq();
   loadRows();setDirty(true);plot();
 }
 /* The fixed graphic EQ this page replaced: one peaking section per band, Q
@@ -775,9 +826,121 @@ function graphicEq(){
   var c=chan();
   for(var i=0;i<SLOTS;i++)
     c[i]={type:T_PEAK_Q,sub:0,freq:GEQ[i][0],q:GEQ[i][1],bw:100,gain:0,
-          ripple:0.5,coeff:[1,0,0,0,0]};
+          ripple:0.5,invert:false,coeff:[1,0,0,0,0]};
   loadRows();setDirty(true);plot();
   show($('msg'),'Loaded a flat 15-band EQ. Set the band gains, then Apply.',
+       'info');
+}
+
+/* ---- crossover ----
+   Sections cascade, so a Linkwitz-Riley 4th order is two Butterworth 2
+   sections, not two Linkwitz-Riley 2 sections. `inv` is whether the two
+   halves need opposite polarity to sum flat through the corner. */
+var XOA=[{n:'Linkwitz-Riley 24 dB/oct',s:[[S_BW2,0.7071],[S_BW2,0.7071]],inv:0},
+         {n:'Linkwitz-Riley 12 dB/oct',s:[[S_LR2,0.5]],inv:1},
+         {n:'Butterworth 24 dB/oct',s:[[S_VARQ,0.5412],[S_VARQ,1.3065]],inv:0},
+         {n:'Butterworth 12 dB/oct',s:[[S_BW2,0.7071]],inv:1},
+         {n:'Butterworth 6 dB/oct',s:[[S_BW1,0.7071]],inv:0},
+         {n:'Bessel 12 dB/oct',s:[[S_BESS2,0.5774]],inv:1}];
+/* Which chain takes which half of the split. `o` of -1 means both outputs of
+   that amplifier; `mix` is the input routing the arrangement implies. */
+function xoLayouts(){
+  var cur=data.amps[amp],L=[];
+  L.push({n:'This amplifier \u2014 '+outLabel(0)+' high, '+outLabel(1)+' low',
+          parts:[{a:amp,o:0,hi:1},{a:amp,o:1,hi:0}],gang:0,ok:!cur.pbtl,
+          why:'A bridged amplifier drives one voice coil, so its two outputs '+
+              'cannot take different halves of a crossover.'});
+  if(data.amps.length>1){
+    var a0=data.amps[0],a1=data.amps[1];
+    L.push({n:'One amplifier per speaker \u2014 '+outLabel(0)+' high, '+
+              outLabel(1)+' low on each',
+            parts:[{a:0,o:0,hi:1},{a:0,o:1,hi:0},{a:1,o:0,hi:1},{a:1,o:1,hi:0}],
+            gang:0,mix:[2,3],ok:!a0.pbtl&&!a1.pbtl,
+            why:'Both amplifiers have to be in stereo to bi-amp one speaker '+
+                'each; one of them is bridged.'});
+    if(!a1.pbtl)
+      L.push({n:'Tweeters on '+ampLabel(0)+', woofers on '+ampLabel(1),
+              parts:[{a:0,o:-1,hi:1},{a:1,o:-1,hi:0}],gang:1,mix:[0,0],ok:1});
+    L.push({n:'Satellites on '+ampLabel(0)+', subwoofer on '+ampLabel(1),
+            parts:[{a:0,o:-1,hi:1},{a:1,o:-1,hi:0}],gang:1,mix:[0,1],ok:1});
+  }
+  return L;
+}
+function xoPick(){
+  var L=xoLayouts(),i=parseInt($('xo-layout').value,10);
+  return {lay:L[i],al:XOA[parseInt($('xo-align').value,10)]};
+}
+function xoToggle(){
+  if(!$('xo').classList.toggle('on'))return;
+  var h='',i,L=xoLayouts();
+  for(i=0;i<L.length;i++)h+="<option value='"+i+"'>"+L[i].n+'</option>';
+  $('xo-layout').innerHTML=h;
+  h='';
+  for(i=0;i<XOA.length;i++)h+="<option value='"+i+"'>"+XOA[i].n+'</option>';
+  $('xo-align').innerHTML=h;
+  $('xo-align').value='0';
+  xoAlign();
+}
+/* Each alignment carries the polarity that makes it sum flat, but it is only
+   a starting point — driver offset and cabinet decide the rest. */
+function xoAlign(){
+  var p=xoPick();
+  if(p.al)$('xo-inv').checked=!!p.al.inv;
+  xoSync();
+}
+function xoSync(){
+  var p=xoPick();
+  if(!p.lay||!p.al)return;
+  $('xo-go').disabled=!p.lay.ok;
+  $('xo-hint').textContent=p.lay.ok
+    ? 'Takes '+p.al.s.length+' of the '+SLOTS+' slots on each output and '+
+      'clears the rest.'+(p.lay.mix?' Input routing is set to match.':'')+
+      ' Filters are staged only \u2014 press Apply to hear them.'
+    : p.lay.why;
+}
+function xoFill(c,f,al,hi,inv){
+  var i;
+  for(i=0;i<SLOTS;i++)c[i]=blankBq();
+  for(i=0;i<al.s.length;i++){
+    c[i]=blankBq();
+    c[i].type=hi?T_HP:T_LP;
+    c[i].sub=al.s[i][0];
+    c[i].freq=f;
+    c[i].q=al.s[i][1];
+    c[i].invert=!hi&&inv&&i===0;
+  }
+}
+function xoBuild(){
+  var p=xoPick();
+  if(!p.lay||!p.al||!p.lay.ok)return;
+  var f=num('xo-freq');
+  if(!isFinite(f)){show($('msg'),'Enter a crossover frequency.','err');return;}
+  f=clamp(f,F_MIN,fs()*0.45);
+  var inv=$('xo-inv').checked,i,k;
+  for(i=0;i<p.lay.parts.length;i++){
+    var pt=p.lay.parts[i],am=data.amps[pt.a];
+    var outs=pt.o<0?[0,1]:[pt.o];
+    for(k=0;k<outs.length;k++)xoFill(am.channels[outs[k]],f,p.al,pt.hi,inv);
+    if(!am.pbtl)am.ganged=!!p.lay.gang;
+  }
+  /* A ganged amplifier only ships chain 0, so keep its pair identical. */
+  for(i=0;i<data.amps.length;i++)
+    if(isGanged(data.amps[i]))
+      data.amps[i].channels[1]=
+        JSON.parse(JSON.stringify(data.amps[i].channels[0]));
+  /* Routing is a live setting on this page, like the dropdown it mirrors. */
+  if(p.lay.mix)
+    for(i=0;i<p.lay.mix.length&&i<data.amps.length;i++){
+      var want=p.lay.mix[i];
+      if(data.amps[i].pbtl&&want===0)continue;
+      if(data.amps[i].mix===want)continue;
+      data.amps[i].mix=want;
+      post({dev:i,mix:want},null);
+    }
+  if(isGanged(data.amps[amp]))ch=0;
+  $('xo').classList.remove('on');
+  drawTabs();drawMix();loadRows();setDirty(true);plot();
+  show($('msg'),'Crossover staged at '+Math.round(f)+' Hz. Apply to hear it.',
        'info');
 }
 function copyChannel(){

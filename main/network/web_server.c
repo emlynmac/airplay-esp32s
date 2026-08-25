@@ -1001,6 +1001,7 @@ static cJSON *bq_to_json(const tas58xx_bq_t *bq) {
   cJSON_AddNumberToObject(o, "bw", bq->bandwidth_hz);
   cJSON_AddNumberToObject(o, "gain", bq->gain_db);
   cJSON_AddNumberToObject(o, "ripple", bq->ripple_db);
+  cJSON_AddBoolToObject(o, "invert", bq->invert != 0);
   if (bq->type == TAS58XX_BQ_CUSTOM) {
     cJSON *c = cJSON_AddArrayToObject(o, "coeff");
     for (int i = 0; i < 5; i++) {
@@ -1030,6 +1031,14 @@ static bool bq_from_json(const cJSON *o, tas58xx_bq_t *out) {
       return false;
     }
     out->sub = (uint8_t)v->valueint;
+  }
+
+  v = cJSON_GetObjectItem(o, "invert");
+  if (v) {
+    if (!cJSON_IsBool(v)) {
+      return false;
+    }
+    out->invert = cJSON_IsTrue(v) ? 1 : 0;
   }
 
   static const struct {
