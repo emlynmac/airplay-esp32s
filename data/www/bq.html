@@ -20,6 +20,11 @@ body{font-family:-apple-system,system-ui,sans-serif;background:linear-gradient(1
 .btn-secondary:hover{background:rgba(255,255,255,0.2)}
 .btn:disabled{opacity:0.5;cursor:not-allowed}
 .actions{display:flex;gap:10px;flex-wrap:wrap;align-items:center;margin-top:16px}
+/* Tabs pick what you are editing, the buttons act on it, so they belong on one
+   line; the buttons wrap under the tabs rather than squeezing them. */
+.toprow{display:flex;align-items:flex-start;gap:16px;flex-wrap:wrap;margin-bottom:12px}
+.toprow .tabs{margin-bottom:0}
+.toprow .actions{margin-top:0;margin-left:auto;justify-content:flex-end}
 .msg{padding:8px;border-radius:6px;margin-top:10px;font-size:13px}
 .msg.ok{background:rgba(27,67,50,0.5)}
 .msg.err{background:rgba(92,26,26,0.5)}
@@ -120,7 +125,17 @@ them to match drivers of differing sensitivity.</p>
 
 <div class='card'>
 <h2>Filter Chain</h2>
+<div class='toprow'>
 <div class='tabs' id='amp-tabs'></div>
+<div class='actions'>
+<button class='btn btn-primary' onclick='apply()'>Apply</button>
+<button class='btn btn-secondary' onclick='resetChain()'>Clear chain</button>
+<button class='btn btn-secondary' onclick='graphicEq()'>Load 15-band EQ</button>
+<button class='btn btn-secondary' onclick='xoToggle()'>Build crossover&hellip;</button>
+<button class='btn btn-secondary' onclick='aeqToggle()'>Fit to a measurement&hellip;</button>
+<button class='btn btn-secondary' id='copy-btn' onclick='copyChannel()'>Copy to other output</button>
+</div>
+</div>
 <div class='trim' id='mix-row'>
 <label for='mix'>Input channels</label>
 <select id='mix' onchange='mixChanged()'></select></div>
@@ -134,14 +149,6 @@ them to match drivers of differing sensitivity.</p>
 <span>Ripple dB</span><span>Inv</span></div>
 <div id='rows'></div>
 </div></div>
-<div class='actions'>
-<button class='btn btn-primary' onclick='apply()'>Apply</button>
-<button class='btn btn-secondary' onclick='resetChain()'>Clear chain</button>
-<button class='btn btn-secondary' onclick='graphicEq()'>Load 15-band EQ</button>
-<button class='btn btn-secondary' onclick='xoToggle()'>Build crossover&hellip;</button>
-<button class='btn btn-secondary' onclick='aeqToggle()'>Fit to a measurement&hellip;</button>
-<button class='btn btn-secondary' id='copy-btn' onclick='copyChannel()'>Copy to other output</button>
-</div>
 <div class='xo' id='xo'>
 <div class='trim'>
 <label for='xo-layout'>Layout</label>
@@ -170,11 +177,11 @@ them to match drivers of differing sensitivity.</p>
 <div class='fld'><label>Smoothing 1/N oct</label>
 <input type='number' id='aeq-sm' min='1' max='48' step='1' value='6'
        oninput='plot()'></div>
-<div class='fld'><label>Filters to use</label>
+<div class='fld'><label>Filters to use <b id='aeq-room'></b></label>
 <input type='number' id='aeq-n' min='1' max='15' step='1' value='10'></div>
 <div class='fld'><label>Keep first N sections</label>
 <input type='number' id='aeq-keep' min='0' max='14' step='1' value='0'
-       oninput='plot()'></div>
+       oninput='aeqRoomSync();plot()'></div>
 <div class='fld'><label>Max total boost dB</label>
 <input type='number' id='aeq-up' min='0' max='20' step='0.5' value='6'></div>
 <div class='fld'><label>Max total cut dB</label>
@@ -1080,6 +1087,14 @@ function aeqDefaultKeep(){
   while(n<SLOTS-1&&(c[n].type===T_LP||c[n].type===T_HP))n++;
   return n;
 }
+/* Kept sections are slots the fitter cannot have, so say so before it runs
+   rather than quietly returning fewer filters than were asked for. */
+function aeqRoomSync(){
+  var room=SLOTS-aeqKeep(),n=$('aeq-n');
+  n.max=room;
+  if(Math.round(num('aeq-n'))>room)n.value=room;
+  $('aeq-room').textContent=room<SLOTS?'(max '+room+')':'';
+}
 function gridHz(sr){
   var f0=20,f1=Math.min(20000,sr/2),g=[],i;
   for(i=0;i<=AEQ_N;i++)g.push(f0*Math.pow(f1/f0,i/AEQ_N));
@@ -1536,6 +1551,7 @@ function aeqRolloff(m){
 function aeqToggle(){
   if(!$('aeq').classList.toggle('on'))return;
   if(!meas)$('aeq-keep').value=aeqDefaultKeep();
+  aeqRoomSync();
   plot();
 }
 function aeqLoad(input){

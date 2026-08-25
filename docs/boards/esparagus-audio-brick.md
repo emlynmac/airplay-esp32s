@@ -134,8 +134,10 @@ headroom.
 **Keep first N sections** protects the head of the chain. The fit replaces everything
 past that count, so on a bi-amped speaker keep the crossover, measure each way through
 it, and fit into what is left; the count is filled in from any low or high passes
-already sitting at the top of the chain. Fitted filters are staged like any other edit —
-nothing is heard until applied and nothing survives a reboot until committed.
+already sitting at the top of the chain. Kept sections are slots the fitter cannot have,
+so **Filters to use** caps itself at what remains — a 24 dB per octave crossover leaves
+13 of the 15. Fitted filters are staged like any other edit — nothing is heard until
+applied and nothing survives a reboot until committed.
 
 Each amplifier carries its own input routing: the stereo pair as-is, summed to
 `(L+R)/2`, or one channel fed to both outputs. A bridged amplifier drives a single voice
