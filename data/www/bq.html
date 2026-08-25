@@ -119,6 +119,7 @@ them to match drivers of differing sensitivity.</p>
 <div class='actions'>
 <button class='btn btn-primary' onclick='apply()'>Apply</button>
 <button class='btn btn-secondary' onclick='resetChain()'>Clear chain</button>
+<button class='btn btn-secondary' onclick='graphicEq()'>Load 15-band EQ</button>
 <button class='btn btn-secondary' id='copy-btn' onclick='copyChannel()'>Copy to other output</button>
 </div>
 <div id='msg'></div>
@@ -137,7 +138,7 @@ var TYPES=['Bypass','Peaking (Q)','Peaking (bandwidth)','Bass shelf',
            'Phase shift','Custom'];
 var SUBS=['Butterworth 1','Butterworth 2','Bessel 2','Linkwitz-Riley 2',
           'Variable Q 2','Chebyshev 2'];
-var T_BYPASS=0,T_LP=5,T_HP=6,T_CUSTOM=10;
+var T_BYPASS=0,T_PEAK_Q=1,T_LP=5,T_HP=6,T_CUSTOM=10;
 var S_VARQ=4,S_CHEB=5;
 var SLOTS=15;
 /* Field visibility per filter type. Low and high pass defer to the alignment
@@ -764,6 +765,20 @@ function resetChain(){
     c[i]={type:0,sub:0,freq:1000,q:0.707,bw:100,gain:0,ripple:0.5,
           coeff:[1,0,0,0,0]};
   loadRows();setDirty(true);plot();
+}
+/* The fixed graphic EQ this page replaced: one peaking section per band, Q
+   widening towards the bottom where the centres are furthest apart. */
+var GEQ=[[20,2],[31.5,2],[50,1.5],[80,1.5],[125,1],[200,1],[315,0.9],
+         [500,0.9],[800,0.8],[1250,0.8],[2000,0.7],[3150,0.7],[5000,0.6],
+         [8000,0.6],[16000,0.5]];
+function graphicEq(){
+  var c=chan();
+  for(var i=0;i<SLOTS;i++)
+    c[i]={type:T_PEAK_Q,sub:0,freq:GEQ[i][0],q:GEQ[i][1],bw:100,gain:0,
+          ripple:0.5,coeff:[1,0,0,0,0]};
+  loadRows();setDirty(true);plot();
+  show($('msg'),'Loaded a flat 15-band EQ. Set the band gains, then Apply.',
+       'info');
 }
 function copyChannel(){
   storeRows();

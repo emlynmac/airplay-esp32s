@@ -76,7 +76,10 @@ PurePath Console 3, and coefficients are recomputed whenever the I2S sample rate
 changes. The chip's two outputs are named A and B — which of them carries left, right
 or a sum is the routing setting, not a fixed assignment. A and B can be ganged or
 tuned separately; edits take effect immediately and are written to flash only when
-committed.
+committed. For plain tone shaping, **Load 15-band EQ** fills the chain with a flat
+graphic equaliser — one peaking section per band from 20 Hz to 16 kHz — leaving only
+the gains to set. It fills in the form and nothing more, so the amplifier hears it
+only once applied.
 
 Crossovers are built from these same sections, so a two-way or subwoofer split is just
 a high pass on one amplifier and a low pass on the other. Each amplifier also carries
