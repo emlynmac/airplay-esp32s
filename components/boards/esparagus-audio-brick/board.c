@@ -261,8 +261,12 @@ static void on_rtsp_event(rtsp_event_t event, const rtsp_event_data_t *data,
 }
 
 /**
- * Drive the TAS58xx PDN (active-low power-down) pins high so the chips answer
- * on I2C. Boards that hard-wire PDN leave the GPIOs configured as -1.
+ * Power-cycle the TAS58xx chips over their PDN (active-low power-down) pins so
+ * they answer on I2C in a known state. A soft reset -- an OTA, or any
+ * esp_restart() -- leaves the amplifiers powered and holding stale state, so
+ * PDN is pulsed low rather than simply driven high; skipping the pulse can
+ * leave the chips silent until the board is unplugged. Boards that hard-wire
+ * PDN leave the GPIOs configured as -1.
  */
 static esp_err_t init_dac_pdn_gpios(void) {
 #if BOARD_DAC_PDN_GPIO >= 0 || BOARD_DAC_PDN2_GPIO >= 0
@@ -285,6 +289,16 @@ static esp_err_t init_dac_pdn_gpios(void) {
   ESP_RETURN_ON_ERROR(err, TAG, "Failed to configure DAC PDN GPIOs");
 
 #if BOARD_DAC_PDN_GPIO >= 0
+  gpio_set_level(BOARD_DAC_PDN_GPIO, 0);
+#endif
+#if BOARD_DAC_PDN2_GPIO >= 0
+  gpio_set_level(BOARD_DAC_PDN2_GPIO, 0);
+#endif
+
+  // Datasheet shutdown sequence asks for PDN to be held low at least 6 ms
+  vTaskDelay(pdMS_TO_TICKS(10));
+
+#if BOARD_DAC_PDN_GPIO >= 0
   gpio_set_level(BOARD_DAC_PDN_GPIO, 1);
 #endif
 #if BOARD_DAC_PDN2_GPIO >= 0
@@ -293,7 +307,7 @@ static esp_err_t init_dac_pdn_gpios(void) {
 
   // TAS58xx needs ~5 ms after PDN release before it accepts I2C traffic
   vTaskDelay(pdMS_TO_TICKS(10));
-  ESP_LOGI(TAG, "DAC PDN released (pdn=%d, pdn2=%d)", BOARD_DAC_PDN_GPIO,
+  ESP_LOGI(TAG, "DAC PDN cycled (pdn=%d, pdn2=%d)", BOARD_DAC_PDN_GPIO,
            BOARD_DAC_PDN2_GPIO);
 #endif
   return ESP_OK;
