@@ -9,21 +9,29 @@
  */
 extern const dac_ops_t dac_tas58xx_ops;
 
-/** Per-amplifier level trim limits (dB), relative to the master volume. */
-#define TAS58XX_TRIM_MIN_DB (-15.0f)
-#define TAS58XX_TRIM_MAX_DB (15.0f)
+/**
+ * Per-output level trim limits (dB). Applied in the DSP input mixer, ahead of
+ * the biquads, so it only ever attenuates and cannot cost EQ headroom.
+ */
+#define TAS58XX_GAIN_MIN_DB (-40.0f)
+#define TAS58XX_GAIN_MAX_DB (0.0f)
 
 /**
- * Set one amplifier's level trim in dB, relative to the master volume, so the
- * chips can be balanced against each other — a bridged sub against the
- * satellites, say. Clamped to [TAS58XX_TRIM_MIN_DB, TAS58XX_TRIM_MAX_DB].
- * Safe to call before dac_init(); the value is applied on the next volume
- * update.
+ * Set the level of one output (0 = A, 1 = B) of one amplifier, relative to the
+ * master volume, so drivers of differing sensitivity can be matched — a
+ * bridged sub against the satellites, say. Clamped to
+ * [TAS58XX_GAIN_MIN_DB, TAS58XX_GAIN_MAX_DB]. Safe to call before dac_init().
  */
-void dac_tas58xx_set_trim_db(int dev, float trim_db);
+esp_err_t dac_tas58xx_set_gain_db(int dev, int ch, float gain_db);
 
-/** Get one amplifier's level trim in dB. Returns 0 for an unknown index. */
-float dac_tas58xx_get_trim_db(int dev);
+/** Get one output's level in dB. Returns 0 for an unknown index. */
+float dac_tas58xx_get_gain_db(int dev, int ch);
+
+/** Silence one output without disturbing its level setting. */
+esp_err_t dac_tas58xx_set_ch_mute(int dev, int ch, bool mute);
+
+/** Whether one output is muted. */
+bool dac_tas58xx_get_ch_mute(int dev, int ch);
 
 /**
  * Number of TAS58xx chips found on the I2C bus. Returns 0 before dac_init();
@@ -59,7 +67,7 @@ bool dac_tas58xx_is_pbtl(int dev);
  * fed a summed or single-channel routing rather than TAS58XX_MIX_STEREO.
  */
 typedef enum {
-  TAS58XX_MIX_STEREO = 0, /* L -> left output, R -> right output */
+  TAS58XX_MIX_STEREO = 0, /* L -> output A, R -> output B */
   TAS58XX_MIX_MONO,       /* (L+R)/2 -> both outputs */
   TAS58XX_MIX_LEFT,       /* L -> both outputs */
   TAS58XX_MIX_RIGHT,      /* R -> both outputs */

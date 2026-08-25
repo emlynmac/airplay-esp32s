@@ -69,21 +69,29 @@ auto-detects the TAS5825M I2C address in the range 0x4C–0x4F at startup.
 ## Equaliser
 
 TAS5825M boards expose the DAC's 15 cascaded biquad sections through the device's web
-interface at `/bq.html`, one filter per section, per channel and per amplifier. Each
+interface at `/bq.html`, one filter per section, per output and per amplifier. Each
 section can be a peaking filter, a shelf, a low or high pass in six alignments, a band
 pass, a notch, a phase shift, or five raw coefficients. The filter models match
 PurePath Console 3, and coefficients are recomputed whenever the I2S sample rate
-changes. Left and right can be ganged or tuned separately; edits take effect
-immediately and are written to flash only when committed.
+changes. The chip's two outputs are named A and B — which of them carries left, right
+or a sum is the routing setting, not a fixed assignment. A and B can be ganged or
+tuned separately; edits take effect immediately and are written to flash only when
+committed.
 
 Crossovers are built from these same sections, so a two-way or subwoofer split is just
 a high pass on one amplifier and a low pass on the other. Each amplifier also carries
-its own level trim, applied on top of the master volume, so the two can be matched, and
-its own input routing: the stereo pair as-is, summed to `(L+R)/2`, or one channel fed to
-both outputs. A bridged amplifier drives a single voice coil, so it is always fed a
-single channel and defaults to the sum; ganging is implicit and the stereo option is not
-offered. A combined response graph plots every active chain together, so a crossover
-spread across both amplifiers can be read as one picture.
+its own input routing: the stereo pair as-is, summed to `(L+R)/2`, or one channel fed
+to both outputs. A bridged amplifier drives a single voice coil, so it is always fed a
+single channel and defaults to the sum; ganging is implicit and the stereo option is
+not offered. A combined response graph at the top of the page plots every active
+output together, so a crossover spread across both amplifiers can be read as one
+picture.
+
+Levels are set in the Volume section. Master is the AirPlay volume and moves
+everything together. Below it each output has its own level and mute, applied in the
+DSP input mixer ahead of the filters — so they only ever attenuate and cost no filter
+headroom. Use them to match drivers of differing sensitivity. Levels and mutes take
+effect immediately and are stored in NVS, independently of the filter commit.
 
 ## Variants
 

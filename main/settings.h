@@ -159,21 +159,34 @@ esp_err_t settings_get_sub_offset(float *offset_db);
  */
 esp_err_t settings_set_sub_offset(float offset_db);
 
-// ---- Per-amplifier level trim (dual-DAC boards) ----
+// ---- Per-output level and mute (dual-DAC boards) ----
 
-/** Amplifiers whose levels can be trimmed against each other. */
+/** Amplifiers whose outputs can be levelled against each other. */
 #define SETTINGS_AMPS 2
+/** Outputs (A, B) per amplifier. */
+#define SETTINGS_AMP_CHANNELS 2
+/** Total addressable outputs, ordered amp-major: A0, B0, A1, B1. */
+#define SETTINGS_AMP_OUTPUTS (SETTINGS_AMPS * SETTINGS_AMP_CHANNELS)
 
 /**
- * Get the saved per-amplifier level trims in dB, relative to the master
- * volume.
+ * Get the saved per-output levels in dB, relative to the master volume.
  */
-esp_err_t settings_get_amp_trim(float trim_db[SETTINGS_AMPS]);
+esp_err_t settings_get_amp_gain(float gain_db[SETTINGS_AMP_OUTPUTS]);
 
 /**
- * Save the per-amplifier level trims (dB) to persistent storage.
+ * Save the per-output levels (dB) to persistent storage.
  */
-esp_err_t settings_set_amp_trim(const float trim_db[SETTINGS_AMPS]);
+esp_err_t settings_set_amp_gain(const float gain_db[SETTINGS_AMP_OUTPUTS]);
+
+/**
+ * Get the saved per-output mute flags.
+ */
+esp_err_t settings_get_amp_mute(uint8_t mute[SETTINGS_AMP_OUTPUTS]);
+
+/**
+ * Save the per-output mute flags to persistent storage.
+ */
+esp_err_t settings_set_amp_mute(const uint8_t mute[SETTINGS_AMP_OUTPUTS]);
 
 /**
  * Get the saved per-amplifier input routing (values of tas58xx_mix_t).

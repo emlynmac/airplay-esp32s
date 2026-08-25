@@ -37,6 +37,12 @@ input:disabled,select:disabled{opacity:0.25}
 .trim input[type=range]{accent-color:#e94560;flex:1;max-width:260px}
 .trim select{width:auto;min-width:220px}
 .trim b{color:#fff;font-weight:600;min-width:52px;text-align:right}
+.trim label{min-width:130px}
+.mute{background:rgba(255,255,255,0.08);border:1px solid rgba(255,255,255,0.15);
+      color:#aaa;border-radius:8px;padding:5px 12px;font-size:11px;
+      cursor:pointer;min-width:62px}
+.mute.on{background:#e94560;border-color:#e94560;color:#fff}
+.muted{opacity:.45}
 .chainwrap{overflow-x:auto}
 .chaininner{min-width:720px}
 .bq,.bqhead{display:grid;grid-template-columns:24px 1.5fr 1.3fr .8fr .7fr .8fr .7fr .7fr;gap:6px;align-items:center;margin-bottom:6px}
@@ -60,21 +66,38 @@ input:disabled,select:disabled{opacity:0.25}
 
 <div id='banner'></div>
 
+<div class='card' id='all-wrap'>
+<h2>All Outputs</h2>
+<div class='legend' id='all-legend'></div>
+<canvas id='all' class='plot' width='1640' height='460'></canvas>
+<p class='hint'>Every output that is driving a speaker, across both
+amplifiers, so a crossover split between them reads as one picture.</p>
+</div>
+
 <div class='card'>
-<h2>Response</h2>
+<h2 id='resp-title'>Response</h2>
 <div class='legend' id='legend'></div>
 <div class='plotlab'>Magnitude</div>
 <canvas id='mag' class='plot' width='1640' height='460'></canvas>
 <div class='plotlab'>Phase</div>
 <canvas id='phase' class='plot' width='1640' height='460'></canvas>
-<div id='all-wrap'>
-<div class='plotlab'>All channels</div>
-<div class='legend' id='all-legend'></div>
-<canvas id='all' class='plot' width='1640' height='460'></canvas>
-</div>
 <p class='hint'>Curves are computed with the same model the firmware uses, at
 the rate the I2S link is running. Faint lines are individual sections, bold is
 the cascade.</p>
+</div>
+
+<div class='card'>
+<h2>Volume</h2>
+<div class='trim'>
+<label for='master'>Master</label>
+<input type='range' id='master' step='0.5' oninput='masterChanged()'
+       onchange='masterCommit()'>
+<b id='master-val'>&mdash;</b></div>
+<p class='hint'>Master is the AirPlay volume and moves every output together.
+The output levels below are trimmed against it, applied in the DSP input mixer
+ahead of the filters, so they only attenuate and cost no filter headroom. Use
+them to match drivers of differing sensitivity.</p>
+<div id='gains'></div>
 </div>
 
 <div class='card'>
@@ -83,14 +106,9 @@ the cascade.</p>
 <div class='trim' id='mix-row'>
 <label for='mix'>Input channels</label>
 <select id='mix' onchange='mixChanged()'></select></div>
-<div class='trim' id='trim-row'>
-<label for='trim'>Amplifier level</label>
-<input type='range' id='trim' step='0.5' oninput='trimChanged()'
-       onchange='trimCommit()'>
-<b id='trim-val'>0.0 dB</b></div>
 <label class='gang' id='gang-row'>
 <input type='checkbox' id='gang' onchange='gangChanged()'>
-<span>Gang left and right channels</span></label>
+<span>Gang outputs A and B</span></label>
 <div class='tabs' id='ch-tabs'></div>
 <div class='chainwrap'><div class='chaininner'>
 <div class='bqhead'><span></span><span>Type</span><span>Alignment</span>
@@ -101,7 +119,7 @@ the cascade.</p>
 <div class='actions'>
 <button class='btn btn-primary' onclick='apply()'>Apply</button>
 <button class='btn btn-secondary' onclick='resetChain()'>Clear chain</button>
-<button class='btn btn-secondary' id='copy-btn' onclick='copyChannel()'>Copy to other channel</button>
+<button class='btn btn-secondary' id='copy-btn' onclick='copyChannel()'>Copy to other output</button>
 </div>
 <div id='msg'></div>
 </div>
@@ -512,13 +530,16 @@ function ampLabel(a){
 /* A bridged amplifier sums its two output paths into one driver, so the two
    chains must match — there is nothing to un-gang. */
 function isGanged(a){return !!(a.ganged||a.pbtl);}
-var MIXES=['Stereo \u2014 L and R separately','Mono \u2014 (L+R)/2',
-           'Left channel only','Right channel only'];
+/* The chip's two outputs. Which of them carries left, right or a sum is the
+   routing question below, so they are named after the hardware. */
+function outLabel(c){return 'Output '+(c?'B':'A');}
+var MIXES=['Stereo \u2014 L to A, R to B','Mono \u2014 (L+R)/2 to both',
+           'Left channel to both','Right channel to both'];
 var MIX_SHORT=['L/R','(L+R)/2','L','R'];
 /* What the single ganged curve represents: the chain is shared, so name it
    after whatever the input mixer is feeding the amplifier. */
 function chainLabel(a){
-  return a.mix===0?'Left + Right':MIX_SHORT[a.mix];
+  return a.mix===0?'Outputs A + B':MIX_SHORT[a.mix];
 }
 function drawMix(){
   var a=data.amps[amp],sel=$('mix'),h='';
@@ -544,37 +565,94 @@ function drawTabs(){
   var ganged=isGanged(data.amps[amp]);
   $('gang').checked=ganged;
   $('gang-row').style.display=data.amps[amp].pbtl?'none':'';
-  var names=['Left','Right'];
   h='';
   for(a=0;a<2;a++)
     h+="<button class='tab"+(a===ch?' on':'')+"' onclick='pickCh("+a+
-       ")'>"+names[a]+'</button>';
+       ")'>"+outLabel(a)+'</button>';
   $('ch-tabs').innerHTML=ganged?'':h;
   $('copy-btn').style.display=ganged?'none':'';
+  $('resp-title').textContent='Response \u2014 '+ampLabel(amp)+
+    (ganged?'':', '+outLabel(ch)+' selected');
   $('legend').innerHTML=ganged
     ?"<span><i style='background:#e94560'></i>"+chainLabel(data.amps[amp])+
      '</span>'
-    :"<span><i style='background:#e94560'></i>Left</span>"+
-     "<span><i style='background:#4ecca3'></i>Right</span>";
+    :"<span><i style='background:#e94560'></i>"+outLabel(0)+'</span>'+
+     "<span><i style='background:#4ecca3'></i>"+outLabel(1)+'</span>';
 }
 function pickAmp(a){storeRows();amp=a;if(isGanged(data.amps[a]))ch=0;
-                    drawTabs();drawTrim();drawMix();loadRows();plot();}
+                    drawTabs();drawMix();loadRows();plot();}
 function pickCh(c){storeRows();ch=c;drawTabs();loadRows();plot();}
-/* Level trim is a register write rather than a coefficient, so it takes
-   effect straight away and does not go through commit/revert. */
-function drawTrim(){
-  var t=$('trim');
-  t.min=data.trim_min;t.max=data.trim_max;
-  t.value=data.amps[amp].trim;
-  $('trim-val').textContent=Number(t.value).toFixed(1)+' dB';
+
+/* ---- volume ----
+   Levels and mutes are mixer writes rather than filter coefficients, so they
+   take effect at once and do not go through commit/revert. */
+var master=null;
+function drawMaster(){
+  if(!master)return;
+  var m=$('master');
+  m.min=master.min;m.max=master.max;m.value=master.volume_db;
+  /* Read back rather than echoing the API value, so the number matches where
+     the slider actually snapped. */
+  master.volume_db=Number(m.value);
+  $('master-val').textContent=master.volume_db.toFixed(1)+' dB';
 }
-function trimChanged(){
-  data.amps[amp].trim=Number($('trim').value);
-  $('trim-val').textContent=data.amps[amp].trim.toFixed(1)+' dB';
+function masterChanged(){
+  master.volume_db=Number($('master').value);
+  $('master-val').textContent=master.volume_db.toFixed(1)+' dB';
 }
-function trimCommit(){
-  post({dev:amp,trim:data.amps[amp].trim},
-       'Level set to '+data.amps[amp].trim.toFixed(1)+' dB');
+function masterCommit(){
+  fetch('/api/audio/volume',{method:'POST',
+    headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({volume_db:master.volume_db,persist:true})})
+    .then(function(r){return r.json();})
+    .then(function(){show($('msg'),
+      'Master volume '+master.volume_db.toFixed(1)+' dB','ok');})
+    .catch(function(){show($('msg'),'Could not set master volume','err');});
+}
+/* Outputs of a bridged amplifier feed one driver, so it gets a single row. */
+function gainRows(){
+  var out=[],a,c;
+  for(a=0;a<data.amps.length;a++)
+    for(c=0;c<(data.amps[a].pbtl?1:2);c++)
+      out.push({a:a,c:c});
+  return out;
+}
+function gainName(a,c){
+  var pre=data.amps.length>1?ampLabel(a):'';
+  if(data.amps[a].pbtl)return pre||'Bridged mono';
+  return (pre?pre+' ':'')+outLabel(c);
+}
+function drawGains(){
+  var rows=gainRows(),h='',i,r,g,m;
+  for(i=0;i<rows.length;i++){
+    r=rows[i];g=data.amps[r.a].gains[r.c];m=data.amps[r.a].mutes[r.c];
+    h+="<div class='trim"+(m?' muted':'')+"' id='g-row-"+i+"'>"+
+       '<label>'+gainName(r.a,r.c)+'</label>'+
+       "<input type='range' id='g-"+i+"' step='0.5' min='"+data.gain_min+
+       "' max='"+data.gain_max+"' value='"+g+"'"+(m?' disabled':'')+
+       " oninput='gainChanged("+i+")' onchange='gainCommit("+i+")'>"+
+       "<b id='g-val-"+i+"'>"+Number(g).toFixed(1)+' dB</b>'+
+       "<button class='mute"+(m?' on':'')+"' onclick='muteToggle("+i+")'>"+
+       (m?'Muted':'Mute')+'</button></div>';
+  }
+  $('gains').innerHTML=h;
+}
+function gainChanged(i){
+  var r=gainRows()[i],v=Number($('g-'+i).value);
+  data.amps[r.a].gains[r.c]=v;
+  $('g-val-'+i).textContent=v.toFixed(1)+' dB';
+}
+function gainCommit(i){
+  var r=gainRows()[i],v=data.amps[r.a].gains[r.c];
+  post({dev:r.a,out:r.c,gain:v},
+       gainName(r.a,r.c)+' level '+v.toFixed(1)+' dB');
+}
+function muteToggle(i){
+  var r=gainRows()[i],m=!data.amps[r.a].mutes[r.c];
+  data.amps[r.a].mutes[r.c]=m;
+  drawGains();
+  post({dev:r.a,out:r.c,mute:m},
+       gainName(r.a,r.c)+(m?' muted':' unmuted'));
 }
 function gangChanged(){
   storeRows();
@@ -601,8 +679,8 @@ function plot(){
   if(isGanged(a)){groups.push(sectionsOf(a.channels[0]));
                   names.push(chainLabel(a));}
   else{
-    groups.push(sectionsOf(a.channels[0]));names.push('Left');
-    groups.push(sectionsOf(a.channels[1]));names.push('Right');
+    groups.push(sectionsOf(a.channels[0]));names.push(outLabel(0));
+    groups.push(sectionsOf(a.channels[1]));names.push(outLabel(1));
   }
   var mag=[],ph=[],lim=0,k,i;
   for(k=0;k<groups.length;k++){
@@ -621,15 +699,20 @@ function plot(){
 }
 
 /* Every chain that is actually driving a driver, across both amplifiers, so
-   a crossover split over two amps can be read as one picture. */
+   a crossover split over two amps can be read as one picture. A muted output
+   is left out rather than drawn flat, since it is contributing nothing. */
 function activeChains(){
   var out=[];
   for(var a=0;a<data.amps.length;a++){
     var am=data.amps[a],pre=data.amps.length>1?ampLabel(a)+' ':'';
-    if(isGanged(am))out.push({c:am.channels[0],n:pre+chainLabel(am)});
-    else{
-      out.push({c:am.channels[0],n:pre+'L'});
-      out.push({c:am.channels[1],n:pre+'R'});
+    if(isGanged(am)){
+      /* Ganged shares one chain across both outputs, so it is still being
+         heard unless every output carrying it is muted. */
+      if(!am.mutes[0]||(!am.pbtl&&!am.mutes[1]))
+        out.push({c:am.channels[0],n:pre+chainLabel(am)});
+    }else{
+      if(!am.mutes[0])out.push({c:am.channels[0],n:pre+'A'});
+      if(!am.mutes[1])out.push({c:am.channels[1],n:pre+'B'});
     }
   }
   return out;
@@ -687,7 +770,7 @@ function copyChannel(){
   var a=data.amps[amp];
   a.channels[1-ch]=JSON.parse(JSON.stringify(a.channels[ch]));
   setDirty(true);plot();
-  show($('msg'),'Copied to the other channel. Apply to hear it.','info');
+  show($('msg'),'Copied to the other output. Apply to hear it.','info');
 }
 function commit(){
   fetch('/api/bq/commit',{method:'POST'}).then(function(r){
@@ -709,8 +792,8 @@ function load(){
     data=d;
     if(amp>=data.amps.length)amp=0;
     if(isGanged(data.amps[amp]))ch=0;
-    $('sub').textContent='15 biquads per channel at '+d.rate+' Hz';
-    drawTabs();drawTrim();drawMix();loadRows();plot();
+    $('sub').textContent='15 biquads per output at '+d.rate+' Hz';
+    drawTabs();drawMix();drawGains();loadRows();plot();
   });
 }
 window.onload=function(){
@@ -719,6 +802,8 @@ window.onload=function(){
     for(var i=0;i<SLOTS;i++)h+=bqRow(i);
     return h;
   })();
+  fetch('/api/audio/volume').then(function(r){return r.json();})
+    .then(function(v){master=v;drawMaster();}).catch(function(){});
   load().catch(function(e){
     show($('msg'),'Could not read the current tuning: '+e.message,'err');
   });

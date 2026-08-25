@@ -20,7 +20,8 @@ static const char *TAG = "settings";
 #define NVS_KEY_LED_BRIGHTNESS "led_bright"
 #define NVS_KEY_CHANNEL_MODE   "chan_mode"
 #define NVS_KEY_SUB_OFFSET     "sub_off"
-#define NVS_KEY_AMP_TRIM       "amp_trim"
+#define NVS_KEY_AMP_GAIN       "amp_gain"
+#define NVS_KEY_AMP_MUTE       "amp_mute"
 #define NVS_KEY_AMP_MIX        "amp_mix"
 #define NVS_KEY_SECOND_PBTL    "amp2_pbtl"
 
@@ -472,8 +473,8 @@ esp_err_t settings_set_sub_offset(float offset_db) {
 /*  Level trim                                                         */
 /* ================================================================== */
 
-esp_err_t settings_get_amp_trim(float trim_db[SETTINGS_AMPS]) {
-  if (!trim_db) {
+esp_err_t settings_get_amp_gain(float gain_db[SETTINGS_AMP_OUTPUTS]) {
+  if (!gain_db) {
     return ESP_ERR_INVALID_ARG;
   }
 
@@ -483,17 +484,17 @@ esp_err_t settings_get_amp_trim(float trim_db[SETTINGS_AMPS]) {
     return ESP_ERR_NOT_FOUND;
   }
 
-  size_t len = sizeof(float) * SETTINGS_AMPS;
-  err = nvs_get_blob(nvs, NVS_KEY_AMP_TRIM, trim_db, &len);
+  size_t len = sizeof(float) * SETTINGS_AMP_OUTPUTS;
+  err = nvs_get_blob(nvs, NVS_KEY_AMP_GAIN, gain_db, &len);
   nvs_close(nvs);
-  if (err == ESP_OK && len != sizeof(float) * SETTINGS_AMPS) {
+  if (err == ESP_OK && len != sizeof(float) * SETTINGS_AMP_OUTPUTS) {
     return ESP_ERR_INVALID_SIZE;
   }
   return err;
 }
 
-esp_err_t settings_set_amp_trim(const float trim_db[SETTINGS_AMPS]) {
-  if (!trim_db) {
+esp_err_t settings_set_amp_gain(const float gain_db[SETTINGS_AMP_OUTPUTS]) {
+  if (!gain_db) {
     return ESP_ERR_INVALID_ARG;
   }
 
@@ -504,18 +505,62 @@ esp_err_t settings_set_amp_trim(const float trim_db[SETTINGS_AMPS]) {
     return err;
   }
 
-  err = nvs_set_blob(nvs, NVS_KEY_AMP_TRIM, trim_db,
-                     sizeof(float) * SETTINGS_AMPS);
+  err = nvs_set_blob(nvs, NVS_KEY_AMP_GAIN, gain_db,
+                     sizeof(float) * SETTINGS_AMP_OUTPUTS);
   if (err == ESP_OK) {
     err = nvs_commit(nvs);
   }
   nvs_close(nvs);
 
   if (err == ESP_OK) {
-    ESP_LOGI(TAG, "Saved amp trim: 1 %+.1f dB, 2 %+.1f dB", trim_db[0],
-             trim_db[1]);
+    ESP_LOGI(TAG, "Saved amp levels: %+.1f %+.1f %+.1f %+.1f dB", gain_db[0],
+             gain_db[1], gain_db[2], gain_db[3]);
   } else {
-    ESP_LOGE(TAG, "Failed to save amp trim: %s", esp_err_to_name(err));
+    ESP_LOGE(TAG, "Failed to save amp levels: %s", esp_err_to_name(err));
+  }
+  return err;
+}
+
+esp_err_t settings_get_amp_mute(uint8_t mute[SETTINGS_AMP_OUTPUTS]) {
+  if (!mute) {
+    return ESP_ERR_INVALID_ARG;
+  }
+
+  nvs_handle_t nvs;
+  esp_err_t err = nvs_open(NVS_NAMESPACE, NVS_READONLY, &nvs);
+  if (err != ESP_OK) {
+    return ESP_ERR_NOT_FOUND;
+  }
+
+  size_t len = SETTINGS_AMP_OUTPUTS;
+  err = nvs_get_blob(nvs, NVS_KEY_AMP_MUTE, mute, &len);
+  nvs_close(nvs);
+  if (err == ESP_OK && len != SETTINGS_AMP_OUTPUTS) {
+    return ESP_ERR_INVALID_SIZE;
+  }
+  return err;
+}
+
+esp_err_t settings_set_amp_mute(const uint8_t mute[SETTINGS_AMP_OUTPUTS]) {
+  if (!mute) {
+    return ESP_ERR_INVALID_ARG;
+  }
+
+  nvs_handle_t nvs;
+  esp_err_t err = nvs_open(NVS_NAMESPACE, NVS_READWRITE, &nvs);
+  if (err != ESP_OK) {
+    ESP_LOGE(TAG, "Failed to open NVS: %s", esp_err_to_name(err));
+    return err;
+  }
+
+  err = nvs_set_blob(nvs, NVS_KEY_AMP_MUTE, mute, SETTINGS_AMP_OUTPUTS);
+  if (err == ESP_OK) {
+    err = nvs_commit(nvs);
+  }
+  nvs_close(nvs);
+
+  if (err != ESP_OK) {
+    ESP_LOGE(TAG, "Failed to save amp mutes: %s", esp_err_to_name(err));
   }
   return err;
 }

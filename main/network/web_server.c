@@ -1078,8 +1078,8 @@ static esp_err_t bq_get_handler(httpd_req_t *req) {
   cJSON_AddNumberToObject(json, "channels", TAS58XX_BQ_CHANNELS);
   cJSON_AddNumberToObject(json, "slots", TAS58XX_BQ_SLOTS);
   cJSON_AddNumberToObject(json, "rate", dac_tas58xx_bq_sample_rate());
-  cJSON_AddNumberToObject(json, "trim_min", TAS58XX_TRIM_MIN_DB);
-  cJSON_AddNumberToObject(json, "trim_max", TAS58XX_TRIM_MAX_DB);
+  cJSON_AddNumberToObject(json, "gain_min", TAS58XX_GAIN_MIN_DB);
+  cJSON_AddNumberToObject(json, "gain_max", TAS58XX_GAIN_MAX_DB);
 
   cJSON *amps = cJSON_AddArrayToObject(json, "amps");
   for (int d = 0; d < devices; d++) {
@@ -1087,9 +1087,17 @@ static esp_err_t bq_get_handler(httpd_req_t *req) {
     cJSON_AddNumberToObject(amp, "index", d);
     cJSON_AddStringToObject(amp, "role", bq_amp_role(d));
     cJSON_AddBoolToObject(amp, "ganged", dac_tas58xx_bq_get_ganged(d));
-    cJSON_AddNumberToObject(amp, "trim", dac_tas58xx_get_trim_db(d));
     cJSON_AddNumberToObject(amp, "mix", dac_tas58xx_get_mix(d));
     cJSON_AddBoolToObject(amp, "pbtl", dac_tas58xx_is_pbtl(d));
+
+    cJSON *gains = cJSON_AddArrayToObject(amp, "gains");
+    cJSON *mutes = cJSON_AddArrayToObject(amp, "mutes");
+    for (int c = 0; c < TAS58XX_BQ_CHANNELS; c++) {
+      cJSON_AddItemToArray(gains,
+                           cJSON_CreateNumber(dac_tas58xx_get_gain_db(d, c)));
+      cJSON_AddItemToArray(mutes,
+                           cJSON_CreateBool(dac_tas58xx_get_ch_mute(d, c)));
+    }
 
     cJSON *chans = cJSON_AddArrayToObject(amp, "channels");
     for (int c = 0; c < TAS58XX_BQ_CHANNELS; c++) {
@@ -1147,16 +1155,45 @@ static esp_err_t bq_post_handler(httpd_req_t *req) {
     dac_tas58xx_bq_set_ganged(dev, cJSON_IsTrue(g));
   }
 
-  /* Level trim is per amplifier rather than per chain, so it rides along
-   * with the chain edits instead of needing an endpoint of its own. */
-  const cJSON *trim = cJSON_GetObjectItem(json, "trim");
-  if (cJSON_IsNumber(trim)) {
-    dac_tas58xx_set_trim_db(dev, (float)trim->valuedouble);
-    float saved[SETTINGS_AMPS];
-    for (int i = 0; i < SETTINGS_AMPS; i++) {
-      saved[i] = dac_tas58xx_get_trim_db(i);
+  /* Level and mute are per output rather than per chain, so they ride along
+   * with the chain edits instead of needing an endpoint of their own. */
+  const cJSON *gain = cJSON_GetObjectItem(json, "gain");
+  const cJSON *mute = cJSON_GetObjectItem(json, "mute");
+  if (gain || mute) {
+    const cJSON *oc = cJSON_GetObjectItem(json, "out");
+    if (!json_int_in_range(oc, 0, TAS58XX_BQ_CHANNELS - 1)) {
+      cJSON_Delete(json);
+      httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Bad 'out'");
+      return ESP_FAIL;
     }
-    settings_set_amp_trim(saved);
+    if (gain && !cJSON_IsNumber(gain)) {
+      cJSON_Delete(json);
+      httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Bad 'gain'");
+      return ESP_FAIL;
+    }
+    if (mute && !cJSON_IsBool(mute)) {
+      cJSON_Delete(json);
+      httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Bad 'mute'");
+      return ESP_FAIL;
+    }
+    if (gain) {
+      dac_tas58xx_set_gain_db(dev, oc->valueint, (float)gain->valuedouble);
+      float saved[SETTINGS_AMP_OUTPUTS];
+      for (int i = 0; i < SETTINGS_AMP_OUTPUTS; i++) {
+        saved[i] = dac_tas58xx_get_gain_db(i / SETTINGS_AMP_CHANNELS,
+                                           i % SETTINGS_AMP_CHANNELS);
+      }
+      settings_set_amp_gain(saved);
+    }
+    if (mute) {
+      dac_tas58xx_set_ch_mute(dev, oc->valueint, cJSON_IsTrue(mute));
+      uint8_t saved[SETTINGS_AMP_OUTPUTS];
+      for (int i = 0; i < SETTINGS_AMP_OUTPUTS; i++) {
+        saved[i] = dac_tas58xx_get_ch_mute(i / SETTINGS_AMP_CHANNELS,
+                                           i % SETTINGS_AMP_CHANNELS);
+      }
+      settings_set_amp_mute(saved);
+    }
   }
 
   const cJSON *mix = cJSON_GetObjectItem(json, "mix");

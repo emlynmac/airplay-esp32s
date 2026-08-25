@@ -283,11 +283,19 @@ void app_main(void) {
   if (settings_get_second_pbtl(&second_pbtl) == ESP_OK) {
     dac_tas58xx_set_second_pbtl(second_pbtl);
   }
-  // Per-amplifier trim (pre-init safe; applied on the first volume update).
-  float amp_trim[SETTINGS_AMPS];
-  if (settings_get_amp_trim(amp_trim) == ESP_OK) {
-    for (int amp = 0; amp < SETTINGS_AMPS; amp++) {
-      dac_tas58xx_set_trim_db(amp, amp_trim[amp]);
+  // Per-output level and mute (pre-init safe; folded into the input mixer).
+  float amp_gain[SETTINGS_AMP_OUTPUTS];
+  if (settings_get_amp_gain(amp_gain) == ESP_OK) {
+    for (int i = 0; i < SETTINGS_AMP_OUTPUTS; i++) {
+      dac_tas58xx_set_gain_db(i / SETTINGS_AMP_CHANNELS,
+                              i % SETTINGS_AMP_CHANNELS, amp_gain[i]);
+    }
+  }
+  uint8_t amp_mute[SETTINGS_AMP_OUTPUTS];
+  if (settings_get_amp_mute(amp_mute) == ESP_OK) {
+    for (int i = 0; i < SETTINGS_AMP_OUTPUTS; i++) {
+      dac_tas58xx_set_ch_mute(i / SETTINGS_AMP_CHANNELS,
+                              i % SETTINGS_AMP_CHANNELS, amp_mute[i] != 0);
     }
   }
   // Input routing, likewise picked up when the chips are brought up.

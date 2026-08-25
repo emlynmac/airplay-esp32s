@@ -261,10 +261,12 @@ static bool s_second_pbtl = true;
  * are driven until the user has rewired and restarted. */
 static bool s_active_second_pbtl = true;
 
-/* Per-amplifier level trim (dB) added to the master volume, and the cached
- * master AirPlay volume so a trim can be re-applied on its own. */
-static float s_dev_trim_db[TAS58XX_MAX_DEVICES];
+/* Cached master AirPlay volume so a level change can be re-applied alone. */
 static float s_last_airplay_db = -15.0f;
+
+/* Per-output level trim (dB) and mute, folded into the input mixer gains. */
+static float s_ch_gain_db[TAS58XX_MAX_DEVICES][TAS58XX_BQ_CHANNELS];
+static bool s_ch_mute[TAS58XX_MAX_DEVICES][TAS58XX_BQ_CHANNELS];
 
 /* Requested input routing per amplifier. Held separately from the detected
  * device so it can be restored from NVS before the chips are probed; the
@@ -306,6 +308,14 @@ static esp_err_t tas58xx_write_reg(uint8_t reg, uint8_t value);
 static esp_err_t tas58xx_read_reg(uint8_t reg, uint8_t *value);
 static esp_err_t tas58xx_init_one(tas58xx_dev_t *dev);
 static esp_err_t tas58xx_apply_input_mix(void);
+
+/* Linear scale the input mixer should apply to one output path. */
+static float tas58xx_ch_scale(int dev, int ch) {
+  if (s_ch_mute[dev][ch]) {
+    return 0.0f;
+  }
+  return powf(10.0f, s_ch_gain_db[dev][ch] / 20.0f);
+}
 static esp_err_t bq_program_chain(void);
 static void bq_chain_defaults(void);
 static bool bq_load_config(void);
@@ -1054,13 +1064,12 @@ static uint8_t tas58xx_db_to_reg(float db_level) {
 
 // DIG_VOL value this chip should hold at the current master volume.
 static uint8_t tas58xx_dig_vol_reg(const tas58xx_dev_t *dev) {
-  float db = tas58xx_map_volume_db(s_last_airplay_db);
-  db += s_dev_trim_db[dev - s_devs];
-  return tas58xx_db_to_reg(db);
+  (void)dev;
+  return tas58xx_db_to_reg(tas58xx_map_volume_db(s_last_airplay_db));
 }
 
-// Re-apply the cached master volume to every chip, each offset by its own
-// level trim. Assumes REG_LOCK is held.
+// Re-apply the cached master volume to every chip. Per-output level lives in
+// the input mixer, not here. Assumes REG_LOCK is held.
 static void tas58xx_apply_volume_locked(void) {
   ESP_LOGD(TAG, "Volume: AirPlay %.1f dB", s_last_airplay_db);
 
@@ -1084,36 +1093,62 @@ static void tas58xx_set_volume(float volume_airplay_db) {
   REG_UNLOCK();
 }
 
-void dac_tas58xx_set_trim_db(int dev, float trim_db) {
-  if (dev < 0 || dev >= TAS58XX_MAX_DEVICES) {
-    return;
+/* Re-push one chip's mixer so a level or mute change lands immediately.
+ * Only takes effect while the chip is in PLAY, which is why the PLAY
+ * transition re-applies the mixer unconditionally. */
+static esp_err_t tas58xx_refresh_mix(int dev) {
+  if (s_reg_mutex == NULL || dev >= s_dev_count) {
+    return ESP_OK;
   }
-  if (trim_db > TAS58XX_TRIM_MAX_DB) {
-    trim_db = TAS58XX_TRIM_MAX_DB;
-  }
-  if (trim_db < TAS58XX_TRIM_MIN_DB) {
-    trim_db = TAS58XX_TRIM_MIN_DB;
-  }
-
-  // May be called (e.g. from the web server) before the DAC is initialised;
-  // store the value and let the next volume update apply it.
-  if (s_reg_mutex == NULL) {
-    s_dev_trim_db[dev] = trim_db;
-    return;
-  }
-
   REG_LOCK();
-  s_dev_trim_db[dev] = trim_db;
-  tas58xx_apply_volume_locked();
+  s_cur = &s_devs[dev];
+  esp_err_t err = tas58xx_apply_input_mix();
+  s_cur = NULL;
   REG_UNLOCK();
-  ESP_LOGI(TAG, "Amp %d volume trim: %+.1f dB", dev, trim_db);
+  return err;
 }
 
-float dac_tas58xx_get_trim_db(int dev) {
-  if (dev < 0 || dev >= TAS58XX_MAX_DEVICES) {
+esp_err_t dac_tas58xx_set_gain_db(int dev, int ch, float gain_db) {
+  if (dev < 0 || dev >= TAS58XX_MAX_DEVICES || ch < 0 ||
+      ch >= TAS58XX_BQ_CHANNELS) {
+    return ESP_ERR_INVALID_ARG;
+  }
+  if (gain_db > TAS58XX_GAIN_MAX_DB) {
+    gain_db = TAS58XX_GAIN_MAX_DB;
+  }
+  if (gain_db < TAS58XX_GAIN_MIN_DB) {
+    gain_db = TAS58XX_GAIN_MIN_DB;
+  }
+  s_ch_gain_db[dev][ch] = gain_db;
+  ESP_LOGI(TAG, "Amp %d output %c level: %+.1f dB", dev, 'A' + ch, gain_db);
+  return tas58xx_refresh_mix(dev);
+}
+
+float dac_tas58xx_get_gain_db(int dev, int ch) {
+  if (dev < 0 || dev >= TAS58XX_MAX_DEVICES || ch < 0 ||
+      ch >= TAS58XX_BQ_CHANNELS) {
     return 0.0f;
   }
-  return s_dev_trim_db[dev];
+  return s_ch_gain_db[dev][ch];
+}
+
+esp_err_t dac_tas58xx_set_ch_mute(int dev, int ch, bool mute) {
+  if (dev < 0 || dev >= TAS58XX_MAX_DEVICES || ch < 0 ||
+      ch >= TAS58XX_BQ_CHANNELS) {
+    return ESP_ERR_INVALID_ARG;
+  }
+  s_ch_mute[dev][ch] = mute;
+  ESP_LOGI(TAG, "Amp %d output %c %s", dev, 'A' + ch,
+           mute ? "muted" : "unmuted");
+  return tas58xx_refresh_mix(dev);
+}
+
+bool dac_tas58xx_get_ch_mute(int dev, int ch) {
+  if (dev < 0 || dev >= TAS58XX_MAX_DEVICES || ch < 0 ||
+      ch >= TAS58XX_BQ_CHANNELS) {
+    return false;
+  }
+  return s_ch_mute[dev][ch];
 }
 
 int dac_tas58xx_get_device_count(void) {
@@ -1853,6 +1888,16 @@ static esp_err_t tas58xx_apply_input_mix(void) {
     break;
   }
 
+  /* The mixer is a gain matrix, so the per-output level and mute are the same
+   * knob as the routing: scale whichever paths feed that output. */
+  const int dev = (int)(s_cur - s_devs);
+  const float sa = tas58xx_ch_scale(dev, 0);
+  const float sb = tas58xx_ch_scale(dev, 1);
+  l_to_l = (int32_t)lrintf((float)l_to_l * sa);
+  r_to_l = (int32_t)lrintf((float)r_to_l * sa);
+  l_to_r = (int32_t)lrintf((float)l_to_r * sb);
+  r_to_r = (int32_t)lrintf((float)r_to_r * sb);
+
   err = select_book_page(0x8C, 0x0B);
   if (err != ESP_OK) {
     select_default_page();
@@ -1864,7 +1909,10 @@ static esp_err_t tas58xx_apply_input_mix(void) {
   write_dsp_coeff32(0x0B, 0x20, r_to_r);
   err = select_default_page();
 
-  ESP_LOGI(TAG, "@0x%02X input mixer applied (%s)", s_cur->addr, desc);
+  ESP_LOGI(TAG, "@0x%02X input mixer applied (%s, A %+.1f dB%s, B %+.1f dB%s)",
+           s_cur->addr, desc, s_ch_gain_db[dev][0],
+           s_ch_mute[dev][0] ? " muted" : "", s_ch_gain_db[dev][1],
+           s_ch_mute[dev][1] ? " muted" : "");
   return err;
 }
 
