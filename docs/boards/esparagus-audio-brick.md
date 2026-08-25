@@ -69,7 +69,7 @@ auto-detects the TAS5825M I2C address in the range 0x4C–0x4F at startup.
 ## Equaliser
 
 TAS5825M boards expose the DAC's 15 cascaded biquad sections through the device's web
-interface at `/bq.html`, one filter per section, per output and per amplifier. Each
+interface at `/bq`, one filter per section, per output and per amplifier. Each
 section can be a peaking filter, a shelf, a low or high pass in six alignments, a band
 pass, a notch, a phase shift, or five raw coefficients. The filter models match
 PurePath Console 3, and coefficients are recomputed whenever the I2S sample rate
@@ -100,12 +100,46 @@ flat, which the builder ticks for you; it is also there for drivers wired out of
 phase. A section left on Bypass with Inv ticked is a plain polarity flip and costs
 nothing else.
 
+### Fitting to a measurement
+
+**Fit to a measurement…** turns a measured response into a correction. Load a frequency
+response export — REW text, or any file with a frequency and a level in its first two
+columns — and the fitter searches for the peaking filters and shelves that flatten it,
+then writes them into the chain. Only the shape is fitted, never the absolute level. The
+response graph gains two overlays, the measurement as it was and as it would be once
+corrected, so the fit can be judged before anything is applied.
+
+Three settings matter more than the rest. The fit range decides where the effort goes: a
+driver rolls off at its ends by more than any filter can undo, and leaving the range
+wide spends filters fighting that instead of correcting the band the driver covers — the
+page says so when the measurement is already well down at the low limit. Smoothing sets
+how much detail is chased, and a sixth of an octave keeps the room modes while ignoring
+the fine structure that moves when the microphone does. The boost and cut limits apply
+to the summed correction rather than to any one filter, and the result reports how much
+boost was used, so the same amount can come off that output's level to keep the
+headroom.
+
+**Keep first N sections** protects the head of the chain. The fit replaces everything
+past that count, so on a bi-amped speaker keep the crossover, measure each way through
+it, and fit into what is left; the count is filled in from any low or high passes
+already sitting at the top of the chain. Fitted filters are staged like any other edit —
+nothing is heard until applied and nothing survives a reboot until committed.
+
 Each amplifier carries its own input routing: the stereo pair as-is, summed to
 `(L+R)/2`, or one channel fed to both outputs. A bridged amplifier drives a single voice
 coil, so it is always fed a single channel and defaults to the sum; ganging is implicit
 and the stereo option is not offered. A combined response graph at the top of the page
 plots every active output together, so a crossover spread across both amplifiers can be
 read as one picture.
+
+**Show what the outputs sum to** adds one more trace to that graph. Outputs feeding
+separate drivers add as vectors and not as curves, so two branches that each look right
+alone can still cancel where they overlap — and the two curves look identical either
+way round, which is what makes it easy to miss. The sum is taken on the complex
+response instead: a crossover is right when it runs flat through the corner, and a dip
+there means the branches are fighting, so one of them needs **Inv**. The trace knows
+only the filters, never the drivers, their spacing or the room, so it shows what the
+crossover is aiming at rather than what a microphone would hear.
 
 Levels are set in the Volume section. Master is the AirPlay volume and moves
 everything together. Below it each output has its own level and mute, applied in the
