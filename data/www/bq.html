@@ -440,14 +440,15 @@ function chainH(secs,w){
   return {re:re,im:im};
 }
 /* On the same grid sweep() walks, so it overlays the per-chain curves. */
-function sumCurve(groups,sr){
-  var N=360,F0=20,F1=Math.min(20000,sr/2),out=[],i,k,h,re,im,m,w;
+function sumCurve(groups,sr,gains){
+  var N=360,F0=20,F1=Math.min(20000,sr/2),out=[],i,k,h,re,im,m,w,g;
   for(i=0;i<=N;i++){
     w=2*P*F0*Math.pow(F1/F0,i/N)/sr;
     re=0;im=0;
     for(k=0;k<groups.length;k++){
       h=chainH(groups[k],w);
-      re+=h.re;im+=h.im;
+      g=gains?gains[k]:1;
+      re+=h.re*g;im+=h.im*g;
     }
     m=Math.sqrt(re*re+im*im);
     out.push(m>1e-3?Math.max(-60,Math.min(60,20*Math.log10(m))):-60);
@@ -656,9 +657,8 @@ function loadRows(){
   for(var i=0;i<SLOTS;i++)bqSet(i,c[i]);
 }
 function ampLabel(a){
-  var role=data.amps[a].role;
-  if(role==='mono')return 'Bridged mono';
-  return data.devices>1?('Amp '+(a+1)):'Speakers';
+  var base=data.devices>1?('Amp '+(a+1)):'Speakers';
+  return data.amps[a].role==='mono'?base+' (PBTL)':base;
 }
 /* A bridged amplifier sums its two output paths into one driver, so the two
    chains must match — there is nothing to un-gang. */
@@ -759,7 +759,7 @@ function gainRows(){
 }
 function gainName(a,c){
   var pre=data.amps.length>1?ampLabel(a):'';
-  if(data.amps[a].pbtl)return pre||'Bridged mono';
+  if(data.amps[a].pbtl)return ampLabel(a);
   return (pre?pre+' ':'')+outLabel(c);
 }
 function drawGains(){
@@ -781,6 +781,7 @@ function gainChanged(i){
   var r=gainRows()[i],v=Number($('g-'+i).value);
   data.amps[r.a].gains[r.c]=v;
   $('g-val-'+i).textContent=v.toFixed(1)+' dB';
+  plot();
 }
 function gainCommit(i){
   var r=gainRows()[i],v=data.amps[r.a].gains[r.c];
@@ -791,6 +792,7 @@ function muteToggle(i){
   var r=gainRows()[i],m=!data.amps[r.a].mutes[r.c];
   data.amps[r.a].mutes[r.c]=m;
   drawGains();
+  plot();
   post({dev:r.a,out:r.c,mute:m},
        gainName(r.a,r.c)+(m?' muted':' unmuted'));
 }
@@ -813,27 +815,52 @@ function sectionsOf(c){
   }
   return secs;
 }
+/* The output trim is an input-mixer gain ahead of the filters, so it shifts a
+   chain's level without changing its shape. A ganged pair shares one chain, so
+   it is drawn at output A's level. */
+function trimOf(am,c){
+  return Number(am.gains[isGanged(am)?0:c])||0;
+}
+/* Only the summed trace moves: the trim belongs to no individual filter. */
+function offsetTotal(s,db){
+  if(db)for(var i=0;i<s.total.length;i++)s.total[i]+=db;
+  return s;
+}
+function growScale(hi,pk){
+  while(hi<pk&&hi<96)hi+=12;
+  return hi;
+}
+function peakTotal(sweeps){
+  var pk=0,k,i;
+  for(k=0;k<sweeps.length;k++)
+    for(i=0;i<sweeps[k].total.length;i++)
+      pk=Math.max(pk,Math.abs(sweeps[k].total[i]));
+  return pk;
+}
 function plot(){
   if(!data)return;
-  var a=data.amps[amp],groups=[],names=[];
+  var a=data.amps[amp],groups=[],names=[],trims=[];
   if(isGanged(a)){groups.push(sectionsOf(a.channels[0]));
-                  names.push(chainLabel(a));}
+                  names.push(chainLabel(a));trims.push(trimOf(a,0));}
   else{
     groups.push(sectionsOf(a.channels[0]));names.push(outLabel(0));
+    trims.push(trimOf(a,0));
     groups.push(sectionsOf(a.channels[1]));names.push(outLabel(1));
+    trims.push(trimOf(a,1));
   }
   var mag=[],ph=[],lim=0,k,i;
   for(k=0;k<groups.length;k++){
-    var m=sweep(groups[k],fs(),magDb,false);
+    var m=offsetTotal(sweep(groups[k],fs(),magDb,false),trims[k]);
     var p=sweep(groups[k],fs(),phaseDeg,true);
     m.name=names[k];p.name=names[k];
     for(i=0;i<=p.n;i++)lim=Math.max(lim,Math.abs(p.total[i]));
     mag.push(m);ph.push(p);
   }
-  /* A measurement swings well past the ±18 dB filters are kept inside, so the
-     scale opens up to hold it rather than clipping it against the frame. */
-  var ex=measCurves(),hi=24;
-  if(ex)while(hi<Math.max(ex[0].pk,ex[1].pk)&&hi<96)hi+=12;
+  /* A measurement swings well past the ±18 dB filters are kept inside, and a
+     trim drags a whole chain down, so the scale opens up to hold both rather
+     than clipping them against the frame. */
+  var ex=measCurves(),hi=growScale(24,peakTotal(mag));
+  if(ex)hi=growScale(hi,Math.max(ex[0].pk,ex[1].pk));
   drawGraph($('mag'),mag,-hi,hi,hi/4,function(d){return d>0?'+'+d:''+d;},
             false,ex);
   var range=180;
@@ -854,10 +881,10 @@ function activeChains(){
       /* Ganged shares one chain across both outputs, so it is still being
          heard unless every output carrying it is muted. */
       if(!am.mutes[0]||(!am.pbtl&&!am.mutes[1]))
-        out.push({c:am.channels[0],n:pre+chainLabel(am)});
+        out.push({c:am.channels[0],n:pre+chainLabel(am),g:trimOf(am,0)});
     }else{
-      if(!am.mutes[0])out.push({c:am.channels[0],n:pre+'A'});
-      if(!am.mutes[1])out.push({c:am.channels[1],n:pre+'B'});
+      if(!am.mutes[0])out.push({c:am.channels[0],n:pre+'A',g:trimOf(am,0)});
+      if(!am.mutes[1])out.push({c:am.channels[1],n:pre+'B',g:trimOf(am,1)});
     }
   }
   return out;
@@ -867,22 +894,24 @@ function plotAll(){
   /* With a single chain the combined view would just repeat the one above. */
   $('all-wrap').style.display=chains.length>1?'':'none';
   if(chains.length<2)return;
-  var sweeps=[],groups=[],leg='',k;
+  var sweeps=[],groups=[],gains=[],leg='',k;
   for(k=0;k<chains.length;k++){
-    var secs=sectionsOf(chains[k].c),s=sweep(secs,fs(),magDb,false);
+    var secs=sectionsOf(chains[k].c);
+    var s=offsetTotal(sweep(secs,fs(),magDb,false),chains[k].g);
     s.name=chains[k].n;
     groups.push(secs);sweeps.push(s);
+    gains.push(Math.pow(10,chains[k].g/20));
     leg+="<span><i style='background:"+TRACE[k%TRACE.length][0]+"'></i>"+
          chains[k].n+'</span>';
   }
-  var ex=null;
+  var ex=null,hi=growScale(24,peakTotal(sweeps));
   if($('sumq').checked){
-    ex=[{v:sumCurve(groups,fs()),c:C_SUM,w:4,n:'Sum'}];
+    ex=[{v:sumCurve(groups,fs(),gains),c:C_SUM,w:4,n:'Sum'}];
     leg+="<span><i style='background:"+C_SUM+"'></i>Sum</span>";
   }
   $('sum-hint').style.display=ex?'':'none';
   $('all-legend').innerHTML=leg;
-  drawGraph($('all'),sweeps,-24,24,6,
+  drawGraph($('all'),sweeps,-hi,hi,hi/4,
             function(d){return d>0?'+'+d:''+d;},true,ex);
 }
 
