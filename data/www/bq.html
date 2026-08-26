@@ -18,6 +18,8 @@ body{font-family:-apple-system,system-ui,sans-serif;background:linear-gradient(1
 .btn-primary:hover{background:#d63850}
 .btn-secondary{background:rgba(255,255,255,0.1);color:#fff}
 .btn-secondary:hover{background:rgba(255,255,255,0.2)}
+.btn-secondary.on{background:#e94560}
+.btn-secondary.on:hover{background:#d63850}
 .btn:disabled{opacity:0.5;cursor:not-allowed}
 .actions{display:flex;gap:10px;flex-wrap:wrap;align-items:center;margin-top:16px}
 /* Tabs pick what you are editing, the buttons act on it, so they belong on one
@@ -33,9 +35,11 @@ body{font-family:-apple-system,system-ui,sans-serif;background:linear-gradient(1
 input[type=number],select{background:rgba(0,0,0,0.3);border:1px solid rgba(255,255,255,0.1);border-radius:6px;color:#fff;padding:7px 8px;font-size:12px;width:100%}
 select option{background:#16213e}
 input:disabled,select:disabled{opacity:0.25}
-.tabs{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:12px}
+.tabs{display:flex;gap:6px;flex-wrap:wrap;align-items:center;margin-bottom:12px}
 .tab{background:rgba(255,255,255,0.08);border:1px solid rgba(255,255,255,0.1);border-radius:8px;color:#aaa;padding:8px 12px;font-size:12px;cursor:pointer}
 .tab.on{background:#e94560;border-color:#e94560;color:#fff}
+/* Sits with the output tabs it acts on, at the far end of their row. */
+#copy-btn{margin-left:auto}
 .gang{display:flex;align-items:center;gap:8px;font-size:12px;color:#aaa;margin-bottom:14px}
 .gang input{accent-color:#e94560;width:16px;height:16px}
 .trim{display:flex;align-items:center;gap:10px;font-size:12px;color:#aaa;margin-bottom:14px}
@@ -70,7 +74,7 @@ input:disabled,select:disabled{opacity:0.25}
 .legend span{display:flex;align-items:center;gap:5px}
 .legend i{width:11px;height:11px;border-radius:3px}
 .bar{position:sticky;bottom:0;background:rgba(22,33,62,0.95);backdrop-filter:blur(10px);border:1px solid rgba(255,255,255,0.1);border-radius:16px;padding:16px;margin-top:16px;display:flex;gap:10px;flex-wrap:wrap;align-items:center}
-.bar .state{font-size:12px;color:#aaa;margin-left:auto}
+.bar .state{font-size:12px;color:#aaa}
 .dot{display:inline-block;width:8px;height:8px;border-radius:50%;background:#4a4;margin-right:6px}
 .dot.dirty{background:#e94560}
 </style></head><body>
@@ -80,10 +84,24 @@ input:disabled,select:disabled{opacity:0.25}
 
 <div id='banner'></div>
 
+<div class='card'>
+<h2>Volume</h2>
+<div class='trim'>
+<label for='master'>Master</label>
+<input type='range' id='master' step='0.5' oninput='masterChanged()'
+       onchange='masterCommit()'>
+<b id='master-val'>&mdash;</b></div>
+<p class='hint'>Master is the AirPlay volume and moves every output together.
+The output levels below are trimmed against it, applied in the DSP input mixer
+ahead of the filters, so they only attenuate and cost no filter headroom. Use
+them to match drivers of differing sensitivity.</p>
+<div id='gains'></div>
+</div>
+
 <div class='card' id='all-wrap'>
 <h2>All Outputs</h2>
 <label class='gang'>
-<input type='checkbox' id='sumq' onchange='plotAll()'>
+<input type='checkbox' id='sumq' onchange='plotAll()' checked>
 <span>Show what the outputs sum to</span></label>
 <div class='legend' id='all-legend'></div>
 <canvas id='all' class='plot' width='1640' height='460'></canvas>
@@ -110,20 +128,6 @@ the cascade.</p>
 </div>
 
 <div class='card'>
-<h2>Volume</h2>
-<div class='trim'>
-<label for='master'>Master</label>
-<input type='range' id='master' step='0.5' oninput='masterChanged()'
-       onchange='masterCommit()'>
-<b id='master-val'>&mdash;</b></div>
-<p class='hint'>Master is the AirPlay volume and moves every output together.
-The output levels below are trimmed against it, applied in the DSP input mixer
-ahead of the filters, so they only attenuate and cost no filter headroom. Use
-them to match drivers of differing sensitivity.</p>
-<div id='gains'></div>
-</div>
-
-<div class='card'>
 <h2>Filter Chain</h2>
 <div class='toprow'>
 <div class='tabs' id='amp-tabs'></div>
@@ -131,24 +135,10 @@ them to match drivers of differing sensitivity.</p>
 <button class='btn btn-primary' onclick='apply()'>Apply</button>
 <button class='btn btn-secondary' onclick='resetChain()'>Clear chain</button>
 <button class='btn btn-secondary' onclick='graphicEq()'>Load 15-band EQ</button>
-<button class='btn btn-secondary' onclick='xoToggle()'>Build crossover&hellip;</button>
-<button class='btn btn-secondary' onclick='aeqToggle()'>Fit to a measurement&hellip;</button>
-<button class='btn btn-secondary' id='copy-btn' onclick='copyChannel()'>Copy to other output</button>
+<button class='btn btn-secondary' id='xo-btn' onclick='xoToggle()'>Build crossover&hellip;</button>
+<button class='btn btn-secondary' id='aeq-btn' onclick='aeqToggle()'>Fit to a measurement&hellip;</button>
 </div>
 </div>
-<div class='trim' id='mix-row'>
-<label for='mix'>Input channels</label>
-<select id='mix' onchange='mixChanged()'></select></div>
-<label class='gang' id='gang-row'>
-<input type='checkbox' id='gang' onchange='gangChanged()'>
-<span>Gang outputs A and B</span></label>
-<div class='tabs' id='ch-tabs'></div>
-<div class='chainwrap'><div class='chaininner'>
-<div class='bqhead'><span></span><span>Type</span><span>Alignment</span>
-<span>Freq Hz</span><span>Q</span><span>BW Hz</span><span>Gain dB</span>
-<span>Ripple dB</span><span>Inv</span></div>
-<div id='rows'></div>
-</div></div>
 <div class='xo' id='xo'>
 <div class='trim'>
 <label for='xo-layout'>Layout</label>
@@ -196,7 +186,7 @@ with a frequency and a level in its first two columns &mdash; and the fitter
 places filters to flatten it. Only the shape is fitted, never the level, and
 the two limits apply to the summed response rather than to any one filter.</p>
 <p class='hint'>The fit replaces every section past the keep count on the
-chain shown above, so measure with those first sections already playing: on a
+chain shown below, so measure with those first sections already playing: on a
 bi-amped speaker, keep the crossover and measure each way through it. The fit
 range matters more than anything else &mdash; a driver rolls off at its ends by
 more than any EQ can undo, and leaving the range wide spends filters fighting
@@ -207,6 +197,19 @@ that instead of correcting the band the driver does cover.</p>
 <button class='btn btn-secondary' onclick='aeqToggle()'>Close</button>
 </div>
 </div>
+<div class='trim' id='mix-row'>
+<label for='mix'>Input channels</label>
+<select id='mix' onchange='mixChanged()'></select></div>
+<label class='gang' id='gang-row'>
+<input type='checkbox' id='gang' onchange='gangChanged()'>
+<span>Gang outputs A and B</span></label>
+<div class='tabs' id='ch-tabs'></div>
+<div class='chainwrap'><div class='chaininner'>
+<div class='bqhead'><span></span><span>Type</span><span>Alignment</span>
+<span>Freq Hz</span><span>Q</span><span>BW Hz</span><span>Gain dB</span>
+<span>Ripple dB</span><span>Inv</span></div>
+<div id='rows'></div>
+</div></div>
 <div id='msg'></div>
 </div>
 
@@ -702,8 +705,9 @@ function drawTabs(){
   for(a=0;a<2;a++)
     h+="<button class='tab"+(a===ch?' on':'')+"' onclick='pickCh("+a+
        ")'>"+outLabel(a)+'</button>';
+  h+="<button class='btn btn-secondary' id='copy-btn' onclick='copyChannel()'>"+
+     'Copy to '+(ch?'A':'B')+'</button>';
   $('ch-tabs').innerHTML=ganged?'':h;
-  $('copy-btn').style.display=ganged?'none':'';
   $('resp-title').textContent='Response \u2014 '+ampLabel(amp)+
     (ganged?'':', '+outLabel(ch)+' selected');
   drawLegend();
@@ -1017,8 +1021,19 @@ function xoPick(){
   var L=xoLayouts(),i=parseInt($('xo-layout').value,10);
   return {lay:L[i],al:XOA[parseInt($('xo-align').value,10)]};
 }
+/* Both panels expand into the same slot under the buttons, so opening one
+   closes the other. Pass null to close whatever is open. */
+function panelShow(id){
+  var open=!!id&&!$(id).classList.contains('on');
+  ['xo','aeq'].forEach(function(p){
+    var on=open&&p===id;
+    $(p).classList.toggle('on',on);
+    $(p+'-btn').classList.toggle('on',on);
+  });
+  return open;
+}
 function xoToggle(){
-  if(!$('xo').classList.toggle('on'))return;
+  if(!panelShow('xo'))return;
   var h='',i,L=xoLayouts();
   for(i=0;i<L.length;i++)h+="<option value='"+i+"'>"+L[i].n+'</option>';
   $('xo-layout').innerHTML=h;
@@ -1083,7 +1098,7 @@ function xoBuild(){
       post({dev:i,mix:want},null);
     }
   if(isGanged(data.amps[amp]))ch=0;
-  $('xo').classList.remove('on');
+  panelShow(null);
   drawTabs();drawMix();loadRows();setDirty(true);plot();
   show($('msg'),'Crossover staged at '+Math.round(f)+' Hz. Apply to hear it.',
        'info');
@@ -1578,7 +1593,7 @@ function aeqRolloff(m){
   return 0;
 }
 function aeqToggle(){
-  if(!$('aeq').classList.toggle('on'))return;
+  if(!panelShow('aeq'))return;
   if(!meas)$('aeq-keep').value=aeqDefaultKeep();
   aeqRoomSync();
   plot();
@@ -1656,7 +1671,7 @@ function copyChannel(){
   var a=data.amps[amp];
   a.channels[1-ch]=JSON.parse(JSON.stringify(a.channels[ch]));
   setDirty(true);plot();
-  show($('msg'),'Copied to the other output. Apply to hear it.','info');
+  show($('msg'),'Copied to '+outLabel(1-ch)+'. Apply to hear it.','info');
 }
 function commit(){
   fetch('/api/bq/commit',{method:'POST'}).then(function(r){
