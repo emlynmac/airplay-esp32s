@@ -175,23 +175,30 @@ of* the built-in init sequence:
 
 | File | Applies to |
 | --- | --- |
-| `/spiffs/hf/tas58xx_fw.bin` | the only amplifier, or the first of two |
-| `/spiffs/hf/tas58xx_fw0.bin` | first amplifier on a dual-DAC board |
-| `/spiffs/hf/tas58xx_fw1.bin` | second amplifier on a dual-DAC board |
+| `/spiffs/hf/tas5825m_fw.bin` | the only amplifier, or the first of two |
+| `/spiffs/hf/tas5825m_fw0.bin` | first amplifier on a dual-DAC board |
+| `/spiffs/hf/tas5825m_fw1.bin` | second amplifier on a dual-DAC board |
+
+A process flow is a TAS5825M feature, so the driver only looks for these on
+that part. Add a `-<rate>` suffix — `tas5825m_fw-44100.bin`,
+`tas5825m_fw0-48000.bin` — to hold a tuning per sample rate; the driver picks
+the one matching the rate it is playing and falls back to the unsuffixed name.
+PPC3 bakes every coefficient at the rate the flow was exported for, so a 48 kHz
+tuning played at 44.1 kHz puts every corner about 8% low.
 
 To install one:
 
 1. Tune the part in PPC3 and export either the I2C log (`.cfg`) or the C header.
 2. Convert it:
    ```bash
-   python3 components/dac_tas58xx/ppc3_convert.py my_tuning.cfg -o tas58xx_fw.bin
+   python3 components/dac_tas58xx/ppc3_convert.py my_tuning.cfg -o tas5825m_fw.bin
    ```
    A log that drives both amplifiers carries writes for each, so pick one with
    `--dev 98` or `--dev 9a` and convert it twice.
 3. Copy the result to `data/hf/` for a serial flash, or upload it over WiFi:
    ```bash
-   curl -X POST "http://<device-ip>/api/fs/upload?path=/spiffs/hf/tas58xx_fw.bin" \
-        --data-binary @tas58xx_fw.bin
+   curl -X POST "http://<device-ip>/api/fs/upload?path=/spiffs/hf/tas5825m_fw.bin" \
+        --data-binary @tas5825m_fw.bin
    ```
 4. Reboot.
 

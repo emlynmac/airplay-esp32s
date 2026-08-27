@@ -719,36 +719,87 @@ static esp_err_t tas58xx_write_hf(tas58xx_dev_t *dev, const uint8_t *stream,
   return ESP_ERR_INVALID_SIZE;
 }
 
+/* Defined further down, beside the coefficient state it reads. */
+static uint32_t tas58xx_flow_sample_rate(void);
+
 /*
- * Load a tuned PPC3 dump for device index i.
- *   single device    -> /spiffs/hf/tas58xx_fw.bin
- *   multiple devices -> /spiffs/hf/tas58xx_fw<i>.bin, with the first device
- *                       falling back to the unindexed name.
+ * Build search candidate `c` for device `i`, most specific first. Returns
+ * false when the slot does not apply, so the caller just skips it.
+ */
+static bool tas58xx_hf_candidate(char *out, size_t len, int c, int i,
+                                 bool multi, uint32_t fs) {
+  switch (c) {
+  case 0:
+    if (!multi) {
+      return false;
+    }
+    snprintf(out, len, "/spiffs/hf/tas5825m_fw%d-%" PRIu32 ".bin", i, fs);
+    return true;
+  case 1:
+    /* The unindexed names only ever stand in for the first device. */
+    if (multi && i != 0) {
+      return false;
+    }
+    snprintf(out, len, "/spiffs/hf/tas5825m_fw-%" PRIu32 ".bin", fs);
+    return true;
+  case 2:
+    if (!multi) {
+      return false;
+    }
+    snprintf(out, len, "/spiffs/hf/tas5825m_fw%d.bin", i);
+    return true;
+  default:
+    if (multi && i != 0) {
+      return false;
+    }
+    snprintf(out, len, "/spiffs/hf/tas5825m_fw.bin");
+    return true;
+  }
+}
+
+/*
+ * Load a tuned PPC3 dump for device index i, newest-to-oldest naming:
+ *   /spiffs/hf/tas5825m_fw<i>-<rate>.bin   (multi-device, rate-specific)
+ *   /spiffs/hf/tas5825m_fw-<rate>.bin      (single device, rate-specific)
+ *   /spiffs/hf/tas5825m_fw<i>.bin          (multi-device, any rate)
+ *   /spiffs/hf/tas5825m_fw.bin             (single device, any rate)
+ * The first device falls back to the unindexed names.
  * Absent is the normal case: the chip then runs the built-in init sequence.
  */
 static void tas58xx_load_hf(int i, bool multi) {
   tas58xx_dev_t *d = &s_devs[i];
   char path[48];
-
   /* Re-init without a deinit would otherwise strand the previous dump. */
   free(d->hf_buf);
   d->hf_buf = NULL;
   d->hf_size = 0;
 
-  if (multi) {
-    snprintf(path, sizeof(path), "/spiffs/hf/tas58xx_fw%d.bin", i);
-  } else {
-    snprintf(path, sizeof(path), "/spiffs/hf/tas58xx_fw.bin");
+  /* A dump replays a process flow, which is a TAS5825M feature: the TAS5805M
+   * has no flow-select register and lays its coefficients out differently. */
+  if (d->model != TAS58XX_MODEL_TAS5825M) {
+    return;
   }
 
-  FILE *f = fopen(path, "rb");
-  if (!f && multi && i == 0) {
-    snprintf(path, sizeof(path), "/spiffs/hf/tas58xx_fw.bin");
+  /*
+   * Rate-specific dumps win. PPC3 bakes every coefficient at the rate the
+   * flow was exported for, so a 48 kHz tuning played at 44.1 kHz puts every
+   * corner ~8% low. The unsuffixed names remain as the fallback so existing
+   * single-rate installs keep working untouched.
+   */
+  const uint32_t fs = tas58xx_flow_sample_rate();
+  FILE *f = NULL;
+
+  for (int c = 0; c < 4 && f == NULL; c++) {
+    if (!tas58xx_hf_candidate(path, sizeof(path), c, i, multi, fs)) {
+      continue;
+    }
     f = fopen(path, "rb");
   }
   if (!f) {
-    ESP_LOGI(TAG, "No PPC3 dump at %s — @0x%02X runs the built-in flow", path,
-             d->addr);
+    ESP_LOGI(TAG,
+             "No TAS5825M PPC3 dump for @0x%02X at %" PRIu32
+             " Hz — runs the built-in flow",
+             d->addr, fs);
     return;
   }
 
@@ -780,6 +831,36 @@ static void tas58xx_load_hf(int i, bool multi) {
 }
 
 /*
+ * A PPC3 dump is a whole-device configuration, so it also carries the EVM's
+ * host and pinout settings. Put back the two that describe this board rather
+ * than the tuning. Assumes the dump left the device on book 0, page 0.
+ */
+static esp_err_t tas58xx_fixup_after_hf(tas58xx_dev_t *dev) {
+  /*
+   * PPC3 exports from an EVM that feeds 24-bit data and so leaves SAP_CTRL1 at
+   * its 24-bit reset default, while this firmware always sends 16-bit I2S —
+   * the part would keep clocking in eight bits that were never sent.
+   */
+  esp_err_t err = tas58xx_write_reg(REG_SAP_CTRL1, 0x00);
+  if (err != ESP_OK) {
+    return err;
+  }
+
+  /*
+   * The EVM brings GPIO1 out as SDOUT; on these boards it is the amp's fault
+   * line into the MCU, which otherwise reads the data stream as a fault stuck
+   * on and mutes. Only the TAS5825M has these pins.
+   */
+  if (dev->model == TAS58XX_MODEL_TAS5825M) {
+    tas58xx_write_reg(REG_GPIO0, REG_GPIO_WARN);
+    tas58xx_write_reg(REG_GPIO1, REG_GPIO_FAULT);
+    tas58xx_write_reg(REG_GPIO2, REG_GPIO_SDOUT);
+    err = tas58xx_write_reg(REG_GPIO_CTL, REG_GPIO_CTL_OUT);
+  }
+  return err;
+}
+
+/*
  * Initialize a single TAS58xx chip: add it to the I2C bus, verify its die
  * ID, run the model-specific register init sequence, and (for the sub)
  * enable PBTL mono output. Assumes REG_LOCK is held; sets s_cur to dev.
@@ -801,10 +882,28 @@ static esp_err_t tas58xx_init_one(tas58xx_dev_t *dev) {
   uint8_t die_id = 0;
   err = tas58xx_read_reg(REG_DIE_ID, &die_id);
   if (err == ESP_OK) {
+    const tas58xx_model_t die_model =
+        (die_id == TAS5825M_DIE_ID)   ? TAS58XX_MODEL_TAS5825M
+        : (die_id == TAS5805M_DIE_ID) ? TAS58XX_MODEL_TAS5805M
+                                      : TAS58XX_MODEL_UNKNOWN;
     ESP_LOGI(TAG, "@0x%02X Die ID: 0x%02X %s", dev->addr, die_id,
-             (die_id == TAS5825M_DIE_ID)   ? "(TAS5825M)"
-             : (die_id == TAS5805M_DIE_ID) ? "(TAS5805M)"
-                                           : "(UNEXPECTED!)");
+             (die_model == TAS58XX_MODEL_TAS5825M)   ? "(TAS5825M)"
+             : (die_model == TAS58XX_MODEL_TAS5805M) ? "(TAS5805M)"
+                                                     : "(UNEXPECTED!)");
+    /*
+     * The model in use came from the I2C address, which is a different range
+     * per part. A disagreement means the wrong init sequence and coefficient
+     * map are about to be used, so say so loudly — but 0x00 is also what an
+     * unimplemented register reads, so it is not trustworthy enough to
+     * silently switch the driver over.
+     */
+    if (die_model != TAS58XX_MODEL_UNKNOWN && die_model != dev->model) {
+      ESP_LOGW(TAG, "@0x%02X address says %s but the die reads 0x%02X (%s)",
+               dev->addr,
+               dev->model == TAS58XX_MODEL_TAS5825M ? "TAS5825M" : "TAS5805M",
+               die_id,
+               die_model == TAS58XX_MODEL_TAS5825M ? "TAS5825M" : "TAS5805M");
+    }
   } else {
     ESP_LOGE(TAG, "@0x%02X Failed to read die ID: %s", dev->addr,
              esp_err_to_name(err));
@@ -816,6 +915,10 @@ static esp_err_t tas58xx_init_one(tas58xx_dev_t *dev) {
     ESP_LOGI(TAG, "@0x%02X applying PPC3 dump %s (%s)...", dev->addr,
              dev->hf_path, dev->pbtl_mono ? "PBTL mono" : "BTL stereo");
     err = tas58xx_write_hf(dev, dev->hf_buf, dev->hf_size);
+    if (err != ESP_OK) {
+      return err;
+    }
+    err = tas58xx_fixup_after_hf(dev);
     if (err != ESP_OK) {
       return err;
     }
@@ -1090,10 +1193,22 @@ static void set_power_mode_dev(tas58xx_dev_t *dev, dac_power_mode_t mode) {
     // Clear any faults from PLAY transition
     tas58xx_write_reg(REG_FAULT_CLEAR, 0x80);
 
-    // Re-apply the input-mixer routing once the DSP is running
-    // (coefficient RAM writes require active I2S clocks).
-    tas58xx_apply_input_mix();
-    bq_program_chain();
+    /*
+     * Re-apply the input-mixer routing once the DSP is running (coefficient
+     * RAM writes require active I2S clocks). A resident dump owns the whole
+     * signal path, mixer and biquads included, so re-pushing ours would
+     * flatten the tuning to the chain defaults on every power-on; the EQ page
+     * still programs that chip when the user changes something.
+     */
+    if (dev->hf_buf) {
+      ESP_LOGI(TAG,
+               "@0x%02X PPC3 dump owns the signal path — leaving the "
+               "mixer and biquad chain as tuned",
+               dev->addr);
+    } else {
+      tas58xx_apply_input_mix();
+      bq_program_chain();
+    }
 
     tas58xx_dump_status("power-on");
   } else if (mode == DAC_POWER_STANDBY) {
@@ -1403,6 +1518,10 @@ static double s_bq_fs = (double)CONFIG_OUTPUT_SAMPLE_RATE_HZ;
 #else
 static double s_bq_fs = 48000.0;
 #endif
+
+static uint32_t tas58xx_flow_sample_rate(void) {
+  return (uint32_t)s_bq_fs;
+}
 
 /*
  * The user's biquad chain, per amplifier and per channel. This is the single
@@ -2331,6 +2450,59 @@ esp_err_t dac_tas58xx_bq_revert(void) {
 }
 
 /*
+ * A PPC3 dump's coefficients are fixed at export time, so redesigning the
+ * biquads cannot follow a rate change — only loading the dump exported for the
+ * new rate can. Returns true if a device was re-flashed, in which case the
+ * dump has re-established the entire flow, biquad chain included.
+ */
+static bool tas58xx_reload_hf_for_rate(void) {
+  bool reloaded = false;
+
+  REG_LOCK();
+  for (int i = 0; i < s_dev_count; i++) {
+    tas58xx_dev_t *d = &s_devs[i];
+    if (!d->hf_buf) {
+      continue; /* built-in flow — a redesign covers the change */
+    }
+
+    char prev[sizeof(d->hf_path)];
+    memcpy(prev, d->hf_path, sizeof(prev));
+
+    /* Detach first: the loader frees whatever is resident, and we need the
+     * old dump intact to put back if this rate has no export of its own. */
+    uint8_t *prev_buf = d->hf_buf;
+    const size_t prev_size = d->hf_size;
+    d->hf_buf = NULL;
+    d->hf_size = 0;
+
+    tas58xx_load_hf(i, s_dev_count > 1);
+
+    if (!d->hf_buf || strcmp(prev, d->hf_path) == 0) {
+      /* No dump exported for this rate: the tuning already in coefficient
+       * RAM is the closest available, so leave it running. Keeping the buffer
+       * also keeps the device on the "dump owns the flow" path, which a
+       * later power-on would otherwise overwrite with the default chain. */
+      free(d->hf_buf);
+      d->hf_buf = prev_buf;
+      d->hf_size = prev_size;
+      memcpy(d->hf_path, prev, sizeof(d->hf_path));
+      continue;
+    }
+    free(prev_buf);
+
+    ESP_LOGI(TAG, "@0x%02X switching to %s", d->addr, d->hf_path);
+    s_cur = d;
+    if (tas58xx_write_hf(d, d->hf_buf, d->hf_size) == ESP_OK) {
+      tas58xx_fixup_after_hf(d);
+      reloaded = true;
+    }
+  }
+  REG_UNLOCK();
+
+  return reloaded;
+}
+
+/*
  * Every section's corner is a fraction of the sample rate, so a rate change
  * invalidates the whole coefficient set and the chains must be redesigned.
  */
@@ -2347,6 +2519,10 @@ static void tas58xx_on_i2s_started(uint32_t sample_rate_hz) {
   ESP_LOGI(TAG, "I2S now %" PRIu32 " Hz (was %.0f), redesigning filters",
            sample_rate_hz, s_bq_fs);
   s_bq_fs = (double)sample_rate_hz;
+
+  if (tas58xx_reload_hf_for_rate()) {
+    return; /* the reloaded dump already carries this rate's tuning */
+  }
 
   bq_reprogram_all();
 }

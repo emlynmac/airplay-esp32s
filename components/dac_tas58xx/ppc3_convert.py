@@ -12,9 +12,9 @@ Output is a packed stream of ``[reg, len, data[0..len-1]]`` commands ending in
 ``0xFF 0xFF``, with ``[0xFE, 1, ms]`` for a pause. TAS58xx register addresses
 are 7-bit, so neither marker can collide with a real write.
 
-  python3 ppc3_convert.py tuning.cfg -o data/hf/tas58xx_fw.bin
-  python3 ppc3_convert.py tuning.h   -o data/hf/tas58xx_fw0.bin
-  python3 ppc3_convert.py tuning.cfg --dev 9a -o data/hf/tas58xx_fw1.bin
+  python3 ppc3_convert.py tuning.cfg -o data/hf/tas5825m_fw.bin
+  python3 ppc3_convert.py tuning.h   -o data/hf/tas5825m_fw0.bin
+  python3 ppc3_convert.py tuning.cfg --dev 9a -o data/hf/tas5825m_fw1.bin
 """
 
 import argparse
@@ -49,6 +49,34 @@ def emit(out, reg, data):
 
 def emit_delay(out, ms):
     out.append(bytes([OP_DELAY, 1, min(max(ms, 0), 255)]))
+
+
+# The page and book selects decide which block the following writes land in,
+# so a block write may neither absorb them nor run through them.
+PAGE_REGS = (0x00, 0x7F)
+
+
+def coalesce(cmds):
+    """Merge adjacent writes into auto-increment block writes.
+
+    An I2C log carries one single-byte write per line, costing three bytes and
+    a separate transaction each. This matters most on a sample-rate change,
+    where the dump is replayed to re-tune a device that is already streaming.
+    """
+    out = []
+    for cmd in cmds:
+        reg, data = cmd[0], cmd[2:]
+        if out and reg not in PAGE_REGS and reg != OP_DELAY:
+            prev, prev_data = out[-1][0], out[-1][2:]
+            if (prev not in PAGE_REGS and prev != OP_DELAY
+                    and prev + len(prev_data) == reg
+                    and len(prev_data) + len(data) <= 255
+                    and reg + len(data) <= PAGE_LIMIT):
+                out[-1] = (bytes([prev, len(prev_data) + len(data)])
+                           + prev_data + data)
+                continue
+        out.append(cmd)
+    return out
 
 
 def parse_cfg(lines, want_dev):
@@ -150,16 +178,18 @@ def main():
             raise SystemExit(
                 f"log targets {sorted(seen)}; pick one with --dev")
 
+    raw = len(cmds)
+    cmds = coalesce(cmds)
     stream = b''.join(cmds) + bytes([OP_END, OP_END])
 
     if args.output:
         with open(args.output, 'wb') as f:
             f.write(stream)
-        print(f"{args.output}: {len(cmds)} commands, {len(stream)} bytes",
-              file=sys.stderr)
+        print(f"{args.output}: {raw} writes merged into {len(cmds)} "
+              f"commands, {len(stream)} bytes", file=sys.stderr)
     else:
         print(f"/* Generated from {args.source} */")
-        print("static const uint8_t tas58xx_fw[] = {")
+        print("static const uint8_t tas5825m_fw[] = {")
         for i in range(0, len(stream), 12):
             row = ', '.join(f'0x{b:02X}' for b in stream[i:i + 12])
             print(f"    {row},")

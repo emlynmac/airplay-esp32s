@@ -27,7 +27,7 @@ data/
 │   └── speedtest.html # Network throughput test
 ├── hf/                # DSP programs loaded at boot
 │   ├── tas57xx_fw.bin # Hybrid flow (SqueezeAMP)
-│   └── tas58xx_fw.bin # PPC3 dump (TAS5825M/TAS5805M boards)
+│   └── tas5825m_fw.bin # PPC3 dump (TAS5825M boards)
 └── bg/                # ST7789 background image
     └── background.bin
 ```
@@ -87,5 +87,5 @@ maximum upload size is 64 KB.
 | --- | --- |
 | `/spiffs/www/` | Web server — setup portal, logs, equaliser |
 | `/spiffs/hf/tas57xx_fw.bin` | [SqueezeAMP hybrid flow DSP](../boards/squeezeamp.md#hybrid-flow-dsp) |
-| `/spiffs/hf/tas58xx_fw.bin` | [Full PPC3 tuning](../boards/esparagus-audio-brick.md#full-ppc3-tuning) |
+| `/spiffs/hf/tas5825m_fw.bin` | [Full PPC3 tuning](../boards/esparagus-audio-brick.md#full-ppc3-tuning) |
 | `/spiffs/bg/background.bin` | [ST7789 background image](../features/tft-display.md#background-image) |
