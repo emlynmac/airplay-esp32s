@@ -52,6 +52,22 @@ static bool s_airplay_started = false;
 static bool s_airplay_infrastructure_ready = false;
 static bool s_audio_output_ready = false;
 
+/* Task stacks and ordinary malloc() need byte-addressable internal RAM.
+ * MALLOC_CAP_INTERNAL on its own also counts the leftover IRAM that is added
+ * to the heap, which is 32-bit access only, so it reports headroom no stack
+ * can ever use. */
+#define MAIN_DRAM_CAPS (MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT)
+
+// DRAM is the binding constraint on ESP32 targets carrying WiFi and the BT
+// controller at once.  Logging it per startup stage attributes a shortage to
+// the subsystem that caused it instead of to whoever allocates next.
+static void log_dram(const char *stage) {
+  ESP_LOGI(TAG, "DRAM after %-14s: %6lu free, %6lu largest, %6lu SPIRAM", stage,
+           (unsigned long)heap_caps_get_free_size(MAIN_DRAM_CAPS),
+           (unsigned long)heap_caps_get_largest_free_block(MAIN_DRAM_CAPS),
+           (unsigned long)heap_caps_get_free_size(MALLOC_CAP_SPIRAM));
+}
+
 // audio_output_init() creates the I2S channel and must run exactly once.
 // AirPlay does it lazily, but it is not the only consumer: the USB sink
 // writes to the same channel and can start with no network at all.
@@ -96,6 +112,7 @@ static void start_airplay_services(void) {
   s_airplay_started = true;
   playback_control_set_source(PLAYBACK_SOURCE_AIRPLAY);
   ESP_LOGI(TAG, "AirPlay ready");
+  log_dram("airplay");
 }
 #if defined(CONFIG_BT_A2DP_ENABLE) || defined(CONFIG_USB_AUDIO_SINK)
 static void stop_airplay_services(void) {
@@ -310,6 +327,7 @@ void app_main(void) {
   log_stream_init();
   ESP_ERROR_CHECK(playback_control_init());
   led_init();
+  log_dram("spiffs+log");
 
   // Initialize board-specific hardware (includes I2C/SPI bus for display and
   // DAC)
@@ -330,6 +348,7 @@ void app_main(void) {
   // Initialize LVGL-dependent board resources (e.g., touch input) after
   // display/LVGL port is ready.
   iot_board_init_lvgl_resources();
+  log_dram("board+display");
 
   // Try ethernet first
   bool eth_available = false;
@@ -355,6 +374,7 @@ void app_main(void) {
   } else if (err != ESP_ERR_NOT_SUPPORTED) {
     ESP_LOGW(TAG, "Ethernet init failed: %s", esp_err_to_name(err));
   }
+  log_dram("ethernet");
 
   // Start WiFi only if ethernet is not available
   if (!eth_available) {
@@ -371,11 +391,13 @@ void app_main(void) {
   } else {
     ESP_LOGI(TAG, "Ethernet connected — skipping WiFi");
   }
+  log_dram("eth+wifi");
 
   // Start services that work on any interface
   web_server_start(80);
   task_create_spiram(network_monitor_task, "net_mon", 4096, NULL, 5, NULL,
                      NULL);
+  log_dram("web server");
 
   bool connected = eth_available || wifi_is_connected();
   if (connected) {
@@ -397,6 +419,7 @@ void app_main(void) {
       rtsp_events_register(on_airplay_client_event, NULL);
     }
   }
+  log_dram("bluetooth");
 #endif
 
 #ifdef CONFIG_USB_AUDIO_SINK
@@ -417,12 +440,7 @@ void app_main(void) {
   // Boot baseline: free internal DRAM once WiFi (and BT, where enabled) are
   // resident but before any stream is active.  Compare against the
   // "Buffered start" log to see the headroom available for WiFi/TCP buffers.
-  ESP_LOGI(TAG,
-           "Boot baseline: free heap %lu internal (largest block %lu), "
-           "%lu SPIRAM",
-           (unsigned long)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
-           (unsigned long)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL),
-           (unsigned long)heap_caps_get_free_size(MALLOC_CAP_SPIRAM));
+  log_dram("boot baseline");
 
   buttons_init();
 

@@ -6,6 +6,7 @@
 
 #include "lwip/sockets.h"
 
+#include "esp_heap_caps.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
 #include "freertos/task.h"
@@ -20,6 +21,12 @@
 #include "audio_timing.h"
 
 #define MAX_RTP_PACKET_SIZE 2048
+
+/* Task stacks and ordinary malloc() need byte-addressable internal RAM.
+ * MALLOC_CAP_INTERNAL on its own also counts the leftover IRAM that is added
+ * to the heap, which is 32-bit access only, so it reports headroom no stack
+ * can ever use. */
+#define AUDIO_DRAM_CAPS (MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT)
 
 typedef struct audio_receiver_state {
   audio_stream_t *stream;
