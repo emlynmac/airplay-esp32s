@@ -183,18 +183,17 @@ menu "Airplay ESP Configuration"
 
     choice OUTPUT_SAMPLE_RATE
         prompt "Output sample rate"
-        default OUTPUT_SAMPLE_RATE_48000 if DAC_TAS58XX
         default OUTPUT_SAMPLE_RATE_44100
         depends on !DAC_TAS57XX && !AUDIO_OUTPUT_USB
         help
             Sample rate for I2S/SPDIF output. If the AirPlay source sends a
             different rate, the audio is resampled automatically.
 
-            TAS58xx defaults to 48000 because the driver's EQ coefficient
-            tables and its runtime biquad designs are computed for that rate;
-            at 44100 every band and crossover corner lands ~8% low. Selecting
-            44100 here avoids resampling but keeps that detuning until the
-            coefficient tables are made rate-aware.
+            TAS58xx has no sample rate converter — its DSP runs at whatever
+            rate arrives — and the driver redesigns every biquad when the
+            rate changes, so 44100 is exact and skips the resampler. Pick
+            48000 only for a PPC3 process flow exported at that rate, whose
+            baked coefficients cannot be redesigned.
 
         config OUTPUT_SAMPLE_RATE_44100
             bool "44100 Hz (native AirPlay, no resampling)"

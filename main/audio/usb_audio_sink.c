@@ -217,6 +217,9 @@ static void usb_sink_task(void *arg) {
       }
       ESP_LOGI(TAG, "Host stream started");
       s_streaming = true;
+      // An AirPlay session may have left the clock at its own rate, and this
+      // path writes to I2S directly without resampling.
+      audio_output_set_sample_rate(CONFIG_UAC_SAMPLE_RATE);
       if (s_state_cb != NULL) {
         s_state_cb(true);
       }

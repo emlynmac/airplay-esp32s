@@ -20,6 +20,8 @@
 // Bounded hand-off to the decode worker.  Long enough to ride out a decode
 // hiccup, short enough that a wedged decoder cannot block stream teardown.
 #define BUFFERED_ENQUEUE_TIMEOUT_MS 200U
+// The lwIP core; core 1 is reserved for decode and I2S playback.
+#define AUDIO_BUFFERED_TASK_CORE 0
 
 static const char *TAG = "audio_buf";
 
@@ -242,9 +244,11 @@ static esp_err_t buffered_start(audio_stream_t *stream, uint16_t port) {
   stream->running = true;
 
   state->buffered_task_handle = NULL;
-  BaseType_t task_ret =
-      xTaskCreate(buffered_audio_task, "buff_audio", AUDIO_BUFFERED_STACK_SIZE,
-                  stream, 5, &state->buffered_task_handle);
+  // Kept on the lwIP core so it does not migrate onto core 1 and compete with
+  // the decoder and the I2S playback task.
+  BaseType_t task_ret = xTaskCreatePinnedToCore(
+      buffered_audio_task, "buff_audio", AUDIO_BUFFERED_STACK_SIZE, stream, 5,
+      &state->buffered_task_handle, AUDIO_BUFFERED_TASK_CORE);
   if (task_ret != pdPASS || !state->buffered_task_handle) {
     ESP_LOGE(TAG, "Failed to create buffered audio task");
     close(state->buffered_listen_socket);
