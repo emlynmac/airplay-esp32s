@@ -15,6 +15,7 @@
 #include <sys/param.h>
 
 #include "driver/i2c_master.h"
+#include "esp_heap_caps.h"
 #include "esp_log.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
@@ -323,6 +324,9 @@ static float tas58xx_ch_scale(int dev, int ch) {
 static esp_err_t bq_program_chain(void);
 static void bq_chain_defaults(void);
 static bool bq_load_config(void);
+static bool bq_chain_is_flat(int dev);
+static bool bq_chain_is_from_dump(int dev);
+static bool tas58xx_seed_bq_from_hf(int idx);
 
 /* ---------- Detect ---------- */
 
@@ -1055,6 +1059,26 @@ static esp_err_t tas58xx_init(void *i2c_bus) {
     tas58xx_load_hf(i, s_dev_count > 1);
   }
 
+  /*
+   * A stored chain only speaks for the sections the user actually placed, so
+   * where it is empty the resident dump's own tuning is what the part will be
+   * running and what the EQ page has to show. A chain saved before its dump
+   * was ever read back is in the same position for every section: it cannot
+   * describe a tuning it never saw, and programming it would flatten all
+   * thirty. Either way the dump is the better answer.
+   */
+  for (int i = 0; i < s_dev_count; i++) {
+    if (bq_chain_is_flat(i)) {
+      tas58xx_seed_bq_from_hf(i);
+    } else if (!bq_chain_is_from_dump(i) && s_devs[i].hf_buf) {
+      ESP_LOGW(TAG,
+               "@0x%02X stored chain predates %s — using the dump's tuning "
+               "instead (the stored one is kept until the EQ page saves)",
+               s_devs[i].addr, s_devs[i].hf_path);
+      tas58xx_seed_bq_from_hf(i);
+    }
+  }
+
   REG_LOCK();
   for (int i = 0; i < s_dev_count; i++) {
     err = tas58xx_init_one(&s_devs[i]);
@@ -1195,20 +1219,18 @@ static void set_power_mode_dev(tas58xx_dev_t *dev, dac_power_mode_t mode) {
 
     /*
      * Re-apply the input-mixer routing once the DSP is running (coefficient
-     * RAM writes require active I2S clocks). A resident dump owns the whole
-     * signal path, mixer and biquads included, so re-pushing ours would
-     * flatten the tuning to the chain defaults on every power-on; the EQ page
-     * still programs that chip when the user changes something.
+     * RAM writes require active I2S clocks). A resident dump owns the mixer,
+     * so re-pushing ours would drop the routing it exported. Its biquads are
+     * a different matter: the chain was read back from the dump at load, so
+     * pushing it here restores the same tuning — or the user's edit of it.
      */
     if (dev->hf_buf) {
-      ESP_LOGI(TAG,
-               "@0x%02X PPC3 dump owns the signal path — leaving the "
-               "mixer and biquad chain as tuned",
+      ESP_LOGI(TAG, "@0x%02X PPC3 dump owns the mixer — leaving its routing",
                dev->addr);
     } else {
       tas58xx_apply_input_mix();
-      bq_program_chain();
     }
+    bq_program_chain();
 
     tas58xx_dump_status("power-on");
   } else if (mode == DAC_POWER_STANDBY) {
@@ -1533,6 +1555,14 @@ static tas58xx_bq_t s_bq[TAS58XX_MAX_DEVICES][TAS58XX_BQ_CHANNELS]
                         [TAS58XX_BQ_SLOTS];
 static bool s_bq_ganged[TAS58XX_MAX_DEVICES];
 static bool s_bq_ready;
+/* Chain was read back from a PPC3 dump and not replaced since, so swapping
+ * that dump for another rate's export may re-read it. */
+static bool s_bq_from_hf[TAS58XX_MAX_DEVICES];
+/* Chain descends from the resident dump — seeded from it, and possibly edited
+ * since. Survives edits and is stored, because only such a chain can speak for
+ * the sections the dump tuned; one authored before the dump was ever read back
+ * knows nothing of them and must not be allowed to flatten them. */
+static bool s_bq_seeded[TAS58XX_MAX_DEVICES];
 
 /* Book / Page / Register for EQ mode control */
 #define EQ_MODE_BOOK 0x8C
@@ -2049,6 +2079,8 @@ static inline int cur_dev_index(void) {
 static void bq_chain_defaults(void) {
   for (int d = 0; d < TAS58XX_MAX_DEVICES; d++) {
     s_bq_ganged[d] = true;
+    s_bq_from_hf[d] = false;
+    s_bq_seeded[d] = false;
     for (int c = 0; c < TAS58XX_BQ_CHANNELS; c++) {
       for (int i = 0; i < TAS58XX_BQ_SLOTS; i++) {
         tas58xx_bq_init_bypass(&s_bq[d][c][i]);
@@ -2056,6 +2088,185 @@ static void bq_chain_defaults(void) {
     }
   }
   s_bq_ready = true;
+}
+
+/* True when a chain says nothing, so a tuning already loaded outranks it. */
+static bool bq_chain_is_flat(int dev) {
+  if (dev < 0 || dev >= TAS58XX_MAX_DEVICES || !s_bq_ready) {
+    return true;
+  }
+  for (int c = 0; c < TAS58XX_BQ_CHANNELS; c++) {
+    for (int i = 0; i < TAS58XX_BQ_SLOTS; i++) {
+      if (s_bq[dev][c][i].type != TAS58XX_BQ_BYPASS) {
+        return false;
+      }
+    }
+  }
+  return true;
+}
+
+/* True when the chain was seeded from the resident dump, so it accounts for
+ * the sections that dump tuned even where the user has since edited it. */
+static bool bq_chain_is_from_dump(int dev) {
+  if (dev < 0 || dev >= TAS58XX_MAX_DEVICES || !s_bq_ready) {
+    return false;
+  }
+  return s_bq_seeded[dev];
+}
+
+/*
+ * Read a device's biquad chain back out of its resident PPC3 dump.
+ *
+ * A dump's EQ sections land in exactly the coefficient RAM this chain writes,
+ * so the tuning can be recovered from the buffer alone — no I2C, no clocks.
+ * Without it the chain would claim to be flat while the part played the
+ * tuning, and the first edit from the EQ page would wipe all thirty sections.
+ *
+ * Only the shapes are lost: a dump stores coefficients, not the filters that
+ * produced them, so every non-trivial section comes back as CUSTOM.
+ */
+
+/* Over 2 kB all told, which the main task's stack cannot spare: this runs
+ * from board init, and overflowing it there corrupts the freshly built I2C
+ * bus object sitting below it. */
+typedef struct {
+  uint8_t raw[TAS58XX_BQ_CHANNELS][TAS58XX_BQ_SLOTS][EQ_COEFF_BYTES];
+  uint32_t seen[TAS58XX_BQ_CHANNELS][TAS58XX_BQ_SLOTS];
+  tas58xx_bq_t chain[TAS58XX_BQ_CHANNELS][TAS58XX_BQ_SLOTS];
+} bq_seed_scratch_t;
+
+static bool tas58xx_seed_bq_from_hf(int idx) {
+  if (idx < 0 || idx >= s_dev_count) {
+    return false;
+  }
+  tas58xx_dev_t *d = &s_devs[idx];
+  /* Dumps replay a TAS5825M process flow; the TAS5805M lays its coefficients
+   * out differently and tas58xx_load_hf() never loads one for it. */
+  if (!d->hf_buf || d->model != TAS58XX_MODEL_TAS5825M) {
+    return false;
+  }
+
+  bq_seed_scratch_t *sc =
+      heap_caps_calloc(1, sizeof(*sc), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+  if (!sc) {
+    sc = calloc(1, sizeof(*sc));
+  }
+  if (!sc) {
+    ESP_LOGE(TAG, "@0x%02X out of memory reading %s back", d->addr, d->hf_path);
+    return false;
+  }
+
+  const eq_bq_addr_t *addr[TAS58XX_BQ_CHANNELS] = {tas5825m_eq_left_addr,
+                                                   tas5825m_eq_right_addr};
+  const uint32_t all_bytes = (1u << EQ_COEFF_BYTES) - 1u;
+  uint8_t book = 0, page = 0;
+  size_t pos = 0;
+  bool ok = false;
+
+  while (pos + 1 < d->hf_size) {
+    const uint8_t reg = d->hf_buf[pos];
+    const uint8_t len = d->hf_buf[pos + 1];
+
+    if (reg == HF_OP_END && len == HF_OP_END) {
+      break;
+    }
+    if (pos + 2 + (size_t)len > d->hf_size) {
+      break;
+    }
+    if (reg == HF_OP_DELAY) {
+      pos += 2 + (size_t)len;
+      continue;
+    }
+
+    /* Block writes auto-increment, and a page select part way through one
+     * moves the rest of it, so the stream has to be followed byte by byte. */
+    for (uint8_t k = 0; k < len; k++) {
+      const uint8_t a = (uint8_t)(reg + k);
+      const uint8_t v = d->hf_buf[pos + 2 + k];
+
+      if (a == REG_PAGE_SEL) {
+        page = v;
+        continue;
+      }
+      /* 0x7F selects the book only while page 0 is current; on a coefficient
+       * page it is the last data byte of the last section. */
+      if (a == REG_BOOK_SEL && page == 0) {
+        book = v;
+        continue;
+      }
+      if (book != BQ_COEFF_BOOK) {
+        continue;
+      }
+      for (int c = 0; c < TAS58XX_BQ_CHANNELS; c++) {
+        for (int s = 0; s < TAS58XX_BQ_SLOTS; s++) {
+          if (addr[c][s].page != page || a < addr[c][s].sub_addr ||
+              a >= addr[c][s].sub_addr + EQ_COEFF_BYTES) {
+            continue;
+          }
+          const uint8_t off = (uint8_t)(a - addr[c][s].sub_addr);
+          sc->raw[c][s][off] = v;
+          sc->seen[c][s] |= 1u << off;
+        }
+      }
+    }
+    pos += 2 + (size_t)len;
+  }
+
+  /* A dump that only rewrites part of the chain leaves the rest holding
+   * whatever was there before, which nothing here can know. */
+  for (int c = 0; c < TAS58XX_BQ_CHANNELS; c++) {
+    for (int s = 0; s < TAS58XX_BQ_SLOTS; s++) {
+      if (sc->seen[c][s] != all_bytes) {
+        ESP_LOGW(TAG,
+                 "@0x%02X %s does not carry a complete EQ chain (ch %d BQ%d) — "
+                 "the EQ page will not show its tuning",
+                 d->addr, d->hf_path, c + 1, s + 1);
+        goto out;
+      }
+    }
+  }
+
+  for (int c = 0; c < TAS58XX_BQ_CHANNELS; c++) {
+    for (int s = 0; s < TAS58XX_BQ_SLOTS; s++) {
+      tas58xx_bq_unpack(sc->raw[c][s], &sc->chain[c][s]);
+      const char *why = NULL;
+      if (!tas58xx_bq_validate(&sc->chain[c][s], &why)) {
+        ESP_LOGW(TAG, "@0x%02X %s ch %d BQ%d unusable: %s", d->addr, d->hf_path,
+                 c + 1, s + 1, why);
+        goto out;
+      }
+    }
+  }
+
+  /* The dump decides the ganging too: identical chains are what ganged
+   * means, and claiming otherwise would un-gang the pair on the next edit. */
+  bool ganged = true;
+  for (int s = 0; s < TAS58XX_BQ_SLOTS && ganged; s++) {
+    ganged = memcmp(sc->raw[0][s], sc->raw[1][s], EQ_COEFF_BYTES) == 0;
+  }
+
+  if (!s_bq_ready) {
+    bq_chain_defaults();
+  }
+  memcpy(s_bq[idx], sc->chain, sizeof(sc->chain));
+  s_bq_ganged[idx] = ganged;
+  s_bq_from_hf[idx] = true;
+  s_bq_seeded[idx] = true;
+
+  int active = 0;
+  for (int s = 0; s < TAS58XX_BQ_SLOTS; s++) {
+    if (sc->chain[0][s].type != TAS58XX_BQ_BYPASS ||
+        sc->chain[1][s].type != TAS58XX_BQ_BYPASS) {
+      active++;
+    }
+  }
+  ESP_LOGI(TAG, "@0x%02X read %d tuned section(s) back from %s (%s)", d->addr,
+           active, d->hf_path, ganged ? "ganged" : "per-channel");
+  ok = true;
+
+out:
+  free(sc);
+  return ok;
 }
 
 /*
@@ -2090,11 +2301,15 @@ static esp_err_t bq_program_chain(void) {
   /*
    * Coefficients are only audible once the EQ block is out of bypass, and
    * the chip powers up bypassed. Clearing it here means the chain is the
-   * one thing that has to be right, rather than one of two.
+   * one thing that has to be right, rather than one of two. A dump arrives
+   * with the block already enabled and its own gang word, which this would
+   * overwrite.
    */
-  esp_err_t err = write_eq_mode(true);
-  if (err != ESP_OK && first_err == ESP_OK) {
-    first_err = err;
+  if (!s_cur->hf_buf) {
+    esp_err_t err = write_eq_mode(true);
+    if (err != ESP_OK && first_err == ESP_OK) {
+      first_err = err;
+    }
   }
   return first_err;
 }
@@ -2250,6 +2465,8 @@ typedef struct {
   uint8_t channels;
   uint8_t slots;
   uint8_t ganged; /* one bit per amplifier */
+  uint8_t seeded; /* one bit per amplifier: chain descends from its dump */
+  uint8_t pad[3]; /* keeps the array 4-byte aligned on flash */
   tas58xx_bq_t bq[TAS58XX_MAX_DEVICES][TAS58XX_BQ_CHANNELS][TAS58XX_BQ_SLOTS];
 } bq_cfg_file_t;
 
@@ -2288,6 +2505,7 @@ esp_err_t dac_tas58xx_bq_set(int dev, int ch,
       bq_chain_defaults();
     }
     memcpy(s_bq[dev][ch], in, sizeof(s_bq[dev][ch]));
+    s_bq_from_hf[dev] = false;
     return ESP_OK;
   }
 
@@ -2296,6 +2514,7 @@ esp_err_t dac_tas58xx_bq_set(int dev, int ch,
     bq_chain_defaults();
   }
   memcpy(s_bq[dev][ch], in, sizeof(s_bq[dev][ch]));
+  s_bq_from_hf[dev] = false;
   esp_err_t err = ESP_OK;
   if (dev < s_dev_count) {
     s_cur = &s_devs[dev];
@@ -2352,6 +2571,9 @@ esp_err_t dac_tas58xx_bq_commit(void) {
   for (int d = 0; d < TAS58XX_MAX_DEVICES; d++) {
     if (s_bq_ganged[d]) {
       cfg->ganged |= (uint8_t)(1u << d);
+    }
+    if (s_bq_seeded[d]) {
+      cfg->seeded |= (uint8_t)(1u << d);
     }
   }
   memcpy(cfg->bq, s_bq, sizeof(cfg->bq));
@@ -2435,6 +2657,8 @@ static bool bq_load_config(void) {
   memcpy(s_bq, cfg->bq, sizeof(s_bq));
   for (int d = 0; d < TAS58XX_MAX_DEVICES; d++) {
     s_bq_ganged[d] = (cfg->ganged & (1u << d)) != 0;
+    s_bq_seeded[d] = (cfg->seeded & (1u << d)) != 0;
+    s_bq_from_hf[d] = false;
   }
   s_bq_ready = true;
   free(cfg);
@@ -2452,12 +2676,10 @@ esp_err_t dac_tas58xx_bq_revert(void) {
 /*
  * A PPC3 dump's coefficients are fixed at export time, so redesigning the
  * biquads cannot follow a rate change — only loading the dump exported for the
- * new rate can. Returns true if a device was re-flashed, in which case the
- * dump has re-established the entire flow, biquad chain included.
+ * new rate can. Any device that swaps dumps has its chain re-read from the new
+ * one, unless the user has since replaced that chain with their own.
  */
-static bool tas58xx_reload_hf_for_rate(void) {
-  bool reloaded = false;
-
+static void tas58xx_reload_hf_for_rate(void) {
   REG_LOCK();
   for (int i = 0; i < s_dev_count; i++) {
     tas58xx_dev_t *d = &s_devs[i];
@@ -2494,12 +2716,15 @@ static bool tas58xx_reload_hf_for_rate(void) {
     s_cur = d;
     if (tas58xx_write_hf(d, d->hf_buf, d->hf_size) == ESP_OK) {
       tas58xx_fixup_after_hf(d);
-      reloaded = true;
+      /* The new dump has just rewritten the coefficient RAM, so follow it —
+       * unless the chain is the user's rather than its predecessor's, in
+       * which case the reprogram below puts theirs back over the top. */
+      if (s_bq_from_hf[i]) {
+        tas58xx_seed_bq_from_hf(i);
+      }
     }
   }
   REG_UNLOCK();
-
-  return reloaded;
 }
 
 /*
@@ -2520,9 +2745,6 @@ static void tas58xx_on_i2s_started(uint32_t sample_rate_hz) {
            sample_rate_hz, s_bq_fs);
   s_bq_fs = (double)sample_rate_hz;
 
-  if (tas58xx_reload_hf_for_rate()) {
-    return; /* the reloaded dump already carries this rate's tuning */
-  }
-
+  tas58xx_reload_hf_for_rate();
   bq_reprogram_all();
 }

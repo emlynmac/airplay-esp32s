@@ -89,6 +89,15 @@ void tas58xx_bq_design(const tas58xx_bq_t *bq, double sample_rate_hz,
 void tas58xx_bq_pack(const double coeff[5],
                      uint8_t out[TAS58XX_BQ_COEFF_BYTES]);
 
+/**
+ * Recover a section from a packed coefficient block.
+ *
+ * The shape that produced the block is not stored with it, so anything other
+ * than a pass-through comes back as TAS58XX_BQ_CUSTOM.
+ */
+void tas58xx_bq_unpack(const uint8_t in[TAS58XX_BQ_COEFF_BYTES],
+                       tas58xx_bq_t *bq);
+
 /** Design and pack in one step. */
 void tas58xx_bq_design_packed(const tas58xx_bq_t *bq, double sample_rate_hz,
                               uint8_t out[TAS58XX_BQ_COEFF_BYTES]);

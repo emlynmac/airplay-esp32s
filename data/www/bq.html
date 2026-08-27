@@ -58,7 +58,7 @@ input:disabled,select:disabled{opacity:0.25}
 .bqhead{font-size:10px;color:#666;text-transform:uppercase;letter-spacing:.5px}
 .bq .n{font-size:11px;color:#666;text-align:right}
 .bq input[type=checkbox]{accent-color:#e94560;width:16px;height:16px;cursor:pointer}
-.bqc{display:none;grid-template-columns:24px repeat(5,1fr);gap:6px;align-items:center;margin:-2px 0 8px;min-width:770px}
+.bqc{display:none;grid-template-columns:24px repeat(5,1fr) auto;gap:6px;align-items:center;margin:-2px 0 8px;min-width:770px}
 .bqc .n{font-size:10px;color:#666;text-align:right}
 .xo{display:none;margin-top:14px;padding:16px;border:1px solid rgba(255,255,255,0.1);border-radius:10px;background:rgba(0,0,0,0.2)}
 .xo.on{display:block}
@@ -400,6 +400,300 @@ function phaseDeg(c,w){
   var r=response(c,w);
   return Math.atan2(r.ni*r.dr-r.nr*r.di, r.nr*r.dr+r.ni*r.di)*180/P;
 }
+
+/* ---- recovering a shape from raw coefficients ----
+   A tuning read back off a PPC3 dump arrives as five numbers per section,
+   because that is all the part stores: a peaking filter and a shelf that
+   happen to match are the same five numbers, and which one the designer typed
+   is gone. The response is exact either way, so nothing is wrong with leaving
+   a section Custom — but you cannot drag a corner frequency on it. This looks
+   for a shape this page can express that reproduces the coefficients, and
+   only offers it when the match is close enough to be the same filter. */
+function coefErr(t,c){
+  return Math.max(Math.abs(t.b0-c.b0),Math.abs(t.b1-c.b1),Math.abs(t.b2-c.b2),
+                  Math.abs(t.a1-c.a1),Math.abs(t.a2-c.a2));
+}
+/* The worst single coefficient is the right test for accepting a fit, but the
+   wrong thing to steer one by: it is the maximum of five surfaces, so it has
+   creases along which no one parameter improves it and a descent sits down on
+   them well short of the answer. Squared total is smooth and has the same
+   minimum. */
+function sqErr(t,c){
+  var e=t.b0-c.b0,s=e*e;
+  e=t.b1-c.b1;s+=e*e;
+  e=t.b2-c.b2;s+=e*e;
+  e=t.a1-c.a1;s+=e*e;
+  e=t.a2-c.a2;s+=e*e;
+  return s;
+}
+/* Coefficients are what the fit is judged on, but they are meaningless to
+   read, so misses are reported as the worst gap in the response instead. */
+function respErr(t,c,sr){
+  var e=0,i,w,d;
+  for(i=0;i<=80;i++){
+    w=2*P*20*Math.pow(sr*0.49/20,i/80)/sr;
+    d=Math.abs(magDb(t,w)-magDb(c,w));
+    if(d>e)e=d;
+  }
+  return e;
+}
+/* How closely the five coefficients have to agree before two sections are
+   taken to be the same filter. Loose enough to absorb the part's 5.27
+   quantisation, tight enough that nothing else gets through. */
+var SHAPE_TOL=5e-4;
+/* Agreeing coefficients are not quite the same thing as agreeing filters: down
+   near DC a shelf's numerator and denominator very nearly cancel, so a section
+   can sit well inside the tolerance above and still be a decibel out where it
+   is audible. The row is about to be rewritten with whatever comes back, so
+   the response is what has to hold. */
+var RESP_TOL=0.05;
+/* A section whose numerator equals its denominator passes everything through
+   untouched. The trivial b0=1 with the rest zero is the obvious case, but a
+   0 dB shelf lands on b1=a1, b2=a2 instead and looks like a real filter. */
+function isUnity(t){
+  return Math.abs(t.b0-1)<1e-5&&Math.abs(t.b1-t.a1)<1e-5&&
+         Math.abs(t.b2-t.a2)<1e-5;
+}
+/* Low and high pass defer to the alignment for Q and ripple, the same way
+   bqSync() decides which fields to enable. */
+function usesQ(t,sub){
+  return !!HAS_Q[t]||((t===T_LP||t===T_HP)&&sub===S_VARQ);
+}
+function usesRipple(t,sub){return (t===T_LP||t===T_HP)&&sub===S_CHEB;}
+/* Only worth offering a shape the row can actually hold: a peak at Q 38 is a
+   real filter, but not one this page can express or send back. */
+function inRange(b,sr){
+  var fhi=Math.min(20000,sr*0.49);
+  if(HAS_FREQ[b.type]&&!(b.freq>=10&&b.freq<=fhi))return false;
+  if(usesQ(b.type,b.sub)&&!(b.q>=Q_MIN&&b.q<=Q_MAX))return false;
+  if(HAS_BW[b.type]&&!(b.bw>=1&&b.bw<=5000))return false;
+  if(HAS_GAIN[b.type]&&!(b.gain>=G_MIN&&b.gain<=G_MAX))return false;
+  if(usesRipple(b.type,b.sub)&&!(b.ripple>=R_MIN&&b.ripple<=R_MAX))return false;
+  return true;
+}
+function shapeBq(t,sub,f,q,bw,g,r){
+  return {type:t,sub:sub,freq:f,q:q,bw:clamp(bw,1,5000),gain:g,ripple:r,
+          invert:false,coeff:[1,0,0,0,0]};
+}
+/* A peaking section does not need searching for. eqBq() builds b1 = -a1 and
+   b0 + b2 = 1 - a2, which identifies the shape; the gain then falls out of
+   b0 - b2 and the Q out of the pole pair. Worth doing separately because it
+   is far and away the commonest shape in a PPC3 tuning, and solving it
+   outright keeps the descent below for the handful that need it. */
+function solvePeaking(t,sr){
+  if(Math.abs(t.b1+t.a1)>1e-6)return null;
+  var s=t.b0+t.b2;
+  if(!(Math.abs(s)>1e-12)||Math.abs((1-s)-t.a2)>1e-6)return null;
+  var cw=t.a1/s;
+  if(!(cw>-1&&cw<1))return null;
+  var g=(t.b0-t.b2)/(1+t.a2),beta=(1+t.a2)/(1-t.a2);
+  if(!(g>1e-9)||!(beta>1e-12))return null;
+  var w=Math.acos(cw),f=w*sr/(2*P);
+  var q=(g>=1)?w/(2*beta):w/(2*g*beta);
+  return shapeBq(T_PEAK_Q,0,f,q,Math.max(1,f/q),20*Math.log10(g),0.5);
+}
+/* Coordinate descent on whichever of frequency, Q, bandwidth, gain and ripple
+   the type actually uses. A gain-bearing type is restarted from several gains:
+   the descent is local, and a peaking filter started from flat often cannot
+   see its way to a deep cut. */
+function fitShape(target,type,sub,sr,f0,q0,g0){
+  var fhi=Math.min(20000,sr*0.49);
+  var b=shapeBq(type,sub,clamp(f0,10,fhi),clamp(q0,Q_MIN,Q_MAX),
+                clamp(f0/Math.max(q0,0.05),1,5000),g0||0,0.5);
+  var vars=[];
+  if(HAS_FREQ[type])vars.push({k:'freq',lo:10,hi:fhi,step:f0*0.5});
+  if(usesQ(type,sub))
+    vars.push({k:'q',lo:Q_MIN,hi:Q_MAX,step:(Q_MAX-Q_MIN)*0.25});
+  if(HAS_BW[type])vars.push({k:'bw',lo:1,hi:5000,step:b.bw*0.5});
+  if(HAS_GAIN[type])vars.push({k:'gain',lo:G_MIN,hi:G_MAX,step:4});
+  if(usesRipple(type,sub))
+    vars.push({k:'ripple',lo:R_MIN,hi:R_MAX,step:(R_MAX-R_MIN)*0.25});
+  var best=sqErr(target,designBq(b,sr)),v,s,old,nv,e,it,moved;
+  for(it=0;it<400&&best>1e-20;it++){
+    moved=false;
+    for(v=0;v<vars.length;v++){
+      for(s=0;s<2;s++){
+        old=b[vars[v].k];
+        nv=old+(s?-vars[v].step:vars[v].step);
+        if(nv<vars[v].lo||nv>vars[v].hi)continue;
+        b[vars[v].k]=nv;
+        e=sqErr(target,designBq(b,sr));
+        if(e<best*(1-1e-12)){best=e;moved=true;}
+        else b[vars[v].k]=old;
+      }
+    }
+    if(moved)continue;
+    var live=false;
+    for(v=0;v<vars.length;v++){
+      vars[v].step*=0.5;
+      if(vars[v].step>1e-6)live=true;
+    }
+    if(!live)break;
+  }
+  return {bq:b,err:coefErr(target,designBq(b,sr))};
+}
+/* The descent is local, and near either end of the band a section's
+   coefficients barely move with frequency, so it stalls a long way from the
+   answer unless it starts near it. A coarse sweep costs almost nothing next to
+   the descent and puts it in the right basin. */
+function seedFreq(target,type,sub,sr,q,g){
+  var fhi=Math.min(20000,sr*0.49),best=-1,bf=1000,i,f,e;
+  if(!HAS_FREQ[type])return 1000;
+  for(i=0;i<=48;i++){
+    f=20*Math.pow(fhi/20,i/48);
+    e=sqErr(target,designBq(shapeBq(type,sub,f,q,Math.max(1,f/q),g,0.5),sr));
+    if(best<0||e<best){best=e;bf=f;}
+  }
+  return bf;
+}
+/* Low and high pass fall out just as directly. The numerator is fixed by the
+   direction, so the ratio of a1 to b0 gives the corner outright, and the
+   denominator then gives the damping. Solving beats searching for these by
+   more than speed: the corner and the damping trade off against each other,
+   so the valley the descent has to follow runs diagonally and it sits down on
+   the side of it. Every alignment shares the same corner, so they come back
+   as alternatives for betterFit() to choose between. */
+function solvePass(t,sr){
+  /* Coefficients read back off the part have been through 5.27, so the
+     numerator symmetry these tests look for only holds to within a few LSBs
+     of 2^-27. Being generous here costs nothing: every candidate is checked
+     against the coefficients before it is offered. */
+  var TOL=1e-6;
+  if(Math.abs(t.b0-t.b2)>TOL||!(Math.abs(t.b0)>1e-12))return [];
+  var hp;
+  if(Math.abs(t.b1-2*t.b0)<TOL)hp=false;
+  else if(Math.abs(t.b1+2*t.b0)<TOL)hp=true;
+  else return [];
+  var R=t.a1/t.b0,T2=hp?1-R/2:2/(R+2);
+  if(!(T2>0))return [];
+  var T=Math.sqrt(T2),f=Math.atan(T)*sr/P;
+  if(!(f>0&&f<sr*0.49))return [];
+  var wc=2*P*f,k=wc/T,den=(hp?k*k:wc*wc)/t.b0;
+  var A1=(t.a2*den+k*k+wc*wc)/k;
+  if(!(A1>1e-12))return [];
+  var q=wc/A1,ty=hp?T_HP:T_LP,out=[],s;
+  for(s=S_BW2;s<=S_VARQ;s++)
+    out.push(shapeBq(ty,s,f,q,Math.max(1,f/q),0,0.5));
+  return out;
+}
+/* Variable Q reproduces every fixed alignment, and its free Q usually lands a
+   hair closer, so on error alone it wins even when the section plainly is a
+   Linkwitz-Riley. Once both are inside tolerance the named alignment is the
+   better answer: it is what was designed, and it holds its shape if the rate
+   changes. */
+function betterFit(r,best){
+  if(!best)return true;
+  if(r.err<=SHAPE_TOL&&best.err<=SHAPE_TOL&&r.bq.type===best.bq.type&&
+     (r.bq.sub===S_VARQ)!==(best.bq.sub===S_VARQ))
+    return best.bq.sub===S_VARQ;
+  return r.err<best.err;
+}
+/* Fit one section in the model, in place. Returns a result the caller can
+   report: {ok, drift} on a match, {ok:false, why} otherwise. */
+function shapeOf(b,sr){
+  var k;
+  if(b.type!==T_CUSTOM)return {ok:false,why:'not a custom section'};
+  for(k=0;k<5;k++)if(!isFinite(b.coeff[k]))return {ok:false,why:'blank'};
+  var t={b0:b.coeff[0],b1:b.coeff[1],b2:b.coeff[2],
+         a1:b.coeff[3],a2:b.coeff[4]};
+  /* Polarity is the numerator's sign, so a section that only differs by it
+     is the same filter with the invert box ticked. */
+  var flip=t.b0<0;
+  if(flip)t={b0:-t.b0,b1:-t.b1,b2:-t.b2,a1:t.a1,a2:t.a2};
+  if(isUnity(t)){
+    var u=shapeBq(T_BYPASS,0,1000,0.707,100,0,0.5);
+    u.invert=flip;
+    applyShape(b,u);
+    return {ok:true,drift:0,unity:true};
+  }
+  var q0=0.707,best=null,bad=null,cand=[],ci,ce;
+  var pk=solvePeaking(t,sr);
+  if(pk){q0=pk.q;cand.push(pk);}
+  cand=cand.concat(solvePass(t,sr));
+  for(ci=0;ci<cand.length;ci++){
+    ce=coefErr(t,designBq(cand[ci],sr));
+    if(ce>=SHAPE_TOL)continue;
+    /* A shape we recognise but the row cannot hold — worth saying so rather
+       than reporting that nothing matched. */
+    if(!inRange(cand[ci],sr)){if(!bad)bad=cand[ci];continue;}
+    if(betterFit({bq:cand[ci],err:ce},best))best={bq:cand[ci],err:ce};
+  }
+  if(!best){
+    var TRY=[1,2,3,4,5,6,7,8,9],GSEED=[0,-4,-9,4,9,-14];
+    for(k=0;k<TRY.length;k++){
+      var ty=TRY[k],subs=HAS_SUB[ty]?[0,1,2,3,4,5]:[0];
+      var gseed=HAS_GAIN[ty]?GSEED:[0];
+      for(var si=0;si<subs.length;si++)
+        for(var gi=0;gi<gseed.length;gi++){
+          var g=gseed[gi];
+          var r=fitShape(t,ty,subs[si],sr,
+                         seedFreq(t,ty,subs[si],sr,q0,g),q0,g);
+          if(inRange(r.bq,sr)&&betterFit(r,best))best=r;
+        }
+    }
+  }
+  if(!best||best.err>SHAPE_TOL){
+    if(bad)
+      return {ok:false,why:'it is '+TYPES[bad.type].toLowerCase()+' at '+
+              Math.round(bad.freq)+' Hz, Q '+bad.q.toFixed(2)+
+              (HAS_GAIN[bad.type]?', '+bad.gain.toFixed(1)+' dB':'')+
+              ', which is outside what this page can set'};
+    return {ok:false,why:'no shape this page offers reproduces those'+
+            ' coefficients'+(best?' — the closest is '+
+            respErr(t,designBq(best.bq,sr),sr).toFixed(2)+' dB out':'')};
+  }
+  /* Rounded to the steps the row offers, so what is shown is what will be
+     encoded, and re-checked afterwards in case rounding moved it too far. */
+  best.bq.freq=Math.round(best.bq.freq*100)/100;
+  best.bq.q=Math.round(best.bq.q*1000)/1000;
+  best.bq.bw=Math.round(best.bq.bw*100)/100;
+  best.bq.gain=Math.round(best.bq.gain*100)/100;
+  best.bq.ripple=Math.round(best.bq.ripple*100)/100;
+  var drift=respErr(t,designBq(best.bq,sr),sr);
+  if(coefErr(t,designBq(best.bq,sr))>SHAPE_TOL||drift>RESP_TOL)
+    return {ok:false,why:'the closest shape is '+drift.toFixed(2)+' dB out'};
+  best.bq.invert=flip;
+  applyShape(b,best.bq);
+  return {ok:true,drift:drift};
+}
+function applyShape(dst,src){
+  dst.type=src.type;dst.sub=src.sub;dst.freq=src.freq;dst.q=src.q;
+  dst.bw=src.bw;dst.gain=src.gain;dst.ripple=src.ripple;dst.invert=src.invert;
+  dst.coeff=[1,0,0,0,0];
+}
+/* The part stores five coefficients per section and nothing about how they
+   were arrived at, so a chain recovered from a PPC3 dump arrives entirely
+   Custom. Fit every section on every amplifier before the page is shown:
+   opening on five numbers per row, none of which can be dragged, is not the
+   tuning anyone typed. */
+function autoShape(){
+  var left=0,a,c,i,cs;
+  for(a=0;a<data.amps.length;a++)
+    for(c=0;c<data.amps[a].channels.length;c++){
+      cs=data.amps[a].channels[c];
+      for(i=0;i<SLOTS;i++)
+        if(cs[i].type===T_CUSTOM&&!shapeOf(cs[i],fs()).ok)left++;
+    }
+  return left;
+}
+/* Manual fit of the visible row, for coefficients typed in by hand. */
+function toShape(i){
+  storeRows();
+  var b=chan()[i],r=shapeOf(b,fs());
+  if(!r.ok){
+    show($('msg'),'Section '+(i+1)+': '+r.why+
+         ', so it stays Custom. It is still exact as it stands.','info');
+    return;
+  }
+  loadRows();
+  setDirty(true);
+  plot();
+  show($('msg'),r.unity
+    ?'Section '+(i+1)+' passes the signal through unchanged — set to Bypass.'
+    :'Section '+(i+1)+' matched '+TYPES[b.type].toLowerCase()+
+     (HAS_SUB[b.type]?', '+SUBS[b.sub].toLowerCase():'')+
+     ' — the response is unchanged to within '+r.drift.toFixed(3)+' dB.','ok');
+}
 /* Phase is unwrapped as it goes, so an all-pass reads -360 rather than
    folding back to 0. */
 function sweep(secs,sr,fn,unwrap){
@@ -597,7 +891,9 @@ function bqRow(i){
     "<input type='number' id='r"+i+"-g' min='"+G_MIN+"' max='"+G_MAX+"' step='0.5' oninput='touch()'>"+
     "<input type='number' id='r"+i+"-r' min='"+R_MIN+"' max='"+R_MAX+"' step='0.1' oninput='touch()'>"+
     "<input type='checkbox' id='r"+i+"-i' title='Invert polarity' onchange='touch()'>"+
-    "</div><div class='bqc' id='r"+i+"-c'><span class='n'>coef</span>"+co+'</div>';
+    "</div><div class='bqc' id='r"+i+"-c'><span class='n'>coef</span>"+co+
+    "<button type='button' title='Find a filter shape that matches these"+
+    " coefficients' onclick='toShape("+i+")'>To shape</button>"+'</div>';
 }
 function bqSync(i){
   var t=parseInt($('r'+i+'-t').value,10);
@@ -1694,7 +1990,12 @@ function load(){
     if(amp>=data.amps.length)amp=0;
     if(isGanged(data.amps[amp]))ch=0;
     $('sub').textContent='15 biquads per output at '+d.rate+' Hz';
+    var left=autoShape();
     drawTabs();drawMix();drawGains();loadRows();plot();
+    if(left)
+      show($('msg'),left+' section'+(left>1?'s':'')+' stayed Custom: no shape'+
+           ' this page offers reproduces the coefficients. They are still'+
+           ' exact and still what the part is running.','info');
   });
 }
 window.onload=function(){

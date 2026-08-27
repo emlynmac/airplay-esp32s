@@ -449,6 +449,34 @@ void tas58xx_bq_pack(const double coeff[5],
   }
 }
 
+void tas58xx_bq_unpack(const uint8_t in[TAS58XX_BQ_COEFF_BYTES],
+                       tas58xx_bq_t *bq) {
+  static const int32_t unity[5] = {1 << 27, 0, 0, 0, 0};
+
+  if (!in || !bq) {
+    return;
+  }
+  tas58xx_bq_init_bypass(bq);
+
+  int32_t fixed[5];
+  bool pass_through = true;
+  for (int i = 0; i < 5; i++) {
+    fixed[i] =
+        (int32_t)(((uint32_t)in[i * 4 + 0] << 24) |
+                  ((uint32_t)in[i * 4 + 1] << 16) |
+                  ((uint32_t)in[i * 4 + 2] << 8) | (uint32_t)in[i * 4 + 3]);
+    pass_through = pass_through && fixed[i] == unity[i];
+  }
+  if (pass_through) {
+    return; /* an untouched slot already reads back as bypass */
+  }
+
+  bq->type = TAS58XX_BQ_CUSTOM;
+  for (int i = 0; i < 5; i++) {
+    bq->coeff[i] = (float)((double)fixed[i] / (double)(1 << 27));
+  }
+}
+
 void tas58xx_bq_design_packed(const tas58xx_bq_t *bq, double sample_rate_hz,
                               uint8_t out[TAS58XX_BQ_COEFF_BYTES]) {
   double coeff[5];
