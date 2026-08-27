@@ -84,6 +84,21 @@ esp_err_t dac_tas58xx_set_mix(int dev, tas58xx_mix_t mix);
 /** Get one amplifier's input routing. */
 tas58xx_mix_t dac_tas58xx_get_mix(int dev);
 
+/* ---------- Fault reporting ---------- */
+
+/**
+ * Name every latched fault across all amplifiers into buf, which is left
+ * empty when nothing is latched.
+ *
+ * Returns true only for a fault worth muting for. A clock fault on its own is
+ * not one: it says the I2S clocks stopped, which is what happens at the end of
+ * every track, and the FAULTZ line cannot tell the two apart on its own.
+ */
+bool dac_tas58xx_fault_report(char *buf, size_t len);
+
+/** Drop the latched faults so FAULTZ releases. */
+void dac_tas58xx_fault_clear(void);
+
 /* ---------- Fully parametric biquad chain ----------
  *
  * Each amplifier runs a 15-section biquad chain per channel, and this chain is

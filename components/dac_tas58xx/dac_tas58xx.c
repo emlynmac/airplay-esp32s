@@ -581,6 +581,101 @@ static void tas58xx_dump_status(const char *context) {
   ESP_LOGD(TAG, "--- end status dump ---");
 }
 
+/* A clock fault just means I2S has stopped, which is normal between tracks. */
+#define GLOBAL1_CLOCK_FAULT BIT(2)
+
+static const char *const s_chan_fault_names[8] = {
+    "right over-current",
+    "left over-current",
+    "right DC",
+    "left DC",
+};
+static const char *const s_global1_fault_names[8] = {
+    "PVDD under-voltage", "PVDD over-voltage", "clock stopped", NULL, NULL,
+    "EEPROM boot load",   "BQ write failed",   "OTP CRC",
+};
+static const char *const s_global2_fault_names[8] = {
+    "over-temperature shutdown",
+    "left cycle-by-cycle over-current",
+    "right cycle-by-cycle over-current",
+};
+
+/* Appends at `at`, returning the new offset; never runs past len - 1. */
+static size_t fault_names(char *buf, size_t len, size_t at, uint8_t bits,
+                          const char *const names[8]) {
+  for (int b = 0; b < 8; b++) {
+    if (!(bits & BIT(b)) || names[b] == NULL) {
+      continue;
+    }
+    const int n =
+        snprintf(buf + at, len - at, "%s%s", at ? ", " : "", names[b]);
+    if (n < 0) {
+      return at;
+    }
+    at += (size_t)n;
+    if (at >= len) {
+      return len - 1;
+    }
+  }
+  return at;
+}
+
+bool dac_tas58xx_fault_report(char *buf, size_t len) {
+  bool serious = false;
+  size_t at = 0;
+
+  if (!buf || len == 0) {
+    return false;
+  }
+  buf[0] = '\0';
+
+  REG_LOCK();
+  for (int i = 0; i < s_dev_count; i++) {
+    if (s_devs[i].handle == NULL) {
+      continue;
+    }
+    s_cur = &s_devs[i];
+
+    uint8_t chan = 0, global1 = 0, global2 = 0;
+    tas58xx_read_reg(REG_CHAN_FAULT, &chan);
+    tas58xx_read_reg(REG_GLOBAL_FAULT1, &global1);
+    tas58xx_read_reg(REG_GLOBAL_FAULT2, &global2);
+    if (!chan && !global1 && !global2) {
+      continue;
+    }
+    if (chan || global2 || (global1 & (uint8_t)~GLOBAL1_CLOCK_FAULT)) {
+      serious = true;
+    }
+
+    const int n = snprintf(buf + at, len - at, "%s@0x%02X ", at ? "; " : "",
+                           s_devs[i].addr);
+    if (n < 0 || at + (size_t)n >= len) {
+      break;
+    }
+    at += (size_t)n;
+    at = fault_names(buf, len, at, chan, s_chan_fault_names);
+    at = fault_names(buf, len, at, global1, s_global1_fault_names);
+    at = fault_names(buf, len, at, global2, s_global2_fault_names);
+  }
+  s_cur = NULL;
+  REG_UNLOCK();
+
+  return serious;
+}
+
+void dac_tas58xx_fault_clear(void) {
+  REG_LOCK();
+  for (int i = 0; i < s_dev_count; i++) {
+    if (s_devs[i].handle == NULL) {
+      continue;
+    }
+    s_cur = &s_devs[i];
+    tas58xx_write_reg(REG_FAULT_CLEAR, 0x80);
+  }
+  s_cur = NULL;
+  REG_UNLOCK();
+}
+
 #if CONFIG_SPKFAULT_GPIO < 0
 /*
  * Boards without a FAULTZ line to the MCU (e.g. the rev-D dual-DAC brick)
@@ -588,8 +683,6 @@ static void tas58xx_dump_status(const char *context) {
  * so poll the fault registers instead.
  */
 #define FAULT_POLL_MS 2000
-/* A clock fault just means I2S has stopped, which is normal between tracks. */
-#define GLOBAL1_CLOCK_FAULT BIT(2)
 
 static TaskHandle_t s_fault_task = NULL;
 static volatile bool s_fault_task_stop = false;
@@ -1152,7 +1245,6 @@ static void set_power_mode_dev(tas58xx_dev_t *dev, dac_power_mode_t mode) {
     // The PLL needs valid I2S clocks to lock — they must be present
     // by the time this function is called.
     if (cur_state != CTRL2_HIZ) {
-      ESP_LOGW(TAG, "Transitioning to HIZ first (from state %d)", cur_state);
       tas58xx_write_reg(REG_DEVICE_CTRL2, CTRL2_HIZ);
       vTaskDelay(pdMS_TO_TICKS(10));
     }
@@ -1945,8 +2037,9 @@ static esp_err_t ensure_custom_coeffs_mode(void) {
       }
       if (pgm != 0x01) {
         ESP_LOGW(TAG,
-                 "DSP: unexpected DSP_PGM_MODE — process flow may be wrong! "
-                 "EQ addresses assume PF1 (0x01)");
+                 "DSP: unknown DSP_PGM_MODE=0x%02X — "
+                 "BiQuad addresses assume PF1 (0x01)",
+                 pgm);
       }
     }
 

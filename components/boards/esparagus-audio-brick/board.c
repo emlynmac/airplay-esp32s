@@ -104,11 +104,21 @@ static void spkfault_task(void *arg) {
     if (xTaskNotifyWait(0, UINT32_MAX, &notification, portMAX_DELAY) ==
         pdTRUE) {
       if (notification & SPKFAULT_NOTIFY_FAULT) {
-        if (!speaker_fault_active) {
-          speaker_fault_active = true;
-          ESP_LOGW(TAG, "Speaker fault detected — muting output");
-          dac_enable_speaker(false);
-          led_set_error(true);
+        char why[160];
+        if (dac_tas58xx_fault_report(why, sizeof(why))) {
+          if (!speaker_fault_active) {
+            speaker_fault_active = true;
+            ESP_LOGW(TAG, "Speaker fault detected (%s) — muting output", why);
+            dac_enable_speaker(false);
+            led_set_error(true);
+          }
+        } else {
+          /* FAULTZ is one line for every fault the part has, and it drops when
+           * the I2S clocks stop — the end of every track. Clearing lets it
+           * release so the next assertion is a fresh edge. */
+          ESP_LOGI(TAG, "Fault line asserted (%s)",
+                   why[0] ? why : "nothing latched");
+          dac_tas58xx_fault_clear();
         }
       }
 
