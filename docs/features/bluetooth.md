@@ -41,7 +41,7 @@ number, and that is not implemented yet.
 | Environment | Board | Features |
 | --- | --- | --- |
 | `squeezeamp-bt` | SqueezeAMP | AirPlay + Bluetooth |
-| `esparagus-audio-brick-bt` | Esparagus Audio Brick | AirPlay + Bluetooth + Ethernet |
+| `esparagus-audio-brick-bt` | Esparagus Audio Brick, ESP32 revision | AirPlay + Bluetooth + Ethernet |
 | `esparagus-louder-bt` | Esparagus Louder | AirPlay + Bluetooth |
 | `esp32wrover-dev` | Freenove ESP32-WROVER | AirPlay + Bluetooth, 4 MB flash |
 | `smartamp` | SmartAmp | AirPlay + Bluetooth, 4 MB flash |
@@ -49,6 +49,10 @@ number, and that is not implemented yet.
 Bluetooth is enabled by layering `config/sdkconfig.defaults.bt` onto a board's defaults. To add it
 to a [custom board](../boards/custom.md), include that file in your
 `SDKCONFIG_DEFAULTS` chain.
+
+Boards sold in both an ESP32 and an ESP32-S3 revision — the
+[Esparagus Audio Brick](../boards/esparagus-audio-brick.md) and Louder — have a `-bt`
+environment for the ESP32 one only. There is nothing to enable on the S3 revision.
 
 ## Buttons over Bluetooth
 

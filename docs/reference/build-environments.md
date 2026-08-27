@@ -23,14 +23,16 @@ Every PlatformIO environment defined in `platformio.ini`. The default is `esp32s
 | `esparagus-audio-brick-bt` | ESP32 | TAS5825M | 8 MB | yes |
 | `esparagus-audio-brick-s3` | ESP32-S3 | TAS5825M | 8 MB | — |
 | `esparagus-audio-brick-dual-dac` | ESP32-S3 | 2× TAS5825M | 8 MB | — |
+| `esparagus-audio-brick-dual-uac` | ESP32-S3 | 2× TAS5825M | 8 MB | — |
 | `esparagus-louder` | ESP32 | TAS5825M + gain | 8 MB | — |
 | `esparagus-louder-bt` | ESP32 | TAS5825M + gain | 8 MB | yes |
 | `esparagus-louder-s3` | ESP32-S3 | TAS5825M + gain | 8 MB | — |
 | `smartamp` | ESP32 | — | 4 MB | yes |
 
-The dual-DAC environment drives a rev D board with two TAS5825M chips: stereo at I2C
-address 0x4C and a second amplifier at 0x4D, wired either as a bridged (PBTL) mono
-output or as a second stereo pair.
+The dual-DAC environments drive a [rev D board](../boards/esparagus-audio-brick-dual-dac.md)
+with two TAS5825M chips: stereo at I2C address 0x4C and a second amplifier at 0x4D, wired
+either as a bridged (PBTL) mono output or as a second stereo pair. `-dual-uac` adds USB
+audio to the same board.
 
 ## Targets without a PlatformIO environment
 

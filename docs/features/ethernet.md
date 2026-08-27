@@ -33,23 +33,25 @@ Bluetooth behave identically on either.
 
 ## Wiring
 
-The W5500 connects over SPI, sharing the bus with the OLED display.
+The W5500 connects over SPI, sharing the clock and MOSI lines with the OLED display. The
+ESP32 and ESP32-S3 revisions of the Brick use different pins.
 
-| W5500 pin | ESP32 GPIO | Function |
-| --- | --- | --- |
-| CLK | 18 | SPI clock |
-| MOSI | 23 | SPI data out |
-| MISO | 19 | SPI data in |
-| CS | 5 | Chip select |
-| INT | 35 | Interrupt |
-| RST | 14 | Hardware reset |
-| 3V3 | 3.3 V | Power |
-| GND | GND | Ground |
+| W5500 pin | ESP32 | ESP32-S3 | Function |
+| --- | :-: | :-: | --- |
+| CLK | 18 | 12 | SPI clock |
+| MOSI | 23 | 11 | SPI data out |
+| MISO | 19 | 13 | SPI data in |
+| CS | 5 | 10 | Chip select |
+| INT | 35 | 6 | Interrupt |
+| RST | 14 | 5 | Hardware reset |
+| 3V3 | 3.3 V | 3.3 V | Power |
+| GND | GND | GND | Ground |
 
 ## Configuration
 
-Ethernet is enabled by default in the `esparagus-audio-brick-bt` build. GPIOs can be
-changed under **Board Configuration → SPI and Ethernet Configuration** in `menuconfig`.
+Ethernet is enabled by default in every Esparagus Audio Brick build, on both revisions.
+GPIOs can be changed under **Board Configuration → SPI and Ethernet Configuration** in
+`menuconfig`.
 
 To disable it, set:
 

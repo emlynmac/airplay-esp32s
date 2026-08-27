@@ -26,11 +26,16 @@ data/
 │   ├── bq.html        # Parametric biquad chains (TAS5825M boards)
 │   └── speedtest.html # Network throughput test
 ├── hf/                # DSP programs loaded at boot
-│   ├── tas57xx_fw.bin # Hybrid flow (SqueezeAMP)
-│   └── tas5825m_fw.bin # PPC3 dump (TAS5825M boards)
+│   ├── base-hf1-44100.bin  # Hybrid flow 1 base image (SqueezeAMP)
+│   ├── base-hf3-44100.bin  # Hybrid flow 3 base image (SqueezeAMP)
+│   └── tas5825m_fw-44100.bin # PPC3 dump, if you supply one (TAS5825M boards)
 └── bg/                # ST7789 background image
     └── background.bin
 ```
+
+The `hf/` names carry the sample rate the DSP image was built for, and a 48000 twin sits
+beside each. Only the hybrid flow base images ship with the repository; a PPC3 dump is
+yours to export and drop in.
 
 ## Flashing the image
 
@@ -86,6 +91,6 @@ maximum upload size is 64 KB.
 | Path | Used by |
 | --- | --- |
 | `/spiffs/www/` | Web server — setup portal, logs, equaliser |
-| `/spiffs/hf/tas57xx_fw.bin` | [SqueezeAMP hybrid flow DSP](../boards/squeezeamp.md#hybrid-flow-dsp) |
-| `/spiffs/hf/tas5825m_fw.bin` | [Full PPC3 tuning](../boards/esparagus-audio-brick.md#full-ppc3-tuning) |
+| `/spiffs/hf/base-hf<n>-<rate>.bin` | [SqueezeAMP hybrid flow DSP](../boards/squeezeamp.md#hybrid-flow-dsp) |
+| `/spiffs/hf/tas5825m_fw-<rate>.bin` | [Full PPC3 tuning](../boards/esparagus-audio-brick.md#full-ppc3-tuning) |
 | `/spiffs/bg/background.bin` | [ST7789 background image](../features/tft-display.md#background-image) |
