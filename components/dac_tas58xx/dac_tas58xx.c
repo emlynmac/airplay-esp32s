@@ -2931,6 +2931,13 @@ static void tas58xx_reload_hf_for_rate(void) {
     s_cur = d;
     if (tas58xx_write_hf(d, d->hf_buf, d->hf_size) == ESP_OK) {
       tas58xx_fixup_after_hf(d);
+      /* The dump brought its own coefficients; ours would overwrite them. */
+      d->dsp_defaults_written = true;
+      /* It also rewrote the mixer words the per-output trim shares with the
+       * routing. A trim only ever attenuates, so leaving the dump's own gains
+       * standing would make every output jump louder — and unmute a muted
+       * one — for the rest of the session. */
+      tas58xx_apply_input_mix();
       /* The new dump has just rewritten the coefficient RAM, so follow it —
        * unless the chain is the user's rather than its predecessor's, in
        * which case the reprogram below puts theirs back over the top. */
