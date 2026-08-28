@@ -494,7 +494,8 @@ esp_err_t tas57xx_cram_read_image(const uint8_t *img, size_t size, int word,
 
 static esp_err_t cram_write_i2c(i2c_master_dev_handle_t handle, int word,
                                 const int32_t *words, int count) {
-  uint8_t page, reg;
+  // GCC 14 cannot see through tas57xx_cram_addr() that both are always set.
+  uint8_t page = 0, reg = 0;
   const uint8_t page0 = REG_PAGE;
   const uint8_t ctrl_page = CRAM_CTRL_PAGE;
   const uint8_t swap = CRAM_CTRL_SWAP;
@@ -574,7 +575,7 @@ static esp_err_t cram_flush_pass(i2c_master_dev_handle_t handle,
       n++;
     }
 
-    uint8_t page, reg;
+    uint8_t page = 0, reg = 0;
     tas57xx_cram_addr(w, &page, &reg);
     uint8_t buf[TAS57XX_CRAM_WORDS_PER_PAGE * sizeof(int32_t)];
     for (int k = 0; k < n; k++) {
