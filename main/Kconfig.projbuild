@@ -483,10 +483,12 @@ menu "Airplay ESP Configuration"
 
                 Enable this option only if AirPlay 2 advertisement causes
                 problems on your network (e.g. iOS preferring AirPlay 2
-                with broken FairPlay verification). It hides the
-                _airplay._tcp service entirely, leaving only _raop._tcp
-                for classic RAOP clients. iOS will fall back to AirPlay 1
-                with DACP remote control.
+                with broken FairPlay verification), or to stream from
+                Apple Music for Windows, which refuses any device that
+                advertises AirPlay 2 markers. It hides the _airplay._tcp
+                service entirely and moves RTSP to the classic RAOP port
+                5000, leaving only _raop._tcp for classic clients. iOS
+                will fall back to AirPlay 1 with DACP remote control.
 
                 When disabled (default), the receiver advertises as an
                 AirPlay 2 device. Modern iOS uses the MRP (Media Remote

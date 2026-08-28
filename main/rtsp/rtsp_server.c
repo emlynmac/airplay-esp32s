@@ -19,6 +19,7 @@
 #include "rtsp_crypto.h"
 #include "rtsp_handlers.h"
 #include "rtsp_message.h"
+#include "rtsp_rsa.h"
 
 #include "ntp_clock.h"
 #include "ptp_clock.h"
@@ -27,7 +28,7 @@
 
 static const char *TAG = "rtsp_server";
 
-#define RTSP_PORT           7000
+#define RTSP_PORT           AIRPLAY_RTSP_PORT
 #define RTSP_BUFFER_INITIAL 4096
 #define RTSP_BUFFER_LARGE   ((size_t)256 * 1024)
 
@@ -549,6 +550,10 @@ esp_err_t rtsp_server_start(void) {
   if (task_ret != pdPASS || server_task_handle == NULL) {
     return ESP_FAIL;
   }
+
+  // Parsing the key and deriving the first blinding pair costs the best part
+  // of a second; a sender waiting on its OPTIONS response gives up before that.
+  rsa_init();
 
   return ESP_OK;
 }

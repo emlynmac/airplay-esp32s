@@ -3,6 +3,7 @@
 #include <string.h>
 
 #include "esp_log.h"
+#include "esp_timer.h"
 #include "mbedtls/ctr_drbg.h"
 #include "mbedtls/entropy.h"
 #include "mbedtls/pk.h"
@@ -52,6 +53,8 @@ static int ensure_pk_initialized(void) {
     return 0;
   }
 
+  int64_t start_us = esp_timer_get_time();
+
   // Initialize RNG (required by mbedtls 3.x for key parsing and RSA ops)
   mbedtls_entropy_init(&s_entropy);
   mbedtls_ctr_drbg_init(&s_ctr_drbg);
@@ -78,7 +81,27 @@ static int ensure_pk_initialized(void) {
   }
 
   s_pk_initialized = true;
+
+  // The first private-key op also derives the blinding pair, which costs an
+  // inv_mod and an exp_mod that later calls avoid by squaring the cached one.
+  // Throw one signature away here so a sender never waits for it.
+  mbedtls_rsa_context *rsa = mbedtls_pk_rsa(s_pk_ctx);
+  mbedtls_rsa_set_padding(rsa, MBEDTLS_RSA_PKCS_V15, MBEDTLS_MD_NONE);
+  uint8_t *warm = malloc(mbedtls_rsa_get_len(rsa));
+  if (warm) {
+    uint8_t scratch[32] = {0};
+    mbedtls_rsa_pkcs1_sign(rsa, mbedtls_ctr_drbg_random, &s_ctr_drbg,
+                           MBEDTLS_MD_NONE, sizeof(scratch), scratch, warm);
+    free(warm);
+  }
+
+  ESP_LOGI(TAG, "RSA key ready in %lld ms",
+           (esp_timer_get_time() - start_us) / 1000);
   return 0;
+}
+
+int rsa_init(void) {
+  return ensure_pk_initialized();
 }
 
 // Simple base64 decode using libsodium
