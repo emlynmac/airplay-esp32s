@@ -252,6 +252,8 @@ typedef struct {
   uint8_t *hf_buf;                /* cached PPC3 dump (NULL if none) */
   size_t hf_size;                 /* bytes in hf_buf */
   char hf_path[48];               /* where the dump came from */
+  int32_t hf_mix[4];              /* the dump's own mixer gains, 9.23 */
+  bool hf_mix_seen;               /* ...and whether it wrote all four */
 } tas58xx_dev_t;
 
 static tas58xx_dev_t s_devs[TAS58XX_MAX_DEVICES];
@@ -776,6 +778,15 @@ static esp_err_t tas58xx_apply_pbtl(tas58xx_dev_t *dev) {
 #define HF_OP_DELAY 0xFE
 #define HF_OP_END   0xFF
 
+/* Input-mixer gain matrix: four 9.23 words in Book 0x8C, on a different page
+ * per part (SLAA786A Table 9 vs SLOA263A Table 5). */
+#define MIX_BOOK      0x8C
+#define MIX_PAGE_5825 0x0B
+#define MIX_BASE_5825 0x14
+#define MIX_PAGE_5805 0x29
+#define MIX_BASE_5805 0x18
+#define MIX_BYTES     16
+
 static esp_err_t tas58xx_write_hf(tas58xx_dev_t *dev, const uint8_t *stream,
                                   size_t size) {
   size_t pos = 0;
@@ -855,6 +866,80 @@ static bool tas58xx_hf_candidate(char *out, size_t len, int c, int i,
 }
 
 /*
+ * Read the dump's own input-mixer gains back out of it. The routing a tuning
+ * exports is part of that tuning, but the per-output trim has to be folded
+ * into the same four coefficients — so the trim can only ever be applied on
+ * top of these, never instead of them.
+ */
+static void tas58xx_seed_mix_from_hf(tas58xx_dev_t *d) {
+  d->hf_mix_seen = false;
+
+  uint8_t raw[MIX_BYTES] = {0};
+  uint16_t seen = 0;
+  uint8_t book = 0, page = 0;
+  size_t pos = 0;
+
+  while (pos + 1 < d->hf_size) {
+    const uint8_t reg = d->hf_buf[pos];
+    const uint8_t len = d->hf_buf[pos + 1];
+
+    if (reg == HF_OP_END && len == HF_OP_END) {
+      break;
+    }
+    if (pos + 2 + (size_t)len > d->hf_size) {
+      break;
+    }
+    if (reg == HF_OP_DELAY) {
+      pos += 2 + (size_t)len;
+      continue;
+    }
+
+    /* Block writes auto-increment, and a page select part way through one
+     * moves the rest of it, so the stream has to be followed byte by byte. */
+    for (uint8_t k = 0; k < len; k++) {
+      const uint8_t a = (uint8_t)(reg + k);
+      const uint8_t v = d->hf_buf[pos + 2 + k];
+
+      if (a == REG_PAGE_SEL) {
+        page = v;
+        continue;
+      }
+      /* 0x7F selects the book only while page 0 is current; on a coefficient
+       * page it is the last data byte of the last section. */
+      if (a == REG_BOOK_SEL && page == 0) {
+        book = v;
+        continue;
+      }
+      if (book != MIX_BOOK || page != MIX_PAGE_5825) {
+        continue;
+      }
+      if (a >= MIX_BASE_5825 && a < MIX_BASE_5825 + MIX_BYTES) {
+        const uint8_t off = (uint8_t)(a - MIX_BASE_5825);
+        raw[off] = v;
+        seen |= (uint16_t)(1u << off);
+      }
+    }
+    pos += 2 + (size_t)len;
+  }
+
+  /* A dump that writes only part of the matrix leaves the rest holding
+   * whatever the flow defaulted to, which nothing here can know. */
+  if (seen != 0xFFFF) {
+    ESP_LOGD(TAG, "@0x%02X dump leaves the input mixer at its flow default",
+             d->addr);
+    return;
+  }
+  for (int m = 0; m < 4; m++) {
+    d->hf_mix[m] =
+        (int32_t)(((uint32_t)raw[m * 4] << 24) |
+                  ((uint32_t)raw[m * 4 + 1] << 16) |
+                  ((uint32_t)raw[m * 4 + 2] << 8) | (uint32_t)raw[m * 4 + 3]);
+  }
+  d->hf_mix_seen = true;
+  ESP_LOGI(TAG, "@0x%02X dump carries its own input-mixer routing", d->addr);
+}
+
+/*
  * Load a tuned PPC3 dump for device index i, newest-to-oldest naming:
  *   /spiffs/hf/tas5825m_fw<i>-<rate>.bin   (multi-device, rate-specific)
  *   /spiffs/hf/tas5825m_fw-<rate>.bin      (single device, rate-specific)
@@ -870,6 +955,7 @@ static void tas58xx_load_hf(int i, bool multi) {
   free(d->hf_buf);
   d->hf_buf = NULL;
   d->hf_size = 0;
+  d->hf_mix_seen = false;
 
   /* A dump replays a process flow, which is a TAS5825M feature: the TAS5805M
    * has no flow-select register and lays its coefficients out differently. */
@@ -923,6 +1009,7 @@ static void tas58xx_load_hf(int i, bool multi) {
   d->hf_buf = buf;
   d->hf_size = (size_t)size;
   snprintf(d->hf_path, sizeof(d->hf_path), "%s", path);
+  tas58xx_seed_mix_from_hf(d);
   ESP_LOGI(TAG, "Loaded PPC3 dump %s (%ld bytes) for @0x%02X", path, size,
            d->addr);
 }
@@ -1256,20 +1343,40 @@ static void set_power_mode_dev(tas58xx_dev_t *dev, dac_power_mode_t mode) {
      * flow, I2S format, and coefficient mode are active.
      */
     if (cur_state == CTRL2_DEEP_SLEEP) {
-      ESP_LOGI(TAG, "Woke from DEEP_SLEEP — re-programming DSP registers");
-      tas58xx_write_reg(REG_SAP_CTRL1, 0x00); /* I2S, 16-bit */
-      tas58xx_write_reg(REG_CLOCK_DET_CTRL, 0x00);
-      tas58xx_write_reg(REG_DSP_PGM_MODE, 0x01); /* PF1 (Base/Pro, 96kHz) */
-      tas58xx_write_reg(REG_DSP_CTRL, 0x01);     /* USE_DEFAULT_COEFFS */
-      vTaskDelay(pdMS_TO_TICKS(5));
-      tas58xx_write_reg(REG_DIG_VOL_CTRL1, 0x33);
-      tas58xx_write_reg(REG_AUTO_MUTE_CTRL, 0x07);
-      tas58xx_write_reg(REG_AUTO_MUTE_TIME, 0x00);
-      tas58xx_write_reg(REG_AGAIN, 0x00);
+      if (dev->hf_buf) {
+        /*
+         * A dump is the whole configuration — process flow, routing, DRC and
+         * every coefficient — so replaying it is the only way to get any of
+         * that back. Writing the stock registers below instead would leave
+         * the amp on the built-in flow with the tuning gone, and disconnect
+         * puts it to sleep after every session.
+         */
+        ESP_LOGI(TAG, "@0x%02X woke from DEEP_SLEEP — replaying %s", dev->addr,
+                 dev->hf_path);
+        if (tas58xx_write_hf(dev, dev->hf_buf, dev->hf_size) == ESP_OK) {
+          tas58xx_fixup_after_hf(dev);
+          /* The dump brought its own coefficients; ours would overwrite the
+           * tuning. */
+          dev->dsp_defaults_written = true;
+        } else {
+          dev->dsp_defaults_written = false;
+        }
+      } else {
+        ESP_LOGI(TAG, "Woke from DEEP_SLEEP — re-programming DSP registers");
+        tas58xx_write_reg(REG_SAP_CTRL1, 0x00); /* I2S, 16-bit */
+        tas58xx_write_reg(REG_CLOCK_DET_CTRL, 0x00);
+        tas58xx_write_reg(REG_DSP_PGM_MODE, 0x01); /* PF1 (Base/Pro, 96kHz) */
+        tas58xx_write_reg(REG_DSP_CTRL, 0x01);     /* USE_DEFAULT_COEFFS */
+        vTaskDelay(pdMS_TO_TICKS(5));
+        tas58xx_write_reg(REG_DIG_VOL_CTRL1, 0x33);
+        tas58xx_write_reg(REG_AUTO_MUTE_CTRL, 0x07);
+        tas58xx_write_reg(REG_AUTO_MUTE_TIME, 0x00);
+        tas58xx_write_reg(REG_AGAIN, 0x00);
 
-      /* Coefficient RAM may be invalid after DEEP_SLEEP — force
-       * full re-write of signal-path defaults on next EQ update. */
-      dev->dsp_defaults_written = false;
+        /* Coefficient RAM may be invalid after DEEP_SLEEP — force
+         * full re-write of signal-path defaults on next EQ update. */
+        dev->dsp_defaults_written = false;
+      }
     }
 
     /* DEVICE_CTRL1 is reset by DEEP_SLEEP and the device is in HiZ here, so
@@ -1310,18 +1417,15 @@ static void set_power_mode_dev(tas58xx_dev_t *dev, dac_power_mode_t mode) {
     tas58xx_write_reg(REG_FAULT_CLEAR, 0x80);
 
     /*
-     * Re-apply the input-mixer routing once the DSP is running (coefficient
-     * RAM writes require active I2S clocks). A resident dump owns the mixer,
-     * so re-pushing ours would drop the routing it exported. Its biquads are
-     * a different matter: the chain was read back from the dump at load, so
-     * pushing it here restores the same tuning — or the user's edit of it.
+     * Re-apply the input mixer once the DSP is running (coefficient RAM
+     * writes require active I2S clocks). The per-output trim shares those
+     * four coefficients with the routing, so this has to run on a dump board
+     * too — tas58xx_apply_input_mix() starts from the dump's own routing
+     * there rather than ours. The biquads are the same story: the chain was
+     * read back from the dump at load, so pushing it here restores that
+     * tuning — or the user's edit of it.
      */
-    if (dev->hf_buf) {
-      ESP_LOGI(TAG, "@0x%02X PPC3 dump owns the mixer — leaving its routing",
-               dev->addr);
-    } else {
-      tas58xx_apply_input_mix();
-    }
+    tas58xx_apply_input_mix();
     bq_program_chain();
 
     tas58xx_dump_status("power-on");
@@ -2414,24 +2518,32 @@ static esp_err_t bq_program_chain(void) {
  * PLAY (coefficient RAM writes require active I2S clocks).
  */
 static esp_err_t tas58xx_apply_input_mix(void) {
-  if (s_cur->model != TAS58XX_MODEL_TAS5825M) {
-    if (s_cur->mix != TAS58XX_MIX_STEREO) {
-      ESP_LOGW(TAG,
-               "@0x%02X input mixer only implemented for TAS5825M; "
-               "chip will play the left channel only",
-               s_cur->addr);
-      return ESP_ERR_NOT_SUPPORTED;
-    }
-    return ESP_OK; /* the part already passes the pair straight through */
+  const bool is_5805 = (s_cur->model == TAS58XX_MODEL_TAS5805M);
+  if (!is_5805 && s_cur->model != TAS58XX_MODEL_TAS5825M) {
+    return ESP_ERR_NOT_SUPPORTED; /* unknown part — the map is unverified */
+  }
+  /* Routing anything but the pair straight through is a process-flow change,
+   * which is a TAS5825M feature. The level and mute folded in below are only
+   * gains, so those still reach a TAS5805M. */
+  if (is_5805 && s_cur->mix != TAS58XX_MIX_STEREO) {
+    ESP_LOGW(TAG,
+             "@0x%02X input routing only implemented for TAS5825M; "
+             "chip will play the left channel only",
+             s_cur->addr);
+    return ESP_ERR_NOT_SUPPORTED;
   }
 
-  /* Enter custom-coefficient mode (writes straight-stereo signal-path
-   * defaults, then clears USE_DEFAULT_COEFFS). */
-  esp_err_t err = ensure_custom_coeffs_mode();
-  if (err != ESP_OK) {
-    ESP_LOGE(TAG, "@0x%02X mixer: failed to enter custom coeff mode: %s",
-             s_cur->addr, esp_err_to_name(err));
-    return err;
+  /* Only the TAS5825M keeps its coefficient RAM behind USE_DEFAULT_COEFFS;
+   * the TAS5805M takes the write directly, as it does for its biquads. */
+  if (!is_5805) {
+    /* Enter custom-coefficient mode (writes straight-stereo signal-path
+     * defaults, then clears USE_DEFAULT_COEFFS). */
+    const esp_err_t cerr = ensure_custom_coeffs_mode();
+    if (cerr != ESP_OK) {
+      ESP_LOGE(TAG, "@0x%02X mixer: failed to enter custom coeff mode: %s",
+               s_cur->addr, esp_err_to_name(cerr));
+      return cerr;
+    }
   }
 
   /*
@@ -2440,9 +2552,8 @@ static esp_err_t tas58xx_apply_input_mix(void) {
    * In PBTL the paralleled output follows one channel, so feeding both
    * output paths makes the content independent of PBTL_CH_SEL.
    */
-  const bool is_5805 = (s_cur->model == TAS58XX_MODEL_TAS5805M);
-  const uint8_t mix_page = is_5805 ? 0x29 : 0x0B;
-  const uint8_t mix_base = is_5805 ? 0x18 : 0x14;
+  const uint8_t mix_page = is_5805 ? MIX_PAGE_5805 : MIX_PAGE_5825;
+  const uint8_t mix_base = is_5805 ? MIX_BASE_5805 : MIX_BASE_5825;
 
   static const int32_t UNITY_9_23 = 0x00800000; /*  0 dB */
   static const int32_t HALF_9_23 = 0x00400000;  /* -6 dB */
@@ -2470,6 +2581,16 @@ static esp_err_t tas58xx_apply_input_mix(void) {
     break;
   }
 
+  if (s_cur->hf_mix_seen) {
+    /* The routing a dump exported is part of its tuning, so it stands in for
+     * ours. The trim below still has to reach the same coefficients. */
+    l_to_l = s_cur->hf_mix[0];
+    r_to_l = s_cur->hf_mix[1];
+    l_to_r = s_cur->hf_mix[2];
+    r_to_r = s_cur->hf_mix[3];
+    desc = "dump routing";
+  }
+
   /* The mixer is a gain matrix, so the per-output level and mute are the same
    * knob as the routing: scale whichever paths feed that output. */
   const int dev = (int)(s_cur - s_devs);
@@ -2480,7 +2601,7 @@ static esp_err_t tas58xx_apply_input_mix(void) {
   l_to_r = (int32_t)lrintf((float)l_to_r * sb);
   r_to_r = (int32_t)lrintf((float)r_to_r * sb);
 
-  err = select_book_page(0x8C, mix_page);
+  esp_err_t err = select_book_page(MIX_BOOK, mix_page);
   if (err != ESP_OK) {
     select_default_page();
     return err;
@@ -2801,6 +2922,7 @@ static void tas58xx_reload_hf_for_rate(void) {
       d->hf_buf = prev_buf;
       d->hf_size = prev_size;
       memcpy(d->hf_path, prev, sizeof(d->hf_path));
+      tas58xx_seed_mix_from_hf(d);
       continue;
     }
     free(prev_buf);
