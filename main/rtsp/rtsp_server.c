@@ -544,16 +544,17 @@ esp_err_t rtsp_server_start(void) {
     }
   }
 
+  // Parsing the key and deriving the first blinding pair costs the best part
+  // of a second; a sender waiting on its OPTIONS response gives up before
+  // that. Do it before the listener exists so it cannot land mid-request.
+  rsa_init();
+
   BaseType_t task_ret =
       xTaskCreate(server_task, "rtsp_server", SERVER_STACK_SIZE, NULL, 5,
                   &server_task_handle);
   if (task_ret != pdPASS || server_task_handle == NULL) {
     return ESP_FAIL;
   }
-
-  // Parsing the key and deriving the first blinding pair costs the best part
-  // of a second; a sender waiting on its OPTIONS response gives up before that.
-  rsa_init();
 
   return ESP_OK;
 }
