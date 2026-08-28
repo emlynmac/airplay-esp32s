@@ -472,9 +472,15 @@ menu "Airplay ESP Configuration"
 
     menu "AirPlay Protocol"
         config AIRPLAY_FORCE_V1
-            bool "Legacy mode: advertise AirPlay v1 (classic) only"
+            bool "Default to AirPlay v1 (classic) only"
             default n
             help
+                Sets the mode a freshly flashed device boots in. The mode
+                is stored in NVS and can be changed at any time from the
+                web interface (Device Settings -> AirPlay Mode), taking
+                effect on the next restart, so this option only picks the
+                starting point.
+
                 By default the receiver accepts BOTH AirPlay 1 (classic
                 RAOP, used by TuneBlade, AirMusic, shairtunes2, older iOS
                 fallback) and AirPlay 2 (HomeKit pairing, HAP-encrypted

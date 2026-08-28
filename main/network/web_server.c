@@ -644,6 +644,63 @@ static esp_err_t dual_mode_post_handler(httpd_req_t *req) {
 }
 #endif /* CONFIG_DAC_TAS58XX */
 
+static esp_err_t airplay_mode_get_handler(httpd_req_t *req) {
+  cJSON *json = cJSON_CreateObject();
+  cJSON_AddBoolToObject(json, "v1", settings_airplay_v1_configured());
+  cJSON_AddNumberToObject(json, "port", airplay_rtsp_port());
+  cJSON_AddBoolToObject(json, "restart_required",
+                        settings_airplay_v1_configured() !=
+                            settings_airplay_v1());
+  cJSON_AddBoolToObject(json, "success", true);
+  char *json_str = cJSON_Print(json);
+  httpd_resp_set_type(req, "application/json");
+  httpd_resp_send(req, json_str, HTTPD_RESP_USE_STRLEN);
+  free(json_str);
+  cJSON_Delete(json);
+  return ESP_OK;
+}
+
+static esp_err_t airplay_mode_post_handler(httpd_req_t *req) {
+  char *content = recv_body(req, 128);
+  if (!content) {
+    httpd_resp_send_500(req);
+    return ESP_FAIL;
+  }
+
+  cJSON *json = cJSON_Parse(content);
+  free(content);
+  if (!json) {
+    httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Invalid JSON");
+    return ESP_FAIL;
+  }
+
+  cJSON *response = cJSON_CreateObject();
+  cJSON *val = cJSON_GetObjectItem(json, "v1");
+  if (!val || !cJSON_IsBool(val)) {
+    cJSON_AddBoolToObject(response, "success", false);
+    cJSON_AddStringToObject(response, "error", "Expected {\"v1\": bool}");
+  } else {
+    const bool v1 = cJSON_IsTrue(val);
+    esp_err_t err = settings_set_airplay_v1(v1);
+    cJSON_AddBoolToObject(response, "success", err == ESP_OK);
+    if (err != ESP_OK) {
+      cJSON_AddStringToObject(response, "error", esp_err_to_name(err));
+    } else {
+      // The mDNS records and the RTSP listener are both built at startup.
+      cJSON_AddBoolToObject(response, "restart_required",
+                            v1 != settings_airplay_v1());
+    }
+  }
+
+  char *json_str = cJSON_Print(response);
+  httpd_resp_set_type(req, "application/json");
+  httpd_resp_send(req, json_str, HTTPD_RESP_USE_STRLEN);
+  free(json_str);
+  cJSON_Delete(json);
+  cJSON_Delete(response);
+  return ESP_OK;
+}
+
 static esp_err_t ota_update_handler(httpd_req_t *req) {
   if (req->content_len == 0) {
     httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "No firmware uploaded");
@@ -1302,7 +1359,7 @@ esp_err_t web_server_start(uint16_t port) {
   // Slots are allocated up front and httpd_register_uri_handler failures are
   // unchecked, so an undercount silently drops whatever registers last, which
   // is log_stream's /ws/logs. Keep these in step with the handlers below.
-  config.max_uri_handlers = 32; // 26 here + /ws/logs, plus 5 spare
+  config.max_uri_handlers = 34; // 28 here + /ws/logs, plus 5 spare
 #ifdef DAC_HAS_SUB_OFFSET
   config.max_uri_handlers += 2; // sub level get/post
 #endif
@@ -1411,6 +1468,16 @@ esp_err_t web_server_start(uint16_t port) {
                                     .handler = dual_mode_post_handler};
   httpd_register_uri_handler(s_server, &dual_mode_post_uri);
 #endif
+
+  httpd_uri_t airplay_mode_get_uri = {.uri = "/api/airplay/mode",
+                                      .method = HTTP_GET,
+                                      .handler = airplay_mode_get_handler};
+  httpd_register_uri_handler(s_server, &airplay_mode_get_uri);
+
+  httpd_uri_t airplay_mode_post_uri = {.uri = "/api/airplay/mode",
+                                       .method = HTTP_POST,
+                                       .handler = airplay_mode_post_handler};
+  httpd_register_uri_handler(s_server, &airplay_mode_post_uri);
 
   httpd_uri_t ota_uri = {.uri = "/api/ota/update",
                          .method = HTTP_POST,

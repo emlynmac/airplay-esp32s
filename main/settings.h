@@ -118,6 +118,34 @@ esp_err_t settings_set_device_name(const char *name);
 void settings_device_name_to_hostname(const char *name, char *out,
                                       size_t out_len);
 
+// ---- AirPlay protocol mode ----
+
+/**
+ * Whether the receiver presents itself as a classic AirPlay 1 (RAOP) device.
+ *
+ * This is the mode the running services were built around, fixed at
+ * settings_init(). The RTSP and mDNS paths must use it rather than the
+ * configured value, or a mid-session change would leave the TXT record and
+ * the listening port disagreeing. Defaults to CONFIG_AIRPLAY_FORCE_V1.
+ */
+bool settings_airplay_v1(void);
+
+/**
+ * The AirPlay mode held in storage, which takes effect on the next boot.
+ * Differs from settings_airplay_v1() only after a change that needs a restart.
+ */
+bool settings_airplay_v1_configured(void);
+
+/**
+ * Save the AirPlay protocol mode to persistent storage.
+ *
+ * Takes effect on restart: the advertised services and the RTSP port are both
+ * fixed while the receiver is running.
+ *
+ * @param v1 true for classic AirPlay 1 (RAOP), false for AirPlay 2
+ */
+esp_err_t settings_set_airplay_v1(bool v1);
+
 // ---- LED settings ----
 
 /**

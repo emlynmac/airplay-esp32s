@@ -49,8 +49,8 @@ If you still hear drop-outs on AirPlay 1 / realtime playback, increase
 
 ## Forcing AirPlay v1
 
-`CONFIG_AIRPLAY_FORCE_V1=y` makes the receiver advertise itself as a classic AirPlay
-receiver. There are two reasons to do this:
+Classic AirPlay v1 makes the receiver advertise itself as a plain RAOP receiver. There are
+two reasons to do this:
 
 - **Hardware buttons.** iOS only sends DACP headers in v1 mode, so this is what makes
   [hardware buttons](buttons.md#read-this-first-the-airplay-v1-requirement) work.
@@ -58,7 +58,14 @@ receiver. There are two reasons to do this:
   AirPlay 2 markers, reporting that the device "is not compatible with this version of
   AMPLibraryAgent".
 
-In this mode the receiver mirrors a classic RAOP advertisement: no `_airplay._tcp`
+The mode lives in NVS, so no rebuild is needed. Open the web interface and pick
+**Device Settings → AirPlay Mode**, then restart the device. The mDNS records and the RTSP
+listening port are both built at startup, so the change only takes effect on the next boot.
+
+`CONFIG_AIRPLAY_FORCE_V1=y` sets the mode a freshly flashed device starts in; after that
+the stored value wins.
+
+In v1 mode the receiver mirrors a classic RAOP advertisement: no `_airplay._tcp`
 service, a shairport-sync-style `_raop._tcp` TXT record, `Server: AirTunes/105.1` on RTSP
 responses, and RTSP on port 5000 instead of 7000.
 
