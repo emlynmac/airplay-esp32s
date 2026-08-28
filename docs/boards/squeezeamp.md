@@ -62,7 +62,7 @@ To add or update a hybrid flow:
 1. Export a `.cfg` file from TI PurePath Console.
 2. Convert it to binary:
    ```bash
-   python3 components/dac_tas57xx/hybridflows/convert_cfg.py --bin my_flow.cfg
+   python3 components/dac_tas57xx/hybridflows/hybridflow_convert_cfg.py --bin my_flow.cfg
    ```
 3. Rename the output to `tas57xx_fw.bin`.
 4. Copy it to `data/hf/` for a serial flash, or upload it over WiFi:

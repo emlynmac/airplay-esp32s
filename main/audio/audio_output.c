@@ -56,6 +56,10 @@
 #endif
 
 static i2s_chan_handle_t tx_handle;
+// OUTPUT_RATE is only the boot/idle rate: the clock is retuned to follow
+// whichever source is active, so AirPlay and UAC each run native.
+static volatile uint32_t s_output_rate = OUTPUT_RATE;
+static volatile uint32_t s_pending_output_rate = 0;
 static volatile bool flush_requested = false;
 static volatile bool playback_running = false;
 static TaskHandle_t playback_task_handle = NULL;
@@ -220,9 +224,17 @@ static void playback_task(void *arg) {
 
   size_t written;
   while (playback_running) {
+    // Retuning touches the I2S channel, so it has to happen here between
+    // writes rather than in the caller's context.
+    uint32_t pending = s_pending_output_rate;
+    if (pending != 0) {
+      s_pending_output_rate = 0;
+      audio_output_set_sample_rate(pending);
+      resample_reinit_needed = true;
+    }
     if (resample_reinit_needed) {
       resample_reinit_needed = false;
-      audio_resample_init((uint32_t)source_rate, OUTPUT_RATE, 2);
+      audio_resample_init((uint32_t)source_rate, s_output_rate, 2);
     }
     if (flush_requested) {
       flush_requested = false;
@@ -352,7 +364,7 @@ esp_err_t audio_output_init(void) {
   // MCLK/BCLK/LRCK are now running. Some codecs need this edge to finish their
   // clock setup; amplifiers that manage power from board RTSP events can ignore
   // the hook.
-  dac_on_i2s_started();
+  dac_on_i2s_started(OUTPUT_RATE);
 
   audio_resample_init(44100, OUTPUT_RATE, 2);
 
@@ -403,9 +415,10 @@ void audio_output_set_sample_rate(uint32_t rate) {
   i2s_channel_disable(tx_handle);
   i2s_std_clk_config_t clk_cfg = I2S_STD_CLK_DEFAULT_CONFIG(rate);
   i2s_channel_reconfig_std_clock(tx_handle, &clk_cfg);
+  s_output_rate = rate;
   output_cursor_reset();
   i2s_channel_enable(tx_handle);
-  dac_on_i2s_started();
+  dac_on_i2s_started(rate);
 }
 
 void audio_output_flush(void) {
@@ -413,9 +426,17 @@ void audio_output_flush(void) {
 }
 
 void audio_output_set_source_rate(int rate) {
-  if (rate > 0 && rate != source_rate) {
+  if (rate <= 0) {
+    return;
+  }
+  if (rate != source_rate) {
     source_rate = rate;
     resample_reinit_needed = true;
+  }
+  // Prefer retuning the clock over resampling: the sinc converter costs more
+  // CPU than an ESP32 has spare beside AAC decode.
+  if ((uint32_t)rate != s_output_rate) {
+    s_pending_output_rate = (uint32_t)rate;
   }
 }
 
@@ -437,7 +458,7 @@ uint32_t audio_output_get_hardware_latency_us(void) {
   return (uint32_t)((((uint64_t)(2 * I2S_DMA_DESC_NUM - 1) * I2S_DMA_FRAME_NUM *
                       1000000ULL) /
                      2) /
-                    OUTPUT_RATE);
+                    s_output_rate);
 }
 
 bool audio_output_get_pipeline_us(int64_t *now_us, uint32_t *pipeline_us) {
@@ -459,7 +480,7 @@ bool audio_output_get_pipeline_us(int64_t *now_us, uint32_t *pipeline_us) {
   // happened.
   if (sent_us > 0 && sampled_us > sent_us) {
     uint64_t drained =
-        ((uint64_t)(sampled_us - sent_us) * OUTPUT_RATE) / 1000000ULL;
+        ((uint64_t)(sampled_us - sent_us) * s_output_rate) / 1000000ULL;
     if (drained > I2S_DMA_FRAME_NUM) {
       drained = I2S_DMA_FRAME_NUM;
     }
@@ -470,7 +491,7 @@ bool audio_output_get_pipeline_us(int64_t *now_us, uint32_t *pipeline_us) {
     *now_us = sampled_us;
   }
   if (pipeline_us) {
-    *pipeline_us = (uint32_t)(((uint64_t)queued * 1000000ULL) / OUTPUT_RATE);
+    *pipeline_us = (uint32_t)(((uint64_t)queued * 1000000ULL) / s_output_rate);
   }
   return true;
 }

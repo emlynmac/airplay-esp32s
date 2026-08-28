@@ -21,6 +21,7 @@
 #include "audio_receiver.h"
 #include "audio_stream.h"
 #ifdef CONFIG_BT_A2DP_ENABLE
+#include "a2dp_sink.h"
 #include "dac.h"
 #endif
 #include "hap.h"
@@ -169,6 +170,14 @@ static bool start_ntp_timing_or_fail(int socket, rtsp_conn_t *conn,
 static bool start_audio_receiver_or_fail(int socket, rtsp_conn_t *conn,
                                          const rtsp_request_t *req,
                                          int64_t stream_type) {
+#ifdef CONFIG_BT_A2DP_ENABLE
+  // Tear the BT radio down here rather than waiting for the coex task's
+  // PLAYING event: that lands ~600 ms after RECORD, by which time these tasks
+  // have already tried and failed to allocate their stacks.
+  if (!bt_a2dp_sink_is_connected()) {
+    (void)bt_a2dp_sink_suspend();
+  }
+#endif
   audio_receiver_set_stream_type((audio_stream_type_t)stream_type);
   esp_err_t err = audio_receiver_start_stream(
       conn->data_port, conn->control_port, conn->buffered_port);

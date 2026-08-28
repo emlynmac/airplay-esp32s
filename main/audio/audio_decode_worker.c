@@ -19,11 +19,13 @@
 
 /* Sits above the buffered TCP reader (5) so decoded PCM keeps draining ahead
  * of ingress, and below the RTP/control receivers (7/8) and the I2S playback
- * task (9) so bulk AAC decoding can never delay them.  Deliberately not
- * pinned: the AAC decode it takes over used to run inline on the unpinned
- * "buff_audio" task, and on ESP32 core 0 is already shared with WiFi, BT and
- * lwIP. */
+ * task (9) so bulk AAC decoding can never delay them. */
 #define AUDIO_DECODE_TASK_PRIORITY 6
+
+/* Core 1 already runs the I2S playback task and, at 48 kHz output, the sinc
+ * resampler; adding AAC decode there starves IDLE1. Keep the two heavy audio
+ * consumers on separate cores. */
+#define AUDIO_DECODE_TASK_CORE 0
 
 typedef struct audio_decode_job {
   uint32_t generation;
@@ -126,9 +128,9 @@ esp_err_t audio_decode_worker_create(audio_receiver_state_t *state,
   }
 
   worker->running = true;
-  BaseType_t ok =
-      xTaskCreate(decode_task, "audio_decode", AUDIO_DECODE_TASK_STACK, worker,
-                  AUDIO_DECODE_TASK_PRIORITY, &worker->task);
+  BaseType_t ok = xTaskCreatePinnedToCore(
+      decode_task, "audio_decode", AUDIO_DECODE_TASK_STACK, worker,
+      AUDIO_DECODE_TASK_PRIORITY, &worker->task, AUDIO_DECODE_TASK_CORE);
   if (ok != pdPASS || !worker->task) {
     worker->running = false;
     vQueueDelete(worker->queue);

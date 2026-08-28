@@ -1071,7 +1071,8 @@ static void tas57xx_enable_line_out(bool enable) {
  * now that the clocks are up. A device still in powerdown is reprogrammed by
  * the next power-mode change instead.
  */
-static void tas57xx_on_i2s_started(void) {
+static void tas57xx_on_i2s_started(uint32_t sample_rate_hz) {
+  (void)sample_rate_hz;
   if (s_dac_mutex == NULL || s_dev_count == 0) {
     return;
   }

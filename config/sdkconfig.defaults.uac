@@ -19,7 +19,9 @@ CONFIG_UAC_MIC_CHANNEL_NUM=0
 CONFIG_UAC_BIT_RESOLUTION_16=y
 
 # Must equal CONFIG_OUTPUT_SAMPLE_RATE_HZ: the UAC descriptor advertises a
-# single fixed rate and this path does not resample.
+# single fixed rate and this path does not resample. AirPlay on the same build
+# retunes the I2S clock to its own 44.1 kHz and the sink restores this rate
+# when the host resumes, so neither source is converted.
 #
 # 48000 rather than 44100 is deliberate. usb_device_uac drains the USB FIFO
 # by spk_bytes_per_ms = rate / 1000 * channels * bytes, an integer division
