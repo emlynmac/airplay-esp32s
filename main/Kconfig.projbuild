@@ -471,42 +471,6 @@ menu "Airplay ESP Configuration"
     endmenu
 
     menu "AirPlay Protocol"
-        config AIRPLAY_FORCE_V1
-            bool "Default to AirPlay v1 (classic) only"
-            default n
-            help
-                Sets the mode a freshly flashed device boots in. The mode
-                is stored in NVS and can be changed at any time from the
-                web interface (Device Settings -> AirPlay Mode), taking
-                effect on the next restart, so this option only picks the
-                starting point.
-
-                By default the receiver accepts BOTH AirPlay 1 (classic
-                RAOP, used by TuneBlade, AirMusic, shairtunes2, older iOS
-                fallback) and AirPlay 2 (HomeKit pairing, HAP-encrypted
-                transport, used by current iOS). Protocol selection is
-                automatic based on the request shape.
-
-                Enable this option only if AirPlay 2 advertisement causes
-                problems on your network (e.g. iOS preferring AirPlay 2
-                with broken FairPlay verification), or to stream from
-                Apple Music for Windows, which refuses any device that
-                advertises AirPlay 2 markers. It hides the _airplay._tcp
-                service entirely and moves RTSP to the classic RAOP port
-                5000, leaving only _raop._tcp for classic clients. iOS
-                will fall back to AirPlay 1 with DACP remote control.
-
-                When disabled (default), the receiver advertises as an
-                AirPlay 2 device. Modern iOS uses the MRP (Media Remote
-                Protocol) for remote control in AirPlay 2 mode, which
-                is not implemented, so hardware play/pause falls back
-                to local mute.
-
-                Note: AirPlay v1 does not support RSA key exchange for
-                audio encryption in this codebase. The receiver will
-                advertise et=0 (no encryption). If iOS refuses to connect,
-                audio encryption support may need to be added.
-
         config AIRPLAY_TIMING_THRESHOLD_MS
             int "Early/late timing threshold for buffered streams (ms)"
             default 25

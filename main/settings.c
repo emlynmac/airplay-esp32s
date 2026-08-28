@@ -39,11 +39,7 @@ static uint8_t g_bt_volume = 64; /* default: 50 % */
 static bool g_bt_volume_loaded = false;
 #endif
 
-#ifdef CONFIG_AIRPLAY_FORCE_V1
-static bool g_airplay_v1 = true;
-#else
-static bool g_airplay_v1 = false;
-#endif
+static bool g_airplay_v1;
 static bool g_airplay_v1_configured;
 
 esp_err_t settings_init(void) {

@@ -62,9 +62,6 @@ The mode lives in NVS, so no rebuild is needed. Open the web interface and pick
 **Device Settings → AirPlay Mode**, then restart the device. The mDNS records and the RTSP
 listening port are both built at startup, so the change only takes effect on the next boot.
 
-`CONFIG_AIRPLAY_FORCE_V1=y` sets the mode a freshly flashed device starts in; after that
-the stored value wins.
-
 In v1 mode the receiver mirrors a classic RAOP advertisement: no `_airplay._tcp`
 service, a shairport-sync-style `_raop._tcp` TXT record, `Server: AirTunes/105.1` on RTSP
 responses, and RTSP on port 5000 instead of 7000.

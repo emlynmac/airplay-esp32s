@@ -126,7 +126,7 @@ void settings_device_name_to_hostname(const char *name, char *out,
  * This is the mode the running services were built around, fixed at
  * settings_init(). The RTSP and mDNS paths must use it rather than the
  * configured value, or a mid-session change would leave the TXT record and
- * the listening port disagreeing. Defaults to CONFIG_AIRPLAY_FORCE_V1.
+ * the listening port disagreeing. Defaults to AirPlay 2.
  */
 bool settings_airplay_v1(void);
 
