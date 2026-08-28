@@ -12,7 +12,6 @@
 
 #include "esp_log.h"
 #include "esp_mac.h"
-#include "esp_netif.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "sodium.h"
@@ -458,6 +457,8 @@ int rtsp_dispatch(int socket, rtsp_conn_t *conn, const uint8_t *raw_request,
     return -1;
   }
 
+  ESP_LOGD(TAG, "<- %s %s", req.method, req.path);
+
   // Extract DACP headers if present (AirPlay 1 only — modern iOS AirPlay 2
   // does not send these; it uses MRP for remote control instead).
   // parse_raw_header uses a static buffer — copy before calling again.
@@ -507,10 +508,18 @@ int rtsp_dispatch(int socket, rtsp_conn_t *conn, const uint8_t *raw_request,
 static void handle_options(int socket, rtsp_conn_t *conn,
                            const rtsp_request_t *req, const uint8_t *raw,
                            size_t raw_len) {
+#ifdef CONFIG_AIRPLAY_FORCE_V1
+  // A classic-only sender inspects this list; the AirPlay 2 methods are enough
+  // for Apple Music on Windows to give up straight after OPTIONS.
+  const char *public_methods =
+      "Public: ANNOUNCE, SETUP, RECORD, PAUSE, FLUSH, TEARDOWN, OPTIONS, "
+      "GET_PARAMETER, SET_PARAMETER\r\n";
+#else
   const char *public_methods =
       "Public: ANNOUNCE, SETUP, RECORD, PAUSE, FLUSH, FLUSHBUFFERED, TEARDOWN, "
       "OPTIONS, POST, GET, SET_PARAMETER, GET_PARAMETER, SETPEERS, "
       "SETRATEANCHORTIME\r\n";
+#endif
 
   // AirPlay v1: handle Apple-Challenge if present. Triggered by request
   // shape, so safe unconditionally — iOS in AirPlay 2 mode does not send
@@ -518,16 +527,22 @@ static void handle_options(int socket, rtsp_conn_t *conn,
   const char *challenge = parse_raw_header(raw, raw_len, "Apple-Challenge:");
   if (challenge) {
     conn->protocol_version = 1;
-    esp_netif_ip_info_t ip_info;
-    esp_netif_t *netif = esp_netif_get_handle_from_ifkey("WIFI_STA_DEF");
-    if (netif && esp_netif_get_ip_info(netif, &ip_info) == ESP_OK) {
+    // The sender verifies that the response embeds the address it connected
+    // to, so take it from the socket: hardcoding the WiFi netif yields 0.0.0.0
+    // on an Ethernet-attached board and the sender then walks away silently.
+    struct sockaddr_in local = {0};
+    socklen_t local_len = sizeof(local);
+    if (getsockname(socket, (struct sockaddr *)&local, &local_len) == 0 &&
+        local.sin_addr.s_addr != 0) {
       uint8_t mac[6];
       esp_read_mac(mac, ESP_MAC_WIFI_STA);
 
       char response_b64[512];
-      if (rsa_apple_challenge_response(challenge, ip_info.ip.addr, mac,
+      if (rsa_apple_challenge_response(challenge, local.sin_addr.s_addr, mac,
                                        response_b64,
                                        sizeof(response_b64)) == 0) {
+        ESP_LOGI(TAG, "Apple-Challenge answered for local IP %s",
+                 inet_ntoa(local.sin_addr));
         char headers[768];
         snprintf(headers, sizeof(headers), "%sApple-Response: %s\r\n",
                  public_methods, response_b64);

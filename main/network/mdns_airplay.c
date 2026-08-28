@@ -1,3 +1,4 @@
+#include "esp_app_desc.h"
 #include "esp_log.h"
 #include "esp_mac.h"
 #include "mdns.h"
@@ -7,6 +8,7 @@
 #include "hap.h"
 #include "mdns_airplay.h"
 #include "rtsp_handlers.h"
+#include "rtsp_server.h"
 #include "wifi.h"
 #include "settings.h"
 
@@ -44,6 +46,12 @@ static const char *TAG = "mdns_airplay";
 // Model identifier - AudioAccessory for speaker appearance
 // AppleTV3,2 = Apple TV, AudioAccessory5,1 = HomePod mini (speaker)
 #define AIRPLAY_MODEL "AudioAccessory5,1"
+
+// In classic mode the device must not look like an AirPlay 2 speaker at all:
+// AirPort4,107 is the first-generation AirPort Express and 105.1 is the source
+// version it reported.
+#define AIRPLAY_V1_MODEL          "AirPort4,107"
+#define AIRPLAY_V1_SOURCE_VERSION "105.1"
 
 void mdns_airplay_init(void) {
   char mac_str[18];
@@ -96,7 +104,7 @@ void mdns_airplay_init(void) {
 
 #ifndef CONFIG_AIRPLAY_FORCE_V1
   // ========================================
-  // _airplay._tcp service (port 7000)
+  // _airplay._tcp service
   // Only registered for AirPlay 2 mode
   // ========================================
   mdns_txt_item_t airplay_txt[] = {
@@ -111,9 +119,9 @@ void mdns_airplay_init(void) {
       {"acl", "0"},
   };
 
-  esp_err_t err =
-      mdns_service_add(device_name, "_airplay", "_tcp", 7000, airplay_txt,
-                       sizeof(airplay_txt) / sizeof(airplay_txt[0]));
+  esp_err_t err = mdns_service_add(
+      device_name, "_airplay", "_tcp", AIRPLAY_RTSP_PORT, airplay_txt,
+      sizeof(airplay_txt) / sizeof(airplay_txt[0]));
   if (err != ESP_OK) {
     ESP_LOGE(TAG, "Failed to add _airplay._tcp service: %s",
              esp_err_to_name(err));
@@ -121,27 +129,33 @@ void mdns_airplay_init(void) {
 #endif
 
   // ========================================
-  // _raop._tcp service (port 7000)
+  // _raop._tcp service
   // RAOP = Remote Audio Output Protocol
   // Service name format: <MAC>@<DeviceName>
   // ========================================
 #ifdef CONFIG_AIRPLAY_FORCE_V1
-  // AirPlay v1 (classic RAOP): match squeezelite-esp32 txt record format.
-  // No features, no pk, no HAP pairing — just classic RAOP fields.
+  // AirPlay v1 (classic RAOP). This mirrors shairport-sync's classic record
+  // (bonjour_strings.c), which is the advertisement Apple Music on Windows
+  // accepts — it rejects anything carrying AirPlay 2 markers. No features, no
+  // pk, no HAP pairing.
   mdns_txt_item_t raop_txt[] = {
-      {"am", AIRPLAY_MODEL},
-      {"tp", "UDP"},                  // Transport protocol
-      {"sm", "false"},                // Sharing mode
-      {"sv", "false"},                // Server version (unused)
-      {"ek", "1"},                    // Encryption key available
-      {"et", "0,1"},                  // Encryption types: none, RSA
-      {"md", AIRPLAY_METADATA_TYPES}, // Metadata types
-      {"cn", "0,1"},                  // Audio codecs: PCM, ALAC
-      {"ch", "2"},                    // Channels
-      {"ss", "16"},                   // Sample size (bits)
-      {"sr", "44100"},                // Sample rate
-      {"vn", "3"},                    // Version number
-      {"txtvers", "1"},               // TXT record version
+      {"am", AIRPLAY_V1_MODEL},
+      {"ch", "2"},                                // Channels
+      {"cn", "0,1"},                              // Audio codecs: PCM, ALAC
+      {"da", "true"},                             // Digest auth
+      {"ek", "1"},                                // Encryption key available
+      {"et", "0,1"},                              // Encryption types: none, RSA
+      {"fv", esp_app_get_description()->version}, // Firmware version
+      {"md", AIRPLAY_METADATA_TYPES},             // Metadata types
+      {"pw", "false"},                            // No password required
+      {"sf", AIRPLAY_FLAGS},                      // Status flags
+      {"sr", "44100"},                            // Sample rate
+      {"ss", "16"},                               // Sample size (bits)
+      {"sv", "false"},                            // Server version (unused)
+      {"tp", "UDP"},                              // Transport protocol
+      {"vn", "65537"},                            // Version number
+      {"vs", AIRPLAY_V1_SOURCE_VERSION},          // Source version
+      {"txtvers", "1"},                           // TXT record version
   };
 #else
   // Dual-mode: include et=1 (RSA) so RAOP-only clients (TuneBlade, AirMusic,
@@ -166,10 +180,11 @@ void mdns_airplay_init(void) {
 #endif
 
   esp_err_t err_raop =
-      mdns_service_add(service_name, "_raop", "_tcp", 7000, raop_txt,
-                       sizeof(raop_txt) / sizeof(raop_txt[0]));
+      mdns_service_add(service_name, "_raop", "_tcp", AIRPLAY_RTSP_PORT,
+                       raop_txt, sizeof(raop_txt) / sizeof(raop_txt[0]));
   if (err_raop != ESP_OK) {
     ESP_LOGE(TAG, "Failed to add _raop._tcp service: %s",
              esp_err_to_name(err_raop));
   }
+  ESP_LOGI(TAG, "_raop._tcp advertised on port %d", AIRPLAY_RTSP_PORT);
 }
