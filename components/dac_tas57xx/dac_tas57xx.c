@@ -776,6 +776,9 @@ static void tas57xx_hf1_load_config_locked(void) {
     ESP_LOGW(TAG, "Ignoring unusable HF1 tuning at %s", HF1_CONFIG_PATH);
     return;
   }
+  /* Design for the rate that is playing, not the one the file was saved at,
+   * or every corner and time constant lands 8.8% out on a 44.1/48 swap. */
+  saved.sample_rate_hz = s_i2s_rate_hz;
 
   /* The saved tuning names the filter shapes the image cannot, so prefer it —
    * but only while it still reproduces the flow. Anything else and the flow
@@ -1023,6 +1026,9 @@ static void tas57xx_hf3_load_config_locked(void) {
     ESP_LOGW(TAG, "Ignoring unusable HF3 tuning at %s", HF3_CONFIG_PATH);
     return;
   }
+  /* Design for the rate that is playing, not the one the file was saved at,
+   * or every corner and time constant lands 8.8% out on a 44.1/48 swap. */
+  saved.sample_rate_hz = s_i2s_rate_hz;
 
   /* The saved tuning names the filter shapes the image cannot, so prefer it —
    * but only while it still reproduces the flow. Anything else and the flow
@@ -1277,6 +1283,12 @@ static void tas57xx_reapply_saved_tuning_locked(tas57xx_dev_t *d, int flow) {
     ESP_LOGW(TAG, "Ignoring unusable HF%d tuning at %s", flow, path);
     return;
   }
+  // The base is rate-stamped, so the tuning has to be designed for that rate.
+  if (flow == 3) {
+    saved.hf3.sample_rate_hz = s_i2s_rate_hz;
+  } else {
+    saved.hf1.sample_rate_hz = s_i2s_rate_hz;
+  }
 
   uint8_t *img = malloc((size_t)d->hf_size);
   if (img == NULL) {
@@ -1299,9 +1311,11 @@ static void tas57xx_reapply_saved_tuning_locked(tas57xx_dev_t *d, int flow) {
   }
 }
 
-/* Caller holds the mutex. */
+/* `keep_tuning` says the flow itself is unchanged and only the rate-stamped
+ * base is being swapped for its twin, which leaves an audition meaningful.
+ * Caller holds the mutex. */
 static esp_err_t tas57xx_select_flow_locked(int flow, const uint8_t *base,
-                                            size_t size) {
+                                            size_t size, bool keep_tuning) {
   tas57xx_dev_t *d = s_dev_count > 0 ? &s_devs[0] : NULL;
   if (d == NULL) {
     return ESP_ERR_INVALID_STATE;
@@ -1316,10 +1330,21 @@ static esp_err_t tas57xx_select_flow_locked(int flow, const uint8_t *base,
   }
   if (err == ESP_OK) {
     tas57xx_reapply_saved_tuning_locked(d, flow);
-    s_hf1_ready = false;
-    s_hf3_ready = false;
-    s_hf1_dirty = false;
-    s_hf3_dirty = false;
+    /* A different flow invalidates an audition outright — HF1 and HF3 share no
+     * coefficient map. A rate change only re-designs it, and the redownload
+     * below replays it onto the new base. */
+    const bool keep_hf1 = keep_tuning && s_hf1_dirty;
+    const bool keep_hf3 = keep_tuning && s_hf3_dirty;
+    if (keep_hf1) {
+      s_hf1.sample_rate_hz = s_i2s_rate_hz;
+    }
+    if (keep_hf3) {
+      s_hf3.sample_rate_hz = s_i2s_rate_hz;
+    }
+    s_hf1_ready = keep_hf1;
+    s_hf1_dirty = keep_hf1;
+    s_hf3_ready = keep_hf3;
+    s_hf3_dirty = keep_hf3;
     tas57xx_redownload_locked();
   }
   return err;
@@ -1336,7 +1361,7 @@ static esp_err_t tas57xx_install_base_locked(int flow) {
     ESP_LOGE(TAG, "No base flow at %s", path);
     return ESP_ERR_NOT_FOUND;
   }
-  esp_err_t err = tas57xx_select_flow_locked(flow, base, (size_t)size);
+  esp_err_t err = tas57xx_select_flow_locked(flow, base, (size_t)size, true);
   free(base);
   if (err == ESP_OK) {
     ESP_LOGI(TAG, "Selected HybridFlow %d from %s", flow, path);
@@ -1404,7 +1429,7 @@ esp_err_t dac_tas57xx_select_flow(int flow) {
   }
 
   xSemaphoreTake(s_dac_mutex, portMAX_DELAY);
-  esp_err_t err = tas57xx_select_flow_locked(flow, base, (size_t)size);
+  esp_err_t err = tas57xx_select_flow_locked(flow, base, (size_t)size, false);
   xSemaphoreGive(s_dac_mutex);
   free(base);
   if (err == ESP_OK) {
