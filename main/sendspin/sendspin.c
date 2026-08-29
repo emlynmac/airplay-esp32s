@@ -126,6 +126,19 @@ static esp_err_t sendspin_load_identity(void) {
 /*  Sending                                                            */
 /* ------------------------------------------------------------------ */
 
+/* Is `fd` still a live WebSocket on our server?  A session that dies without
+ * sending CLOSE -- a reset, a WiFi drop, a port scanner hanging up -- leaves
+ * no event behind, so a remembered fd cannot be trusted on its own: the
+ * number is recycled and would eventually address an unrelated request.
+ * log_stream.c avoids this by never remembering one at all; Sendspin's
+ * session is stateful, so it re-checks instead. */
+static bool sendspin_fd_is_live(int fd) {
+  if (!s_server || fd < 0) {
+    return false;
+  }
+  return httpd_ws_get_fd_info(s_server, fd) == HTTPD_WS_CLIENT_WEBSOCKET;
+}
+
 static bool sendspin_send_text(const char *json) {
   const int fd = s_fd;
   if (!s_server || fd < 0 || !json) {
@@ -576,12 +589,17 @@ static void sendspin_handle_binary(const uint8_t *data, size_t len,
 static esp_err_t sendspin_ws_handler(httpd_req_t *req) {
   if (req->method == HTTP_GET) {
     const int fd = httpd_req_to_sockfd(req);
-    if (s_fd >= 0 && s_fd != fd) {
+    if (s_fd >= 0 && s_fd != fd && sendspin_fd_is_live(s_fd)) {
       /* One server at a time. The protocol's own answer to a second one is
        * client/goodbye with reason another_server; dropping the newcomer is
-       * the conservative version of that for a device with three sockets. */
+       * the conservative version of that for a device with three sockets.
+       * Only an incumbent that is demonstrably still connected gets to win,
+       * or a dead one would lock the endpoint out until a reboot. */
       ESP_LOGW(TAG, "rejecting a second server on fd=%d", fd);
       return ESP_FAIL;
+    }
+    if (s_fd >= 0 && s_fd != fd) {
+      sendspin_session_close("replaced by a new server");
     }
     ESP_LOGI(TAG, "server connected on fd=%d", fd);
     sendspin_time_reset(&s_clock);
@@ -663,7 +681,10 @@ static void sendspin_advertise(void) {
   err = mdns_service_add(name, "_sendspin", "_tcp", 80, txt,
                          sizeof(txt) / sizeof(txt[0]));
   if (err != ESP_OK) {
-    ESP_LOGE(TAG, "failed to advertise _sendspin._tcp: %s",
+    /* Expected until something sets the mDNS hostname, which the AirPlay
+     * advertisement does after us. The caller retries every tick, so the
+     * signal to watch for is the absence of the success line below. */
+    ESP_LOGD(TAG, "_sendspin._tcp not advertised yet: %s",
              esp_err_to_name(err));
     return;
   }
@@ -684,6 +705,11 @@ static void sendspin_task(void *arg) {
 
     if (xSemaphoreTake(s_lock, pdMS_TO_TICKS(100)) != pdTRUE) {
       continue;
+    }
+
+    /* Reap a session that went away without saying so, before acting on it. */
+    if (s_fd >= 0 && !sendspin_fd_is_live(s_fd)) {
+      sendspin_session_close("socket gone");
     }
 
     switch (s_state) {
