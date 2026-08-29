@@ -721,6 +721,13 @@ static void tas57xx_load_hf(int i, bool multi) {
 static tas57xx_hf1_config_t s_hf1;
 static bool s_hf1_ready = false;
 
+/* An uncommitted audition lives only in coefficient RAM, and every flow
+ * download overwrites all of it. Standby and powerdown both cost a download —
+ * a Bluetooth handover does both — so track the audition and put it back
+ * afterwards, or the part quietly returns to the committed tuning while the
+ * page still shows the audition. */
+static bool s_hf1_dirty = false;
+
 /**
  * Device 0 carries the mains flow. HF1 and HF3 map coefficient RAM completely
  * differently, so the bi-amp input mixer decides which map applies — tuning a
@@ -828,11 +835,13 @@ esp_err_t dac_tas57xx_hf1_set(const tas57xx_hf1_config_t *cfg) {
     // The DSP has no program running, so coefficient RAM would be wiped by
     // the download that follows. Keep the values for the next apply.
     s_hf1 = *cfg;
+    s_hf1_dirty = true;
   } else {
     tas57xx_cram_sink_t sink = {.handle = d->handle};
     err = tas57xx_hf1_apply(&sink, cfg);
     if (err == ESP_OK) {
       s_hf1 = *cfg;
+      s_hf1_dirty = true;
     }
   }
   xSemaphoreGive(s_dac_mutex);
@@ -900,6 +909,7 @@ esp_err_t dac_tas57xx_hf1_commit(void) {
   if (err == ESP_OK) {
     free(d->hf_buf);
     d->hf_buf = img;
+    s_hf1_dirty = false;
     ESP_LOGI(TAG, "Committed HF1 tuning to %s", d->hf_path);
   } else {
     free(img);
@@ -967,6 +977,7 @@ esp_err_t dac_tas57xx_hf1_revert(void) {
   esp_err_t err = tas57xx_reload_flow_locked(d);
   if (err == ESP_OK) {
     s_hf1_ready = false;
+    s_hf1_dirty = false;
     tas57xx_hf1_load_config_locked();
     tas57xx_redownload_locked();
   }
@@ -980,6 +991,7 @@ esp_err_t dac_tas57xx_hf1_revert(void) {
 
 static tas57xx_hf3_config_t s_hf3;
 static bool s_hf3_ready = false;
+static bool s_hf3_dirty = false;
 
 // Caller must hold s_dac_mutex.
 static void tas57xx_hf3_load_config_locked(void) {
@@ -1068,6 +1080,7 @@ esp_err_t dac_tas57xx_hf3_set(const tas57xx_hf3_config_t *cfg) {
     err = ESP_ERR_NOT_SUPPORTED;
   } else if (!s_flow_resident) {
     s_hf3 = *cfg;
+    s_hf3_dirty = true;
   } else {
     tas57xx_cram_sink_t sink = {.handle = d->handle};
     err = tas57xx_hf3_apply(&sink, cfg);
@@ -1076,6 +1089,7 @@ esp_err_t dac_tas57xx_hf3_set(const tas57xx_hf3_config_t *cfg) {
       // rather than part of the tuning.
       tas57xx_write_input_mix(d);
       s_hf3 = *cfg;
+      s_hf3_dirty = true;
     }
   }
   xSemaphoreGive(s_dac_mutex);
@@ -1113,6 +1127,7 @@ esp_err_t dac_tas57xx_hf3_commit(void) {
   if (err == ESP_OK) {
     free(d->hf_buf);
     d->hf_buf = img;
+    s_hf3_dirty = false;
     ESP_LOGI(TAG, "Committed HF3 tuning to %s", d->hf_path);
   } else {
     free(img);
@@ -1135,11 +1150,40 @@ esp_err_t dac_tas57xx_hf3_revert(void) {
   esp_err_t err = tas57xx_reload_flow_locked(d);
   if (err == ESP_OK) {
     s_hf3_ready = false;
+    s_hf3_dirty = false;
     tas57xx_hf3_load_config_locked();
     tas57xx_redownload_locked();
   }
   xSemaphoreGive(s_dac_mutex);
   return err;
+}
+
+/**
+ * Write an uncommitted audition back over a freshly downloaded flow. The
+ * download restores the committed image, so without this the part would revert
+ * to it on any standby, powerdown or rate change while the page still showed
+ * the audition. Caller holds the mutex, and the devices are in standby with
+ * the flow already resident.
+ */
+static void tas57xx_replay_working_tuning_locked(void) {
+  tas57xx_dev_t *d;
+  if (s_hf1_dirty && (d = tas57xx_hf1_dev()) != NULL) {
+    tas57xx_cram_sink_t sink = {.handle = d->handle};
+    if (tas57xx_hf1_apply(&sink, &s_hf1) == ESP_OK) {
+      ESP_LOGI(TAG, "Replayed the uncommitted HF1 tuning");
+    } else {
+      ESP_LOGW(TAG, "Could not replay the uncommitted HF1 tuning");
+    }
+  }
+  if (s_hf3_dirty && (d = tas57xx_hf3_dev()) != NULL) {
+    tas57xx_cram_sink_t sink = {.handle = d->handle};
+    if (tas57xx_hf3_apply(&sink, &s_hf3) == ESP_OK) {
+      tas57xx_write_input_mix(d);
+      ESP_LOGI(TAG, "Replayed the uncommitted HF3 tuning");
+    } else {
+      ESP_LOGW(TAG, "Could not replay the uncommitted HF3 tuning");
+    }
+  }
 }
 
 /* ---- Flow selection ---------------------------------------------------- */
@@ -1274,6 +1318,8 @@ static esp_err_t tas57xx_select_flow_locked(int flow, const uint8_t *base,
     tas57xx_reapply_saved_tuning_locked(d, flow);
     s_hf1_ready = false;
     s_hf3_ready = false;
+    s_hf1_dirty = false;
+    s_hf3_dirty = false;
     tas57xx_redownload_locked();
   }
   return err;
@@ -1316,6 +1362,8 @@ static esp_err_t tas57xx_clear_flow_locked(void) {
   d->has_input_mix = false;
   s_hf1_ready = false;
   s_hf3_ready = false;
+  s_hf1_dirty = false;
+  s_hf3_dirty = false;
   tas57xx_redownload_locked();
   s_flow_resident = false;
   return ESP_OK;
@@ -1484,6 +1532,7 @@ static void tas57xx_restore_config(void) {
   for (int i = 0; i < s_dev_count; i++) {
     tas57xx_program_device(&s_devs[i]);
   }
+  tas57xx_replay_working_tuning_locked();
   /* The flow's exit-shutdown tail parks the volume, so re-apply ours. */
   tas57xx_apply_volume_locked();
 }
