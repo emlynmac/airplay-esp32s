@@ -38,6 +38,10 @@
 
 static const char *TAG = "rtsp_handlers";
 
+uint64_t airplay_features(void) {
+  return settings_airplay_v1() ? UINT64_C(0x5C4A00) : UINT64_C(0x1C340405C4A00);
+}
+
 // ============================================================================
 // Codec Registry
 // ============================================================================
@@ -508,25 +512,26 @@ int rtsp_dispatch(int socket, rtsp_conn_t *conn, const uint8_t *raw_request,
 static void handle_options(int socket, rtsp_conn_t *conn,
                            const rtsp_request_t *req, const uint8_t *raw,
                            size_t raw_len) {
-#ifdef CONFIG_AIRPLAY_FORCE_V1
-  // A classic-only sender inspects this list; the AirPlay 2 methods are enough
-  // for Apple Music on Windows to give up straight after OPTIONS.
-  const char *public_methods =
-      "Public: ANNOUNCE, SETUP, RECORD, PAUSE, FLUSH, TEARDOWN, OPTIONS, "
-      "GET_PARAMETER, SET_PARAMETER\r\n";
-#else
-  const char *public_methods =
-      "Public: ANNOUNCE, SETUP, RECORD, PAUSE, FLUSH, FLUSHBUFFERED, TEARDOWN, "
-      "OPTIONS, POST, GET, SET_PARAMETER, GET_PARAMETER, SETPEERS, "
-      "SETRATEANCHORTIME\r\n";
-#endif
-
   // AirPlay v1: handle Apple-Challenge if present. Triggered by request
   // shape, so safe unconditionally — iOS in AirPlay 2 mode does not send
   // this header.
   const char *challenge = parse_raw_header(raw, raw_len, "Apple-Challenge:");
   if (challenge) {
     conn->protocol_version = 1;
+  }
+
+  // A classic-only sender inspects this list and gives up straight after
+  // OPTIONS if it sees the AirPlay 2 methods, so answer in the dialect this
+  // connection is speaking rather than the one the receiver advertises.
+  const char *public_methods =
+      (conn->protocol_version == 1 || settings_airplay_v1())
+          ? "Public: ANNOUNCE, SETUP, RECORD, PAUSE, FLUSH, TEARDOWN, OPTIONS, "
+            "GET_PARAMETER, SET_PARAMETER\r\n"
+          : "Public: ANNOUNCE, SETUP, RECORD, PAUSE, FLUSH, FLUSHBUFFERED, "
+            "TEARDOWN, OPTIONS, POST, GET, SET_PARAMETER, GET_PARAMETER, "
+            "SETPEERS, SETRATEANCHORTIME\r\n";
+
+  if (challenge) {
     // The sender verifies that the response embeds the address it connected
     // to, so take it from the socket: hardcoding the WiFi netif yields 0.0.0.0
     // on an Ethernet-attached board and the sender then walks away silently.
@@ -571,14 +576,9 @@ static void handle_get(int socket, rtsp_conn_t *conn, const rtsp_request_t *req,
     rtsp_get_device_id(device_id, sizeof(device_id));
     settings_get_device_name(device_name, sizeof(device_name));
     const uint8_t *pk = hap_get_public_key();
-    uint64_t features =
-        ((uint64_t)AIRPLAY_FEATURES_HI << 32) | AIRPLAY_FEATURES_LO;
+    uint64_t features = airplay_features();
 
-#ifdef CONFIG_AIRPLAY_FORCE_V1
-    int64_t protocol_version = 1;
-#else
-    int64_t protocol_version = 2;
-#endif
+    int64_t protocol_version = settings_airplay_v1() ? 1 : 2;
 
     if (request_uses_rtsp(req)) {
       static uint8_t body[1024];

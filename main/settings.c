@@ -24,6 +24,7 @@ static const char *TAG = "settings";
 #define NVS_KEY_AMP_MUTE       "amp_mute"
 #define NVS_KEY_AMP_MIX        "amp_mix"
 #define NVS_KEY_SECOND_PBTL    "amp2_pbtl"
+#define NVS_KEY_AIRPLAY_V1     "ap_v1"
 
 #define MAX_WIFI_SSID_LEN     32
 #define MAX_WIFI_PASSWORD_LEN 64
@@ -38,6 +39,9 @@ static uint8_t g_bt_volume = 64; /* default: 50 % */
 static bool g_bt_volume_loaded = false;
 #endif
 
+static bool g_airplay_v1;
+static bool g_airplay_v1_configured;
+
 esp_err_t settings_init(void) {
   // Load volume on init
   nvs_handle_t nvs;
@@ -51,8 +55,17 @@ esp_err_t settings_init(void) {
       ESP_LOGI(TAG, "Loaded volume: %.2f dB", g_volume_db);
     }
 
+    uint8_t airplay_v1;
+    if (nvs_get_u8(nvs, NVS_KEY_AIRPLAY_V1, &airplay_v1) == ESP_OK) {
+      g_airplay_v1 = airplay_v1 != 0;
+      ESP_LOGI(TAG, "Loaded AirPlay mode: %s",
+               g_airplay_v1 ? "v1 (classic RAOP)" : "v2");
+    }
+
     nvs_close(nvs);
   }
+
+  g_airplay_v1_configured = g_airplay_v1;
 
   return ESP_OK;
 }
@@ -654,6 +667,43 @@ esp_err_t settings_set_second_pbtl(bool pbtl) {
   } else {
     ESP_LOGE(TAG, "Failed to save second amplifier wiring: %s",
              esp_err_to_name(err));
+  }
+  return err;
+}
+
+/* ================================================================== */
+/*  AirPlay protocol mode                                             */
+/* ================================================================== */
+
+bool settings_airplay_v1(void) {
+  return g_airplay_v1;
+}
+
+bool settings_airplay_v1_configured(void) {
+  return g_airplay_v1_configured;
+}
+
+esp_err_t settings_set_airplay_v1(bool v1) {
+  nvs_handle_t nvs;
+  esp_err_t err = nvs_open(NVS_NAMESPACE, NVS_READWRITE, &nvs);
+  if (err != ESP_OK) {
+    ESP_LOGE(TAG, "Failed to open NVS: %s", esp_err_to_name(err));
+    return err;
+  }
+
+  err = nvs_set_u8(nvs, NVS_KEY_AIRPLAY_V1, v1 ? 1 : 0);
+  if (err == ESP_OK) {
+    err = nvs_commit(nvs);
+  }
+  nvs_close(nvs);
+
+  if (err == ESP_OK) {
+    // Deliberately not applied to g_airplay_v1: the running services were
+    // built around the old value and only a restart can rebuild them.
+    g_airplay_v1_configured = v1;
+    ESP_LOGI(TAG, "Saved AirPlay mode: %s", v1 ? "v1 (classic RAOP)" : "v2");
+  } else {
+    ESP_LOGE(TAG, "Failed to save AirPlay mode: %s", esp_err_to_name(err));
   }
   return err;
 }

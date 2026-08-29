@@ -3,14 +3,14 @@
 #include "esp_err.h"
 #include <stdint.h>
 
-// 7000 is the AirPlay 2 port; classic RAOP lives on 5000, and a sender that
-// sees 7000 in the SRV record may take the AirPlay 2 path regardless of the
-// TXT record. The mDNS advertisement must use the same number.
-#ifdef CONFIG_AIRPLAY_FORCE_V1
-#define AIRPLAY_RTSP_PORT 5000
-#else
-#define AIRPLAY_RTSP_PORT 7000
-#endif
+/**
+ * Port the RTSP server listens on, which the mDNS advertisement must match.
+ *
+ * 7000 is the AirPlay 2 port; classic RAOP lives on 5000, and a sender that
+ * sees 7000 in the SRV record may take the AirPlay 2 path regardless of the
+ * TXT record.
+ */
+uint16_t airplay_rtsp_port(void);
 
 /**
  * Start the AirPlay RTSP server.

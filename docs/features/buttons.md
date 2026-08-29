@@ -20,19 +20,9 @@ In practice:
 | **AirPlay v1** (forced) | Works | Works fully via DACP |
 | **Bluetooth** | Works | Works fully via AVRCP passthrough |
 
-To get full button control over AirPlay, force v1 mode:
-
-```bash
-idf.py menuconfig
-# AirPlay Receiver → AirPlay Protocol
-# Enable "Force AirPlay v1 (classic) protocol"
-```
-
-Or in your sdkconfig defaults:
-
-```ini
-CONFIG_AIRPLAY_FORCE_V1=y
-```
+To get full button control over AirPlay, switch the receiver to v1 mode in the web
+interface: **Device Settings → AirPlay Mode → Legacy (v1)**, then restart the
+device.
 
 !!! warning "Trade-off"
 
