@@ -102,7 +102,7 @@ input:disabled{opacity:0.3}
 <input type='range' id='lv1' oninput='onTrim(1,false)' onchange='onTrim(1,true)'>
 <span class='db' id='lv1-db'>0.0 dB</span>
 <button class='mutebtn' id='lv1-mute' onclick='onMute(1)'>Mute</button></div>
-<div class='lev'><label><input type='checkbox' id='lv-gang' checked> Gang</label></div>
+<div class='lev' style='order:2'><label><input type='checkbox' id='lv-gang' checked> Gang</label></div>
 </div>
 <p class='hint' id='lv-hint' style='text-align:center;margin:0 0 16px'></p>
 
@@ -2482,6 +2482,11 @@ function setFlow(n){
   FLOW=n;
   $('lv0-nm').textContent=n===3?'Woofer (A)':'Right (A)';
   $('lv1-nm').textContent=n===3?'Tweeter (B)':'Left (B)';
+  /* Channel A is the right output, so in stereo the sliders are laid out in
+     the reverse of document order to put left on the left. Bi-amp has no
+     left and right, and reads better woofer first. */
+  $('lv0').parentNode.style.order=n===3?'0':'1';
+  $('lv1').parentNode.style.order=n===3?'1':'0';
   /* Bi-amp's two channels are a woofer and a tweeter, and moving them
      together is the one thing you never want to do to a crossover. */
   $('lv-gang').checked=n!==3;
