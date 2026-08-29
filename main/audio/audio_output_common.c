@@ -17,9 +17,29 @@
 
 #include "audio_output.h"
 
+#include "audio_receiver.h"
+
 // ~5 ms of scheduling + write delay between this call and the samples
 // reaching the backend.  Mirrors PIPELINE_LATENCY_US in audio_timing.c.
 #define OUTPUT_PIPELINE_LATENCY_US 5000
+
+// Alternate renderer, or NULL for the AirPlay receiver.  Written by the
+// arbitration path once the previous owner has been stopped and read once per
+// refill by the playback task, so a plain pointer swap is enough: the worst
+// interleaving costs one block of silence, not a torn read.
+static audio_output_source_fn s_source = NULL;
+
+void audio_output_set_source(audio_output_source_fn source) {
+  s_source = source;
+}
+
+size_t audio_output_read_source(int16_t *buffer, size_t samples) {
+  audio_output_source_fn source = s_source;
+  if (source) {
+    return source(buffer, samples);
+  }
+  return audio_receiver_read(buffer, samples);
+}
 
 // Not weak: every backend wants the same answer, and it is derived entirely
 // from the capability calls each one already provides.
@@ -49,6 +69,19 @@ __attribute__((weak)) bool audio_output_get_pipeline_us(int64_t *now_us,
   // No completion cursor: the timing engine falls back to the modelled
   // hardware latency.
   return false;
+}
+
+// S/PDIF and USB start their playback task on the first audio_output_start()
+// and leave it running: there is no channel to disable and nothing to hand
+// over to, so the task simply renders silence once its source goes quiet.
+// Only the I2S backend has a real stop, and it needs one because the DMA
+// channel is shared with whoever takes the output next.
+//
+// Handing that difference to the linker used to mean any config that
+// arbitrates between audio sources -- Bluetooth, the USB sink, Sendspin --
+// failed to link against these two backends instead of just running them
+// unchanged.
+__attribute__((weak)) void audio_output_stop(void) {
 }
 
 __attribute__((weak)) uint32_t audio_output_get_underruns(void) {

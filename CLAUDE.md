@@ -33,6 +33,7 @@ idf.py -p /dev/ttyUSB0 monitor
 | `esp32s3` | ESP32-S3 + external DAC (e.g. PCM5102A) | Default, 16MB flash |
 | `esp32s3-uac` | Same, as a USB speaker | Extends esp32s3 + `defaults.uac` |
 | `esp32s3-jtag` | ESP32-S3 with JTAG | Extends esp32s3 |
+| `esp32s3-sendspin` | ESP32-S3 + experimental Sendspin player | Extends esp32s3 + `defaults.sendspin` |
 | `esp32c5-xiao` | Seeed XIAO ESP32-C5 | Needs the pioarduino platform fork; the ESP-IDF native flow works too |
 | `esp32wrover-dev` | Freenove ESP32-WROVER devkit | 4MB, Bluetooth |
 | `waveshare-esp32s3` | Waveshare ESP32-S3 audio board | 16MB |
@@ -95,6 +96,10 @@ main/
 │   ├── hap_crypto.c        # HAP encryption
 │   └── srp.c               # SRP-6a key exchange
 ├── plist/                  # Apple Property List parsing
+├── sendspin/               # Sendspin player role (Kconfig-gated, experimental)
+│   ├── sendspin.c          # WebSocket endpoint, protocol state machine, mDNS
+│   ├── sendspin_time.c     # Server clock estimator (offset + skew least-squares fit)
+│   └── sendspin_player.c   # Re-blocks chunks into its own audio_engine_v2 timeline
 ├── usb/                    # TinyUSB composite device (UAC + HID transport controls)
 ├── network/                # Network stack
 │   ├── wifi.c              # WiFi AP+STA, captive portal, auto-reconnect
@@ -146,6 +151,8 @@ components/
 - **SPIFFS**: `data/` directory contents are flashed to SPIFFS. `data/www/` = web UI, `data/hf/` = DSP binaries. Only the four `base-hf<n>-<rate>.bin` hybrid-flow bases are tracked; tuned PPC3 dumps are user-supplied and deliberately untracked.
 - **Audio pipeline**: receiver → decode worker → **RTP-addressed timeline** → scheduler → AudioOutput (I2S/SPDIF/USB). Both the buffered (AAC) and realtime (ALAC) paths now run through engine v2; the old sorted PCM pool is gone. The scheduler anchors on the sender's clock (PTP for AirPlay 2, NTP for AirPlay 1), prerolls, then closes a drift servo against the DMA play position.
 - **AirPlay/Bluetooth coexistence**: Mutually exclusive at runtime. BT connection suspends AirPlay; disconnect resumes it. `bt_coex.c` releases the BT stack's DRAM once AirPlay owns the output.
+- **Output source indirection**: the playback task in every backend pulls through `audio_output_read_source()` (`audio_output_common.c`), which defaults to `audio_receiver_read` until something calls `audio_output_set_source()`. That is how Sendspin renders from its own engine without touching the AirPlay path. `audio_output_stop()` has a weak no-op default there too — only the I2S backend has a real stop, because only it has a DMA channel to hand over.
+- **Sendspin**: `CONFIG_SENDSPIN_ENABLE` (needs SPIRAM) puts a `/sendspin` WebSocket on the existing web server and advertises `_sendspin._tcp` on port 80. Milestone 1 is **unencrypted and PCM-only** — the Noise handshake, pairing and FLAC/Opus are not implemented. It owns a *separate* `audio_engine_v2_t` from `audio_receiver.c`, because the receiver's is deliberately never torn down. Chunks must be re-cut into fixed 512-frame blocks: `audio_engine_v2_push_pcm()` rejects more than `frame_samples`, and `audio_timeline_phase_blocked()` requires block-aligned RTP. It arbitrates with AirPlay and BT the same way the USB sink does.
 - **USB audio, two directions**: `defaults.usb` (`CONFIG_AUDIO_OUTPUT_USB`) makes the board a USB *source* — it appears as a microphone and AirPlay audio leaves over USB. `defaults.uac` (`CONFIG_USB_AUDIO_SINK`) makes it a USB *speaker* — the host plays into the same I2S DAC, which stops the AirPlay services while it streams. The UAC descriptor advertises a single rate, so `CONFIG_UAC_SAMPLE_RATE` must equal `CONFIG_OUTPUT_SAMPLE_RATE_HZ`.
 - **Eth/WiFi failover**: Ethernet preferred at boot; WiFi fallback if no cable. Hot-swap at runtime.
 - **Task stacks stay in internal RAM** (`main/spiram_task.h`): flash operations disable the cache, so a stack in SPIRAM trips `esp_task_stack_is_sane_cache_disabled()`. Large *local* buffers are the opposite problem — `CONFIG_ESP_MAIN_TASK_STACK_SIZE` is only 3584 bytes, so anything of that order belongs in a `heap_caps_calloc(..., MALLOC_CAP_SPIRAM)` allocation. Overflowing it corrupts whatever was allocated next, which shows up as unrelated driver failures.

@@ -28,6 +28,10 @@
 #include "usb_audio_sink.h"
 #endif
 
+#ifdef CONFIG_SENDSPIN_ENABLE
+#include "sendspin.h"
+#endif
+
 #ifdef CONFIG_DAC_TAS57XX
 #include "dac_tas57xx.h"
 #endif
@@ -114,7 +118,8 @@ static void start_airplay_services(void) {
   ESP_LOGI(TAG, "AirPlay ready");
   log_dram("airplay");
 }
-#if defined(CONFIG_BT_A2DP_ENABLE) || defined(CONFIG_USB_AUDIO_SINK)
+#if defined(CONFIG_BT_A2DP_ENABLE) || defined(CONFIG_USB_AUDIO_SINK) || \
+    defined(CONFIG_SENDSPIN_ENABLE)
 static void stop_airplay_services(void) {
   if (!s_airplay_started) {
     return;
@@ -204,6 +209,9 @@ static void network_monitor_task(void *pvParameters) {
 // over for as long as the host is streaming.  Called from the sink's
 // writer task.
 static void on_usb_audio_state_changed(bool streaming) {
+#ifdef CONFIG_SENDSPIN_ENABLE
+  sendspin_set_output_available(!streaming);
+#endif
   if (streaming) {
     ESP_LOGI(TAG, "USB audio streaming — disabling AirPlay");
     stop_airplay_services();
@@ -225,8 +233,31 @@ static void on_usb_audio_state_changed(bool streaming) {
 }
 #endif
 
+#ifdef CONFIG_SENDSPIN_ENABLE
+// Sendspin drives the same I2S channel as AirPlay through its own scheduler,
+// so ownership swaps whole: AirPlay's RTSP server and playback task go down
+// for the duration of a Sendspin stream.  Called from the WebSocket handler
+// when the server starts or ends a stream.
+static void on_sendspin_activity(bool active) {
+  if (active) {
+    ESP_LOGI(TAG, "Sendspin stream — disabling AirPlay");
+    stop_airplay_services();
+    playback_control_set_source(PLAYBACK_SOURCE_SENDSPIN);
+  } else {
+    ESP_LOGI(TAG, "Sendspin idle — re-enabling AirPlay");
+    playback_control_set_source(PLAYBACK_SOURCE_NONE);
+    if (ethernet_is_connected() || wifi_is_connected()) {
+      start_airplay_services();
+    }
+  }
+}
+#endif
+
 #ifdef CONFIG_BT_A2DP_ENABLE
 static void on_bt_state_changed(bool connected) {
+#ifdef CONFIG_SENDSPIN_ENABLE
+  sendspin_set_output_available(!connected);
+#endif
   if (connected) {
     ESP_LOGI(TAG, "BT connected — disabling AirPlay");
     stop_airplay_services();
@@ -400,6 +431,14 @@ void app_main(void) {
   log_dram("eth+wifi");
 
   // Start services that work on any interface
+#ifdef CONFIG_SENDSPIN_ENABLE
+  // Before the web server: it registers the /sendspin endpoint as it starts.
+  esp_err_t sendspin_err = sendspin_init(on_sendspin_activity);
+  if (sendspin_err != ESP_OK) {
+    ESP_LOGE(TAG, "Sendspin init failed: %s", esp_err_to_name(sendspin_err));
+  }
+  log_dram("sendspin");
+#endif
   web_server_start(80);
   task_create_spiram(network_monitor_task, "net_mon", 4096, NULL, 5, NULL,
                      NULL);

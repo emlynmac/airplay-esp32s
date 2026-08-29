@@ -563,4 +563,56 @@ menu "Airplay ESP Configuration"
                 double-click window expires. Two presses within that window
                 cycle the audio channel mode instead of play/pause.
     endmenu
+
+    menu "Sendspin"
+        config SENDSPIN_ENABLE
+            bool "Enable Sendspin player role (experimental)"
+            default n
+            depends on SPIRAM
+            help
+                Advertise _sendspin._tcp and accept a Sendspin server on the
+                web server's WebSocket endpoint, presenting the device as a
+                Sendspin "player@v1" client.
+
+                This first milestone is unencrypted and PCM-only: the Noise
+                handshake, pairing and the FLAC/Opus codecs are not
+                implemented yet, so it only interoperates with a server that
+                allows an unauthenticated client. It shares the I2S output
+                with AirPlay and Bluetooth, so only one of the three can play
+                at a time.
+
+                Needs SPIRAM for its own playout timeline.
+
+        config SENDSPIN_TIMELINE_BLOCKS
+            int "Playout timeline depth (blocks of 512 frames)"
+            default 192
+            range 32 512
+            depends on SENDSPIN_ENABLE
+            help
+                Each block holds 512 stereo frames (~11.6 ms at 44.1 kHz) and
+                costs 2 KB of PSRAM. The default is ~2.2 s of audio for
+                384 KB, which is well past what a LAN sender needs; the value
+                is also what the client reports as its buffer capacity.
+
+        config SENDSPIN_RX_BUFFER_SIZE
+            int "WebSocket receive buffer (bytes)"
+            default 32768
+            range 8192 131072
+            depends on SENDSPIN_ENABLE
+            help
+                Largest binary message accepted from the server, allocated
+                once in PSRAM. A 150 ms chunk of 44.1 kHz 16-bit stereo PCM is
+                about 26 KB, which is the protocol's worst case for this
+                milestone.
+
+        config SENDSPIN_TIME_SYNC_INTERVAL_MS
+            int "Clock sync interval (ms)"
+            default 2000
+            range 200 30000
+            depends on SENDSPIN_ENABLE
+            help
+                Steady-state interval between client/time requests. The
+                initial burst runs much faster than this so the filter
+                converges before the client reports itself available.
+    endmenu
 endmenu

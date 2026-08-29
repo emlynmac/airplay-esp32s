@@ -1,0 +1,7 @@
+# Sendspin player role, layered on top of a board's own defaults.
+#
+# Experimental and unencrypted: it only talks to a Sendspin server that
+# permits an unauthenticated client, and it decodes PCM only. Enabling it
+# costs ~384 KB of PSRAM for its playout timeline plus 64 KB for the
+# WebSocket buffers, and adds two HTTP server sockets.
+CONFIG_SENDSPIN_ENABLE=y

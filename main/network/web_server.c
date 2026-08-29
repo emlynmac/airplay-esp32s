@@ -28,6 +28,10 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 
+#ifdef CONFIG_SENDSPIN_ENABLE
+#include "sendspin.h"
+#endif
+
 #ifdef CONFIG_DAC_TAS58XX
 #include "dac_tas58xx.h"
 #endif
@@ -2140,6 +2144,13 @@ esp_err_t web_server_start(uint16_t port) {
   // unchecked, so an undercount silently drops whatever registers last, which
   // is log_stream's /ws/logs. Keep these in step with the handlers below.
   config.max_uri_handlers = 38; // 32 here + /ws/logs, plus 5 spare
+#ifdef CONFIG_SENDSPIN_ENABLE
+  config.max_uri_handlers += 1; // /sendspin
+  // The Sendspin server holds its WebSocket open for as long as the speaker
+  // exists, so it permanently occupies a slot that the web UI would otherwise
+  // reuse.  Without this, opening the config page evicts the audio session.
+  config.max_open_sockets += 2;
+#endif
 #ifdef DAC_HAS_SUB_OFFSET
   config.max_uri_handlers += 2; // sub level get/post
 #endif
@@ -2430,6 +2441,9 @@ esp_err_t web_server_start(uint16_t port) {
 #endif
 
   log_stream_register(s_server);
+#ifdef CONFIG_SENDSPIN_ENABLE
+  sendspin_register(s_server);
+#endif
 
   ESP_LOGI(TAG, "Web server started on port %d with captive portal support",
            port);
