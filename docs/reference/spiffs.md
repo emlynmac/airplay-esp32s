@@ -91,6 +91,6 @@ maximum upload size is 64 KB.
 | Path | Used by |
 | --- | --- |
 | `/spiffs/www/` | Web server — setup portal, logs, equaliser |
-| `/spiffs/hf/base-hf<n>-<rate>.bin` | [SqueezeAMP hybrid flow DSP](../boards/squeezeamp.md#hybrid-flow-dsp) |
+| `/spiffs/hf/base-hf<n>-<rate>.bin` | [HybridFlow DSP](../features/hybridflow.md) |
 | `/spiffs/hf/tas5825m_fw-<rate>.bin` | [Full PPC3 tuning](../boards/esparagus-audio-brick.md#full-ppc3-tuning) |
 | `/spiffs/bg/background.bin` | [ST7789 background image](../features/tft-display.md#background-image) |
