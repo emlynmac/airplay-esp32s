@@ -54,9 +54,11 @@ two reasons to do this:
 
 - **Hardware buttons.** iOS only sends DACP headers in v1 mode, so this is what makes
   [hardware buttons](buttons.md#read-this-first-the-airplay-v1-requirement) work.
-- **Apple Music for Windows.** It is a RAOP-only sender and refuses any device carrying
-  AirPlay 2 markers, reporting that the device "is not compatible with this version of
-  AMPLibraryAgent".
+- **Apple Music for Windows.** It is a RAOP-only sender and refuses any device that
+  advertises the `_airplay._tcp` service, reporting that the device "is not compatible
+  with this version of AMPLibraryAgent". The device still appears in its picker and it
+  still opens an RTSP connection — it sends `OPTIONS` with an `Apple-Challenge` and then
+  walks away.
 
 The mode lives in NVS, so no rebuild is needed. Open the web interface and pick
 **Device Settings → AirPlay Mode**, then restart the device. The mDNS records and the RTSP
@@ -67,3 +69,9 @@ service, a shairport-sync-style `_raop._tcp` TXT record, `Server: AirTunes/105.1
 responses, and RTSP on port 5000 instead of 7000.
 
 It costs you AirPlay 2 features: HomeKit pairing, encrypted transport and multi-room sync.
+
+There is no setting that keeps both senders happy. The deciding factor for Apple Music is
+the presence of `_airplay._tcp` alone — a receiver publishing a fully classic `_raop._tcp`
+TXT record on port 5000 is still refused while that service is up, and starts working the
+moment it is withdrawn. iOS needs the same service to negotiate AirPlay 2, and a device
+publishes one advertisement, so the mode is a real either/or.

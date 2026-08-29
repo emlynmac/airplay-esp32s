@@ -13,10 +13,13 @@
 static const char *TAG = "rtsp_message";
 
 // A classic sender reads the source version here too, not just in the mDNS TXT
-// record, and rejects an AirPlay 2 one.
-static const char *rtsp_server_header(void) {
-  return settings_airplay_v1() ? "Server: AirTunes/105.1\r\n"
-                               : "Server: AirTunes/377.40.00\r\n";
+// record, and rejects an AirPlay 2 one. Answer per-connection: a v2 receiver
+// still has to speak 105.1 to a classic sender that found it anyway.
+static const char *rtsp_server_header(const rtsp_conn_t *conn) {
+  const bool classic =
+      (conn && conn->protocol_version == 1) || settings_airplay_v1();
+  return classic ? "Server: AirTunes/105.1\r\n"
+                 : "Server: AirTunes/377.40.00\r\n";
 }
 
 const uint8_t *rtsp_find_header_end(const uint8_t *data, size_t len) {
@@ -169,7 +172,7 @@ int rtsp_send_response(int socket, rtsp_conn_t *conn, int status_code,
                        size_t body_len) {
   char header[1024];
   int header_len;
-  const char *server_hdr = rtsp_server_header();
+  const char *server_hdr = rtsp_server_header(conn);
 
   if (extra_headers && body && body_len > 0) {
     header_len = snprintf(header, sizeof(header),
@@ -243,7 +246,7 @@ int rtsp_send_http_response(int socket, rtsp_conn_t *conn, int status_code,
                             "CSeq: 1\r\n"
                             "\r\n",
                             status_code, status_text, content_type, body_len,
-                            rtsp_server_header());
+                            rtsp_server_header(conn));
 
   // Build complete response
   size_t total_len = (size_t)header_len + body_len;

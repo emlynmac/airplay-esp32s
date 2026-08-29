@@ -512,22 +512,26 @@ int rtsp_dispatch(int socket, rtsp_conn_t *conn, const uint8_t *raw_request,
 static void handle_options(int socket, rtsp_conn_t *conn,
                            const rtsp_request_t *req, const uint8_t *raw,
                            size_t raw_len) {
-  // A classic-only sender inspects this list; the AirPlay 2 methods are enough
-  // for Apple Music on Windows to give up straight after OPTIONS.
-  const char *public_methods =
-      settings_airplay_v1()
-          ? "Public: ANNOUNCE, SETUP, RECORD, PAUSE, FLUSH, TEARDOWN, OPTIONS, "
-            "GET_PARAMETER, SET_PARAMETER\r\n"
-          : "Public: ANNOUNCE, SETUP, RECORD, PAUSE, FLUSH, FLUSHBUFFERED, "
-            "TEARDOWN, OPTIONS, POST, GET, SET_PARAMETER, GET_PARAMETER, "
-            "SETPEERS, SETRATEANCHORTIME\r\n";
-
   // AirPlay v1: handle Apple-Challenge if present. Triggered by request
   // shape, so safe unconditionally — iOS in AirPlay 2 mode does not send
   // this header.
   const char *challenge = parse_raw_header(raw, raw_len, "Apple-Challenge:");
   if (challenge) {
     conn->protocol_version = 1;
+  }
+
+  // A classic-only sender inspects this list and gives up straight after
+  // OPTIONS if it sees the AirPlay 2 methods, so answer in the dialect this
+  // connection is speaking rather than the one the receiver advertises.
+  const char *public_methods =
+      (conn->protocol_version == 1 || settings_airplay_v1())
+          ? "Public: ANNOUNCE, SETUP, RECORD, PAUSE, FLUSH, TEARDOWN, OPTIONS, "
+            "GET_PARAMETER, SET_PARAMETER\r\n"
+          : "Public: ANNOUNCE, SETUP, RECORD, PAUSE, FLUSH, FLUSHBUFFERED, "
+            "TEARDOWN, OPTIONS, POST, GET, SET_PARAMETER, GET_PARAMETER, "
+            "SETPEERS, SETRATEANCHORTIME\r\n";
+
+  if (challenge) {
     // The sender verifies that the response embeds the address it connected
     // to, so take it from the socket: hardcoding the WiFi netif yields 0.0.0.0
     // on an Ethernet-attached board and the sender then walks away silently.
