@@ -357,8 +357,11 @@ static void sendspin_send_hello(void) {
 
   cJSON *info = cJSON_AddObjectToObject(payload, "device_info");
   if (info) {
-    cJSON_AddStringToObject(info, "product_name", "ESP32 AirPlay Receiver");
-    cJSON_AddStringToObject(info, "manufacturer", "airplay-contrib");
+    /* A server renders these as "<manufacturer>/<product_name>", and the same
+     * board also advertises an AirPlay receiver, so name the transport here to
+     * tell the two entries apart. */
+    cJSON_AddStringToObject(info, "product_name", "Sendspin");
+    cJSON_AddStringToObject(info, "manufacturer", "AirPlay-ESP32");
     cJSON_AddStringToObject(info, "software_version",
                             esp_app_get_description()->version);
     cJSON_AddStringToObject(info, "mac_address", mac_str);
