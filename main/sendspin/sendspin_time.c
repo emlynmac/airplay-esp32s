@@ -3,8 +3,9 @@
 #include <string.h>
 
 /* An exchange is only useful if it was not delayed. Anything slower than this
- * multiple of the best round trip seen so far carries an unknown amount of
- * one-sided queueing delay, which biases the offset by half of it. */
+ * multiple of the best round trip still in the window carries an unknown
+ * amount of one-sided queueing delay, which biases the offset by half of
+ * it. */
 #define SENDSPIN_TIME_RTT_TOLERANCE 2
 
 /* ...but on a quiet LAN the best RTT can be a few hundred microseconds, and
@@ -110,14 +111,22 @@ bool sendspin_time_update(sendspin_time_t *t, int64_t client_transmitted,
                             2;
   const int64_t midpoint_us = client_transmitted + ((rtt_us) / 2);
 
-  if (t->best_rtt_us == 0 || rtt_us < t->best_rtt_us) {
-    t->best_rtt_us = rtt_us;
-  } else if (t->count > 0 &&
-             rtt_us > (t->best_rtt_us * SENDSPIN_TIME_RTT_TOLERANCE) +
-                          SENDSPIN_TIME_RTT_SLACK_US) {
+  /* Drop an exchange that was clearly delayed, but only once there is a
+   * window to judge it against: applying this while the filter is still
+   * filling lets a single lucky-fast early sample set a baseline nothing
+   * else can meet, and then it never converges at all. */
+  if (t->count >= SENDSPIN_TIME_MIN_SAMPLES && t->best_rtt_us > 0 &&
+      rtt_us > (t->best_rtt_us * SENDSPIN_TIME_RTT_TOLERANCE) +
+                   SENDSPIN_TIME_RTT_SLACK_US) {
     t->rejected++;
-    return false;
+    if (t->reject_run < SENDSPIN_TIME_MAX_REJECT_RUN) {
+      t->reject_run++;
+      return false;
+    }
+    /* Fall through: the link has evidently changed, so take this one and
+     * re-derive the baseline from it. */
   }
+  t->reject_run = 0;
 
   const sendspin_time_sample_t sample = {
       .local_us = midpoint_us,
@@ -132,6 +141,17 @@ bool sendspin_time_update(sendspin_time_t *t, int64_t client_transmitted,
     t->next = (uint8_t)((t->next + 1U) % SENDSPIN_TIME_WINDOW);
   }
   t->accepted++;
+
+  /* Re-derive the baseline from the retained window rather than latching an
+   * all-time minimum, so it ages out with the samples: a record set minutes
+   * ago on a link that has since slowed would otherwise reject every sample
+   * that is perfectly good now. */
+  t->best_rtt_us = t->samples[0].rtt_us;
+  for (uint8_t i = 1; i < t->count; i++) {
+    if (t->samples[i].rtt_us < t->best_rtt_us) {
+      t->best_rtt_us = t->samples[i].rtt_us;
+    }
+  }
 
   sendspin_time_refit(t);
   return true;

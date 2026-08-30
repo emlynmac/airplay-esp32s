@@ -39,6 +39,13 @@
 /** Shortest history the regression will draw a rate from (us). */
 #define SENDSPIN_TIME_MIN_SPAN_US 1500000LL
 
+/** Consecutive outlier rejections tolerated before one is let through
+ *  anyway. The baseline is the best round trip still in the window, so the
+ *  window has to keep moving for it to track the link; without this a spell
+ *  of congestion after a lucky-fast sample would reject everything for ever
+ *  and freeze the fit. */
+#define SENDSPIN_TIME_MAX_REJECT_RUN 4
+
 typedef struct {
   int64_t local_us;  /* round-trip midpoint on our clock */
   int64_t offset_us; /* server - local at that instant */
@@ -51,6 +58,7 @@ typedef struct {
   uint8_t next; /* ring insert position once full */
   uint32_t accepted;
   uint32_t rejected;
+  uint8_t reject_run; /* consecutive outlier rejections */
 
   /* Fit: offset_us(local_us) = base_offset_us + skew * (local_us - base_us) */
   int64_t base_us;
