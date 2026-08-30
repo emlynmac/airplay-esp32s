@@ -15,6 +15,7 @@
 #include "sodium.h"
 
 #include "ethernet.h"
+#include "sendspin_noise.h"
 #include "sendspin_player.h"
 #include "sendspin_time.h"
 #include "settings.h"
@@ -43,16 +44,40 @@ static const char *TAG = "sendspin";
  * characters with the padding stripped. */
 #define SENDSPIN_CLIENT_ID_LEN 43
 
+/* The Noise prologue is the exact wire bytes of client/init followed by
+ * server/init. Both are short and fixed in shape; anything approaching this
+ * is a server we do not understand. */
+#define SENDSPIN_PROLOGUE_MAX 1024
+
+/* Largest JSON control message we will send. client/hello is the big one at
+ * a few hundred bytes. */
+#define SENDSPIN_TX_PLAIN_MAX 2048
+
+/* First byte of a decrypted binary message. Audio chunk layout is
+ * [4][timestamp:8 BE][send_ahead:4 BE][encoded audio]. */
+#define SENDSPIN_BIN_JSON        0
+#define SENDSPIN_BIN_FRAGMENT    1
+#define SENDSPIN_BIN_AUDIO_CHUNK 4
+#define SENDSPIN_AUDIO_HEADER    13
+
 typedef enum {
   SENDSPIN_IDLE = 0,  /* no socket */
   SENDSPIN_NEED_INIT, /* socket up, client/init not sent yet */
   SENDSPIN_INIT_SENT, /* waiting for server/init */
-  SENDSPIN_READY,     /* hello exchanged; clock sync running */
-  SENDSPIN_ACTIVATED, /* server/activate seen; state reported */
+  SENDSPIN_HANDSHAKE, /* waiting for Noise message 1 */
+  SENDSPIN_ENCRYPTED, /* transport mode; waiting for server/hello */
+  SENDSPIN_READY,     /* client/hello sent; waiting for server/activate */
+  SENDSPIN_ACTIVATED, /* activated; clock sync and state reporting run */
 } sendspin_state_t;
 
 static httpd_handle_t s_server = NULL;
 static SemaphoreHandle_t s_lock = NULL;
+/* Serialises socket writes.  Replies are sent from the httpd task while the
+ * housekeeping task sends time requests and state reports, and a WebSocket
+ * frame is several write() calls, so without this two frames interleave on
+ * the wire and the server sees a corrupt stream.  Always taken *inside*
+ * s_lock, never the other way round. */
+static SemaphoreHandle_t s_tx_lock = NULL;
 static TaskHandle_t s_task = NULL;
 
 static volatile int s_fd = -1;
@@ -74,6 +99,19 @@ static size_t s_asm_len = 0;
 static uint8_t s_asm_type = 0;
 static bool s_asm_active = false;
 
+/* Noise transport scratch. s_pt holds the plaintext of a received frame;
+ * s_tx_plain and s_tx_cipher build one outgoing frame and are only touched
+ * under s_tx_lock. */
+static uint8_t *s_pt = NULL;
+static uint8_t *s_tx_plain = NULL;
+static uint8_t *s_tx_cipher = NULL;
+
+static sendspin_noise_t s_noise;
+static uint8_t s_client_priv[crypto_scalarmult_curve25519_BYTES];
+static uint8_t s_client_pub[crypto_scalarmult_curve25519_BYTES];
+static uint8_t s_prologue[SENDSPIN_PROLOGUE_MAX];
+static size_t s_prologue_len = 0;
+
 static char s_client_id[SENDSPIN_CLIENT_ID_LEN + 1];
 static bool s_mdns_advertised = false;
 static int64_t s_last_time_tx_us = 0;
@@ -82,25 +120,22 @@ static int64_t s_last_time_tx_us = 0;
 /*  Identity                                                           */
 /* ------------------------------------------------------------------ */
 
-/* client_id is the base64url of a Curve25519 public key. Nothing in this
- * milestone uses the private half, but generating a real keypair now means
- * the identity the server pins today is the same one the Noise handshake
- * will authenticate later, instead of changing under it. */
+/* client_id is the base64url of a Curve25519 public key, and the same keypair
+ * is the client's static key in the Noise handshake -- which is why the
+ * private half is kept for the life of the process rather than wiped here. */
 static esp_err_t sendspin_load_identity(void) {
-  uint8_t sk[crypto_scalarmult_curve25519_BYTES];
-  uint8_t pk[crypto_scalarmult_curve25519_BYTES];
-
   nvs_handle_t nvs;
   esp_err_t err = nvs_open(SENDSPIN_NVS_NAMESPACE, NVS_READWRITE, &nvs);
   if (err != ESP_OK) {
     return err;
   }
 
-  size_t len = sizeof(sk);
-  err = nvs_get_blob(nvs, SENDSPIN_NVS_KEY_SK, sk, &len);
-  if (err != ESP_OK || len != sizeof(sk)) {
-    randombytes_buf(sk, sizeof(sk));
-    err = nvs_set_blob(nvs, SENDSPIN_NVS_KEY_SK, sk, sizeof(sk));
+  size_t len = sizeof(s_client_priv);
+  err = nvs_get_blob(nvs, SENDSPIN_NVS_KEY_SK, s_client_priv, &len);
+  if (err != ESP_OK || len != sizeof(s_client_priv)) {
+    randombytes_buf(s_client_priv, sizeof(s_client_priv));
+    err = nvs_set_blob(nvs, SENDSPIN_NVS_KEY_SK, s_client_priv,
+                       sizeof(s_client_priv));
     if (err == ESP_OK) {
       err = nvs_commit(nvs);
     }
@@ -111,13 +146,13 @@ static esp_err_t sendspin_load_identity(void) {
   }
   nvs_close(nvs);
 
-  if (crypto_scalarmult_curve25519_base(pk, sk) != 0) {
-    sodium_memzero(sk, sizeof(sk));
+  if (crypto_scalarmult_curve25519_base(s_client_pub, s_client_priv) != 0) {
+    sodium_memzero(s_client_priv, sizeof(s_client_priv));
     return ESP_FAIL;
   }
-  sodium_memzero(sk, sizeof(sk));
 
-  sodium_bin2base64(s_client_id, sizeof(s_client_id), pk, sizeof(pk),
+  sodium_bin2base64(s_client_id, sizeof(s_client_id), s_client_pub,
+                    sizeof(s_client_pub),
                     sodium_base64_VARIANT_URLSAFE_NO_PADDING);
   return ESP_OK;
 }
@@ -149,7 +184,12 @@ static bool sendspin_send_text(const char *json) {
       .payload = (uint8_t *)json,
       .len = strlen(json),
   };
+  if (xSemaphoreTake(s_tx_lock, pdMS_TO_TICKS(1000)) != pdTRUE) {
+    ESP_LOGW(TAG, "send timed out waiting for the socket");
+    return false;
+  }
   esp_err_t err = httpd_ws_send_frame_async(s_server, fd, &frame);
+  xSemaphoreGive(s_tx_lock);
   if (err != ESP_OK) {
     ESP_LOGW(TAG, "send failed on fd=%d: %s", fd, esp_err_to_name(err));
     return false;
@@ -157,9 +197,54 @@ static bool sendspin_send_text(const char *json) {
   return true;
 }
 
-/* Serialises and sends `root`, then frees it. Returns false if the socket has
- * gone; the caller treats that as a disconnect rather than an error. */
-static bool sendspin_send_json(cJSON *root) {
+/* Seals `body` as a Noise transport message and sends it as a binary frame.
+ * The nonce counter advances with the encryption, so encrypting and writing
+ * have to stay inside one critical section or two concurrent senders would
+ * put the frames on the wire out of counter order and the server's very next
+ * decryption would fail. */
+static bool sendspin_send_encrypted(uint8_t type, const uint8_t *body,
+                                    size_t len) {
+  const int fd = s_fd;
+  if (!s_server || fd < 0) {
+    return false;
+  }
+  if (len + 1 > SENDSPIN_TX_PLAIN_MAX) {
+    ESP_LOGE(TAG, "message of %u bytes exceeds the send buffer", (unsigned)len);
+    return false;
+  }
+  if (xSemaphoreTake(s_tx_lock, pdMS_TO_TICKS(1000)) != pdTRUE) {
+    ESP_LOGW(TAG, "send timed out waiting for the socket");
+    return false;
+  }
+
+  s_tx_plain[0] = type;
+  memcpy(&s_tx_plain[1], body, len);
+
+  size_t cipher_len = 0;
+  esp_err_t err = sendspin_noise_encrypt(
+      &s_noise, s_tx_plain, len + 1, s_tx_cipher,
+      SENDSPIN_TX_PLAIN_MAX + SENDSPIN_NOISE_TAG_LEN, &cipher_len);
+  if (err == ESP_OK) {
+    httpd_ws_frame_t frame = {
+        .type = HTTPD_WS_TYPE_BINARY,
+        .payload = s_tx_cipher,
+        .len = cipher_len,
+    };
+    err = httpd_ws_send_frame_async(s_server, fd, &frame);
+  }
+  xSemaphoreGive(s_tx_lock);
+
+  if (err != ESP_OK) {
+    ESP_LOGW(TAG, "encrypted send failed on fd=%d: %s", fd,
+             esp_err_to_name(err));
+    return false;
+  }
+  return true;
+}
+
+/* Serialises and sends `root` as a cleartext text frame, then frees it. Only
+ * the three handshake messages may take this route. */
+static bool sendspin_send_cleartext_json(cJSON *root) {
   if (!root) {
     return false;
   }
@@ -170,6 +255,31 @@ static bool sendspin_send_json(cJSON *root) {
   }
   ESP_LOGD(TAG, "tx %s", text);
   const bool ok = sendspin_send_text(text);
+  cJSON_free(text);
+  return ok;
+}
+
+/* Serialises and sends `root`, then frees it. Returns false if the socket has
+ * gone; the caller treats that as a disconnect rather than an error.
+ *
+ * The transport switches under this function: before the Noise split a
+ * message goes out as cleartext text, after it as an encrypted binary frame
+ * with a leading type byte. */
+static bool sendspin_send_json(cJSON *root) {
+  if (!sendspin_noise_ready(&s_noise)) {
+    return sendspin_send_cleartext_json(root);
+  }
+  if (!root) {
+    return false;
+  }
+  char *text = cJSON_PrintUnformatted(root);
+  cJSON_Delete(root);
+  if (!text) {
+    return false;
+  }
+  ESP_LOGD(TAG, "tx %s", text);
+  const bool ok = sendspin_send_encrypted(SENDSPIN_BIN_JSON,
+                                          (const uint8_t *)text, strlen(text));
   cJSON_free(text);
   return ok;
 }
@@ -190,6 +300,21 @@ static cJSON *sendspin_new_message(const char *type, cJSON **payload_out) {
   return root;
 }
 
+/* The Noise prologue is the raw bytes of client/init and server/init exactly
+ * as they crossed the wire, so neither may be re-serialised: two JSON writers
+ * that order keys differently would produce the same message and a different
+ * prologue, and the handshake would fail with nothing to point at. */
+static bool sendspin_prologue_append(const void *data, size_t len) {
+  if (s_prologue_len + len > sizeof(s_prologue)) {
+    ESP_LOGE(TAG, "prologue overflow (%u bytes)",
+             (unsigned)(s_prologue_len + len));
+    return false;
+  }
+  memcpy(&s_prologue[s_prologue_len], data, len);
+  s_prologue_len += len;
+  return true;
+}
+
 static void sendspin_send_init(void) {
   cJSON *payload = NULL;
   cJSON *root = sendspin_new_message("client/init", &payload);
@@ -199,7 +324,18 @@ static void sendspin_send_init(void) {
   cJSON_AddStringToObject(payload, "client_id", s_client_id);
   cJSON_AddNumberToObject(payload, "version", 1);
   cJSON_AddStringToObject(payload, "suite", "25519_ChaChaPoly_SHA256");
-  (void)sendspin_send_json(root);
+
+  char *text = cJSON_PrintUnformatted(root);
+  cJSON_Delete(root);
+  if (!text) {
+    return;
+  }
+  s_prologue_len = 0;
+  if (sendspin_prologue_append(text, strlen(text))) {
+    ESP_LOGD(TAG, "tx %s", text);
+    (void)sendspin_send_text(text);
+  }
+  cJSON_free(text);
 }
 
 static void sendspin_send_hello(void) {
@@ -259,7 +395,10 @@ static void sendspin_send_hello(void) {
     cJSON_AddArrayToObject(support, "supported_commands");
   }
 
-  cJSON_AddArrayToObject(payload, "supported_pair_methods");
+  /* An object keyed by method identifier, empty because no pairing method is
+   * implemented. That is only viable alongside unpaired access: a client that
+   * offers neither is "locked down" and must hang up on server/hello. */
+  cJSON_AddObjectToObject(payload, "supported_pair_methods");
   cJSON *unpaired = cJSON_AddObjectToObject(payload, "unpaired_access");
   if (unpaired) {
     cJSON_AddBoolToObject(unpaired, "enabled", true);
@@ -328,6 +467,8 @@ static void sendspin_session_close(const char *reason) {
   s_asm_len = 0;
   s_reported_available = false;
   s_state_dirty = false;
+  s_prologue_len = 0;
+  sendspin_noise_reset(&s_noise);
   sendspin_time_reset(&s_clock);
 
   if (sendspin_player_is_streaming()) {
@@ -346,6 +487,141 @@ static double sendspin_number(const cJSON *object, const char *key,
                               double fallback) {
   const cJSON *item = cJSON_GetObjectItemCaseSensitive(object, key);
   return cJSON_IsNumber(item) ? cJSON_GetNumberValue(item) : fallback;
+}
+
+/* ------------------------------------------------------------------ */
+/*  Noise handshake                                                    */
+/* ------------------------------------------------------------------ */
+
+/* Noise message 1 is an ephemeral key, an encrypted static key and an
+ * encrypted payload; message 2 is an ephemeral key and an encrypted "{}". */
+#define SENDSPIN_NOISE_MSG_MAX 256
+#define SENDSPIN_NOISE_MSG2_LEN \
+  (SENDSPIN_NOISE_KEY_LEN + 2 + SENDSPIN_NOISE_TAG_LEN)
+
+static void sendspin_handle_server_init(const cJSON *payload) {
+  if (s_state != SENDSPIN_INIT_SENT) {
+    sendspin_session_close("unexpected server/init");
+    return;
+  }
+  /* An exact match, not a floor: a future core format bumps this and defines
+   * its own negotiation. */
+  if ((int)sendspin_number(payload, "version", 0) != 1) {
+    sendspin_session_close("unsupported core message version");
+    return;
+  }
+
+  const cJSON *id = cJSON_GetObjectItemCaseSensitive(payload, "server_id");
+  const char *id_str = cJSON_IsString(id) ? cJSON_GetStringValue(id) : NULL;
+  uint8_t server_pub[crypto_scalarmult_curve25519_BYTES];
+  size_t decoded = 0;
+  if (!id_str || strlen(id_str) != SENDSPIN_CLIENT_ID_LEN ||
+      sodium_base642bin(server_pub, sizeof(server_pub), id_str, strlen(id_str),
+                        NULL, &decoded, NULL,
+                        sodium_base64_VARIANT_URLSAFE_NO_PADDING) != 0 ||
+      decoded != sizeof(server_pub)) {
+    sendspin_session_close("malformed server_id");
+    return;
+  }
+
+  if (sendspin_noise_start(&s_noise, s_client_priv, s_client_pub, server_pub,
+                           s_prologue, s_prologue_len) != ESP_OK) {
+    sendspin_session_close("handshake setup failed");
+    return;
+  }
+  ESP_LOGI(TAG, "server_id %s", id_str);
+  s_state = SENDSPIN_HANDSHAKE;
+}
+
+/* The message 1 payload names the PSK the server picked. We only ever hold
+ * the published Sentinel, so the answer is the same either way; logging which
+ * it was is the only way to tell an unpaired session apart from a server that
+ * still holds a pairing record we lost. */
+static void sendspin_log_psk_choice(const char *json, size_t len) {
+  cJSON *root = cJSON_ParseWithLength(json, len);
+  if (!root) {
+    return;
+  }
+  const cJSON *id = cJSON_GetObjectItemCaseSensitive(root, "psk_id");
+  const cJSON *category =
+      cJSON_GetObjectItemCaseSensitive(root, "psk_category");
+  const char *id_str = cJSON_IsString(id) ? cJSON_GetStringValue(id) : "";
+  if (strcmp(id_str, sendspin_noise_sentinel_psk_id()) != 0) {
+    /* A lookup miss. The spec's Sentinel Fallback says to answer with the
+     * Sentinel anyway; the server reads that as a credential mismatch and
+     * should offer its operator a re-pair. */
+    ESP_LOGW(TAG,
+             "server referenced an unknown PSK (%s, category %s) -- "
+             "falling back to the Sentinel; re-pair on the server to "
+             "clear it",
+             id_str,
+             cJSON_IsString(category) ? cJSON_GetStringValue(category)
+                                      : "unspecified");
+  }
+  cJSON_Delete(root);
+}
+
+static void sendspin_handle_noise_handshake(const cJSON *payload) {
+  if (s_state != SENDSPIN_HANDSHAKE) {
+    /* An in-band re-handshake, which this build does not implement. The
+     * specified response to any handshake failure is a silent close. */
+    ESP_LOGW(TAG, "unexpected noise/handshake in state %d", (int)s_state);
+    sendspin_session_close("re-handshake unsupported");
+    return;
+  }
+
+  const cJSON *data = cJSON_GetObjectItemCaseSensitive(payload, "data");
+  const char *b64 = cJSON_IsString(data) ? cJSON_GetStringValue(data) : NULL;
+  uint8_t msg[SENDSPIN_NOISE_MSG_MAX];
+  size_t msg_len = 0;
+  if (!b64 ||
+      sodium_base642bin(msg, sizeof(msg), b64, strlen(b64), NULL, &msg_len,
+                        NULL, sodium_base64_VARIANT_URLSAFE_NO_PADDING) != 0) {
+    sendspin_session_close("malformed noise/handshake");
+    return;
+  }
+
+  char psk_json[192];
+  size_t psk_len = 0;
+  if (sendspin_noise_read_message1(&s_noise, msg, msg_len, (uint8_t *)psk_json,
+                                   sizeof(psk_json) - 1, &psk_len) != ESP_OK) {
+    /* Almost always a prologue mismatch or the wrong static key rather than
+     * anything to do with the PSK, which is not mixed in yet. */
+    sendspin_session_close("handshake message 1 rejected");
+    return;
+  }
+  psk_json[psk_len] = '\0';
+  sendspin_log_psk_choice(psk_json, psk_len);
+
+  static const uint8_t empty_object[2] = {'{', '}'};
+  uint8_t reply[SENDSPIN_NOISE_MSG2_LEN];
+  size_t reply_len = 0;
+  if (sendspin_noise_write_message2(&s_noise, sendspin_noise_sentinel_psk(),
+                                    empty_object, sizeof(empty_object), reply,
+                                    sizeof(reply), &reply_len) != ESP_OK) {
+    sendspin_session_close("handshake message 2 failed");
+    return;
+  }
+
+  char reply_b64[sodium_base64_ENCODED_LEN(
+      SENDSPIN_NOISE_MSG2_LEN, sodium_base64_VARIANT_URLSAFE_NO_PADDING)];
+  sodium_bin2base64(reply_b64, sizeof(reply_b64), reply, reply_len,
+                    sodium_base64_VARIANT_URLSAFE_NO_PADDING);
+
+  cJSON *out = NULL;
+  cJSON *root = sendspin_new_message("noise/handshake", &out);
+  if (!root) {
+    sendspin_session_close("out of memory");
+    return;
+  }
+  cJSON_AddStringToObject(out, "data", reply_b64);
+
+  /* Still cleartext: the split has happened but message 2 itself is the last
+   * thing on the wire that is not a transport ciphertext. */
+  s_state = SENDSPIN_ENCRYPTED;
+  if (!sendspin_send_cleartext_json(root)) {
+    sendspin_session_close("handshake reply not sent");
+  }
 }
 
 static void sendspin_handle_server_time(const cJSON *payload,
@@ -420,6 +696,39 @@ static bool sendspin_role_selected(const cJSON *payload) {
   return false;
 }
 
+/* server/activate declares what the connection is for. An empty activity set
+ * is not an error: it is how a server parks a device whose operator has not
+ * approved it yet, and the protocol's answer to that is to sit still, keep
+ * the clock synchronised and wait. */
+static void sendspin_handle_activate(const cJSON *payload) {
+  const cJSON *activities =
+      cJSON_GetObjectItemCaseSensitive(payload, "activities");
+  const cJSON *roles =
+      cJSON_GetObjectItemCaseSensitive(payload, "active_roles");
+
+  bool playback = false;
+  bool player = false;
+  const cJSON *item = NULL;
+  cJSON_ArrayForEach(item, activities) {
+    if (cJSON_IsString(item) &&
+        strcmp(cJSON_GetStringValue(item), "playback") == 0) {
+      playback = true;
+    }
+  }
+  cJSON_ArrayForEach(item, roles) {
+    if (cJSON_IsString(item) &&
+        strcmp(cJSON_GetStringValue(item), "player@v1") == 0) {
+      player = true;
+    }
+  }
+  ESP_LOGI(TAG, "activated: playback=%s player@v1=%s", playback ? "yes" : "no",
+           player ? "yes" : "no");
+
+  s_state = SENDSPIN_ACTIVATED;
+  /* The server must not send audio before this first report. */
+  sendspin_send_state();
+}
+
 static void sendspin_handle_message(const char *json, size_t len,
                                     int64_t arrival_us) {
   cJSON *root = cJSON_ParseWithLength(json, len);
@@ -440,23 +749,36 @@ static void sendspin_handle_message(const char *json, size_t len,
     ESP_LOGD(TAG, "rx %s", type);
   }
 
+  /* Only the two cleartext handshake messages are legal before the split.
+   * Anything else arriving in the clear is a downgrade attempt, whatever it
+   * claims to be. */
+  const bool handshake_msg =
+      strcmp(type, "server/init") == 0 || strcmp(type, "noise/handshake") == 0;
+  if (!sendspin_noise_ready(&s_noise) && !handshake_msg) {
+    ESP_LOGW(TAG, "%s arrived before the handshake completed", type);
+    sendspin_session_close("out-of-order message");
+    cJSON_Delete(root);
+    return;
+  }
+
   if (strcmp(type, "server/init") == 0) {
+    /* The prologue is the bytes as received, so it is captured before the
+     * parse rather than rebuilt from it. */
+    if (!sendspin_prologue_append(json, len)) {
+      sendspin_session_close("server/init too large");
+    } else {
+      sendspin_handle_server_init(payload);
+    }
+  } else if (strcmp(type, "noise/handshake") == 0) {
+    sendspin_handle_noise_handshake(payload);
+  } else if (strcmp(type, "server/hello") == 0) {
+    const cJSON *name = cJSON_GetObjectItemCaseSensitive(payload, "name");
+    ESP_LOGI(TAG, "server \"%s\"",
+             cJSON_IsString(name) ? cJSON_GetStringValue(name) : "?");
     s_state = SENDSPIN_READY;
     sendspin_send_hello();
-  } else if (strcmp(type, "noise/handshake") == 0) {
-    ESP_LOGE(TAG, "server requires the Noise transport, which this build does "
-                  "not implement");
-    sendspin_session_close("encryption unsupported");
-  } else if (strcmp(type, "server/hello") == 0) {
-    /* The spec has the server greet first; tolerate either order. */
-    if (s_state < SENDSPIN_READY) {
-      s_state = SENDSPIN_READY;
-      sendspin_send_hello();
-    }
   } else if (strcmp(type, "server/activate") == 0) {
-    s_state = SENDSPIN_ACTIVATED;
-    /* The server must not send audio before this first report. */
-    sendspin_send_state();
+    sendspin_handle_activate(payload);
   } else if (strcmp(type, "server/time") == 0) {
     sendspin_handle_server_time(payload, arrival_us);
   } else if (strcmp(type, "stream/start") == 0) {
@@ -472,22 +794,12 @@ static void sendspin_handle_message(const char *json, size_t len,
         s_activity_cb(false);
       }
     }
-  } else if (strcmp(type, "client/goodbye") == 0) {
-    const cJSON *reason = cJSON_GetObjectItemCaseSensitive(payload, "reason");
-    ESP_LOGI(TAG, "server said goodbye: %s",
-             cJSON_IsString(reason) ? cJSON_GetStringValue(reason) : "?");
-    sendspin_session_close("goodbye");
   }
 
   cJSON_Delete(root);
 }
 
 /* Audio chunk: [4][timestamp:8 BE][send_ahead:4 BE][encoded audio]. */
-#define SENDSPIN_BIN_JSON        0
-#define SENDSPIN_BIN_FRAGMENT    1
-#define SENDSPIN_BIN_AUDIO_CHUNK 4
-#define SENDSPIN_AUDIO_HEADER    13
-
 static int64_t sendspin_read_be64(const uint8_t *p) {
   uint64_t v = 0;
   for (int i = 0; i < 8; i++) {
@@ -586,31 +898,43 @@ static void sendspin_handle_binary(const uint8_t *data, size_t len,
 /*  WebSocket endpoint                                                 */
 /* ------------------------------------------------------------------ */
 
+/* The server answers the WebSocket handshake itself and deliberately does not
+ * invoke the URI handler for it, so this is the only place a real client's
+ * arrival can be observed. A plain GET still reaches the handler below, which
+ * is why opening the session cannot live there: a bare HTTP probe would claim
+ * a session that no WebSocket is behind. */
+static esp_err_t sendspin_ws_connected(httpd_req_t *req) {
+  const int fd = httpd_req_to_sockfd(req);
+  if (s_fd >= 0 && s_fd != fd && sendspin_fd_is_live(s_fd)) {
+    /* One server at a time. The protocol's own answer to a second one is
+     * client/goodbye with reason another_server; dropping the newcomer is
+     * the conservative version of that for a device with three sockets.
+     * Only an incumbent that is demonstrably still connected gets to win,
+     * or a dead one would lock the endpoint out until a reboot. */
+    ESP_LOGW(TAG, "rejecting a second server on fd=%d", fd);
+    return ESP_FAIL;
+  }
+  if (s_fd >= 0 && s_fd != fd) {
+    sendspin_session_close("replaced by a new server");
+  }
+  ESP_LOGI(TAG, "server connected on fd=%d", fd);
+  sendspin_time_reset(&s_clock);
+  sendspin_noise_reset(&s_noise);
+  s_prologue_len = 0;
+  s_asm_active = false;
+  s_asm_len = 0;
+  s_reported_available = false;
+  s_fd = fd;
+  /* client/init is sent from the housekeeping task rather than here, so that
+   * it cannot race the handshake response onto the socket. */
+  s_state = SENDSPIN_NEED_INIT;
+  return ESP_OK;
+}
+
 static esp_err_t sendspin_ws_handler(httpd_req_t *req) {
   if (req->method == HTTP_GET) {
-    const int fd = httpd_req_to_sockfd(req);
-    if (s_fd >= 0 && s_fd != fd && sendspin_fd_is_live(s_fd)) {
-      /* One server at a time. The protocol's own answer to a second one is
-       * client/goodbye with reason another_server; dropping the newcomer is
-       * the conservative version of that for a device with three sockets.
-       * Only an incumbent that is demonstrably still connected gets to win,
-       * or a dead one would lock the endpoint out until a reboot. */
-      ESP_LOGW(TAG, "rejecting a second server on fd=%d", fd);
-      return ESP_FAIL;
-    }
-    if (s_fd >= 0 && s_fd != fd) {
-      sendspin_session_close("replaced by a new server");
-    }
-    ESP_LOGI(TAG, "server connected on fd=%d", fd);
-    sendspin_time_reset(&s_clock);
-    s_asm_active = false;
-    s_asm_len = 0;
-    s_reported_available = false;
-    s_fd = fd;
-    /* client/init is sent from the housekeeping task rather than here: the
-     * handshake response has not been written yet at this point. */
-    s_state = SENDSPIN_NEED_INIT;
-    return ESP_OK;
+    return httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST,
+                               "WebSocket upgrade required");
   }
 
   /* Timestamped before anything else in the handler so the clock estimate
@@ -647,9 +971,30 @@ static esp_err_t sendspin_ws_handler(httpd_req_t *req) {
   }
 
   if (frame.type == HTTPD_WS_TYPE_TEXT) {
+    if (sendspin_noise_ready(&s_noise)) {
+      ESP_LOGE(TAG, "cleartext frame after the handshake");
+      sendspin_session_close("cleartext in transport mode");
+      return ESP_OK;
+    }
     sendspin_handle_message((const char *)s_rx, frame.len, arrival_us);
   } else if (frame.type == HTTPD_WS_TYPE_BINARY) {
-    sendspin_handle_binary(s_rx, frame.len, arrival_us);
+    if (!sendspin_noise_ready(&s_noise)) {
+      ESP_LOGE(TAG, "binary frame before the handshake");
+      sendspin_session_close("unencrypted binary frame");
+      return ESP_OK;
+    }
+    size_t plain_len = 0;
+    /* A single AEAD failure is terminal by design: the nonce counters have
+     * diverged, so nothing after this frame would decrypt either. */
+    if (sendspin_noise_decrypt(&s_noise, s_rx, frame.len, s_pt,
+                               (size_t)CONFIG_SENDSPIN_RX_BUFFER_SIZE,
+                               &plain_len) != ESP_OK) {
+      ESP_LOGE(TAG, "transport decryption failed on a %u byte frame",
+               (unsigned)frame.len);
+      sendspin_session_close("decryption failed");
+      return ESP_OK;
+    }
+    sendspin_handle_binary(s_pt, plain_len, arrival_us);
   }
   return ESP_OK;
 }
@@ -722,9 +1067,13 @@ static void sendspin_task(void *arg) {
       break;
 
     case SENDSPIN_INIT_SENT:
+    case SENDSPIN_HANDSHAKE:
+    case SENDSPIN_ENCRYPTED:
+    case SENDSPIN_READY:
+      /* Nothing may leave the client between client/init and the first
+       * server/activate -- not even a clock request. */
       break;
 
-    case SENDSPIN_READY:
     case SENDSPIN_ACTIVATED: {
       const int64_t now_us = esp_timer_get_time();
       const uint32_t interval_ms =
@@ -734,12 +1083,10 @@ static void sendspin_task(void *arg) {
       if (now_us - s_last_time_tx_us >= (int64_t)interval_ms * 1000LL) {
         sendspin_send_time_request();
       }
-      if (s_state == SENDSPIN_ACTIVATED) {
-        const bool available =
-            s_output_available && sendspin_time_converged(&s_clock);
-        if (s_state_dirty || available != s_reported_available) {
-          sendspin_send_state();
-        }
+      const bool available =
+          s_output_available && sendspin_time_converged(&s_clock);
+      if (s_state_dirty || available != s_reported_available) {
+        sendspin_send_state();
       }
       break;
     }
@@ -764,7 +1111,8 @@ esp_err_t sendspin_init(sendspin_activity_cb_t callback) {
   }
 
   s_lock = xSemaphoreCreateMutex();
-  if (!s_lock) {
+  s_tx_lock = xSemaphoreCreateMutex();
+  if (!s_lock || !s_tx_lock) {
     return ESP_ERR_NO_MEM;
   }
 
@@ -772,13 +1120,27 @@ esp_err_t sendspin_init(sendspin_activity_cb_t callback) {
                           MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
   s_asm = heap_caps_malloc((size_t)CONFIG_SENDSPIN_RX_BUFFER_SIZE,
                            MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-  if (!s_rx || !s_asm) {
+  s_pt = heap_caps_malloc((size_t)CONFIG_SENDSPIN_RX_BUFFER_SIZE,
+                          MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+  s_tx_plain = heap_caps_malloc(SENDSPIN_TX_PLAIN_MAX,
+                                MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+  s_tx_cipher = heap_caps_malloc(SENDSPIN_TX_PLAIN_MAX + SENDSPIN_NOISE_TAG_LEN,
+                                 MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+  if (!s_rx || !s_asm || !s_pt || !s_tx_plain || !s_tx_cipher) {
     free(s_rx);
     free(s_asm);
+    free(s_pt);
+    free(s_tx_plain);
+    free(s_tx_cipher);
     s_rx = NULL;
     s_asm = NULL;
+    s_pt = NULL;
+    s_tx_plain = NULL;
+    s_tx_cipher = NULL;
     vSemaphoreDelete(s_lock);
     s_lock = NULL;
+    vSemaphoreDelete(s_tx_lock);
+    s_tx_lock = NULL;
     return ESP_ERR_NO_MEM;
   }
 
@@ -811,6 +1173,7 @@ esp_err_t sendspin_register(httpd_handle_t server) {
       .method = HTTP_GET,
       .handler = sendspin_ws_handler,
       .is_websocket = true,
+      .ws_post_handshake_cb = sendspin_ws_connected,
   };
   esp_err_t err = httpd_register_uri_handler(server, &ws_uri);
   if (err != ESP_OK) {

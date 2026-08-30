@@ -18,16 +18,16 @@
  * This build implements enough of it to prove the timing path:
  *
  *   - the WebSocket endpoint and its framing, including reassembly;
+ *   - the Noise KKpsk2 handshake keyed with the published Sentinel PSK, and
+ *     the encrypted transport that follows it;
  *   - the init/hello/activate handshake, the client/time clock exchange and
  *     client/state reporting;
  *   - PCM stream playout through audio_engine_v2.
  *
- * It does NOT implement the Noise KKpsk2 transport, pairing, or the FLAC and
- * Opus codecs, so it only talks to a server that permits an unauthenticated
- * cleartext client.  The transport is deliberately split the way the spec
- * splits it — text frames carry the cleartext handshake, binary frames carry
- * "[type byte][payload]" — so the encrypted mode can be added underneath
- * without disturbing the message layer above.
+ * It does NOT implement pairing or the FLAC and Opus codecs.  Keying with the
+ * Sentinel leaves the session *unpaired*: encrypted and replay-protected, but
+ * with neither peer's identity proven, so a server may only use it for
+ * playback once its operator has approved the device.
  *
  * Only one audio source can drive the output at a time.  Sendspin announces
  * itself unavailable while AirPlay, Bluetooth or USB owns it, which is the

@@ -569,6 +569,7 @@ menu "Airplay ESP Configuration"
             bool "Enable Sendspin player role (experimental)"
             default n
             depends on SPIRAM
+            select HTTPD_WS_POST_HANDSHAKE_CB_SUPPORT
             help
                 Advertise _sendspin._tcp and accept a Sendspin server on the
                 web server's WebSocket endpoint, presenting the device as a
