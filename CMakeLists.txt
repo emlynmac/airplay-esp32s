@@ -35,4 +35,14 @@ include(cmake/fix_usb_device_uac_platformio.cmake)
 #   - components/dac_tas57xx/ (HybridFlow DAC firmware)
 #   - components/display/     (ST7789 background image)
 # Flash firmware + SPIFFS together with: idf.py build flash
-spiffs_create_partition_image(storage "${CMAKE_SOURCE_DIR}/data" FLASH_IN_PROJECT)
+#
+# data/ is staged through a script that gzips the pages first: raw, the web UI
+# alone overflows the 188 KB SPIFFS partition on a 4 MB board.
+set(spiffs_image_dir "${CMAKE_BINARY_DIR}/spiffs_image")
+add_custom_target(
+  spiffs_image_stage ALL
+  COMMAND ${PYTHON} "${CMAKE_SOURCE_DIR}/scripts/gen_spiffs_image.py"
+          "${CMAKE_SOURCE_DIR}/data" "${spiffs_image_dir}"
+  VERBATIM)
+spiffs_create_partition_image(storage "${spiffs_image_dir}" FLASH_IN_PROJECT
+                              DEPENDS spiffs_image_stage)

@@ -61,13 +61,25 @@ static httpd_handle_t s_server = NULL;
 
 static esp_err_t serve_spiffs_file(httpd_req_t *req, const char *path,
                                    const char *content_type) {
-  FILE *f = fopen(path, "r");
+  // Pages are stored gzipped so the web UI fits a 4 MB board's 188 KB
+  // partition. A plain file still wins if one was uploaded over /api/fs.
+  char gz_path[96];
+  snprintf(gz_path, sizeof(gz_path), "%s.gz", path);
+  bool gzipped = true;
+  FILE *f = fopen(gz_path, "r");
+  if (!f) {
+    gzipped = false;
+    f = fopen(path, "r");
+  }
   if (!f) {
     ESP_LOGE(TAG, "Failed to open %s", path);
     httpd_resp_send_err(req, HTTPD_404_NOT_FOUND, "File not found");
     return ESP_FAIL;
   }
   httpd_resp_set_type(req, content_type);
+  if (gzipped) {
+    httpd_resp_set_hdr(req, "Content-Encoding", "gzip");
+  }
   char buf[SPIFFS_CHUNK_SIZE];
   size_t n;
   while ((n = fread(buf, 1, sizeof(buf), f)) > 0) {

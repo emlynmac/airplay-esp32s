@@ -53,6 +53,15 @@ and a version is tagged.
 `version.txt` on `staging` must stay ahead of the latest release or the beta job fails, so
 bump it as soon as a release goes out.
 
+!!! warning "Rebase before merging"
+
+    A pull request is checked against `staging` **as it was when the check ran**. If
+    another PR merges in the meantime, a green tick can go red on merge — two branches
+    that touch different files merge without conflict but can still break the build
+    together, which is exactly how the SPIFFS partition overflowed once already.
+    Enable *Require branches to be up to date before merging* on `staging`, or rebase
+    and wait for a fresh run before merging anything non-trivial.
+
 ## CI
 
 On every pull request to `main` or `staging`, and on every push to `main`:

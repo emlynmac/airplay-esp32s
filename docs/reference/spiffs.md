@@ -24,6 +24,7 @@ data/
 │   ├── index.html     # Setup and control panel
 │   ├── logs.html      # Live log viewer
 │   ├── bq.html        # Parametric biquad chains (TAS5825M boards)
+│   ├── hf.html        # Hybrid flow tuning (SqueezeAMP)
 │   └── speedtest.html # Network throughput test
 ├── hf/                # DSP programs loaded at boot
 │   ├── base-hf1-44100.bin  # Hybrid flow 1 base image (SqueezeAMP)
@@ -37,6 +38,20 @@ The `hf/` names carry the sample rate the DSP image was built for, and a 48000 t
 beside each. Only the hybrid flow base images ship with the repository; a PPC3 dump is
 yours to export and drop in, as is the background image — at 106 KB it does not fit
 alongside the web UI on a 4 MB board.
+
+## Compression
+
+`data/` is not flashed verbatim. `scripts/gen_spiffs_image.py` stages it first and gzips
+every `.html`, so the image holds `index.html.gz` rather than `index.html`. That takes the
+payload from 256 KB to 101 KB, which matters because the smallest layout gives SPIFFS only
+188 KB — the pages alone overflow it uncompressed. Pages also load noticeably faster over
+WiFi.
+
+The web server asks for the `.gz` first and sets `Content-Encoding: gzip`; browsers
+decompress transparently. It falls back to an uncompressed file of the same name, so a page
+uploaded through `/api/fs/upload` still works. The `hf/` and `bg/` binaries are read
+straight off the filesystem by the DAC and display drivers, which cannot decompress, so
+they are copied through untouched.
 
 ## Flashing the image
 
