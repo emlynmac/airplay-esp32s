@@ -30,11 +30,22 @@
  * live.  Ownership of the I2S output is arbitrated one level up.
  */
 
+typedef enum {
+  SENDSPIN_CODEC_UNSUPPORTED = 0,
+  SENDSPIN_CODEC_PCM,
+  SENDSPIN_CODEC_FLAC,
+} sendspin_codec_t;
+
 typedef struct {
   uint32_t sample_rate;
   uint8_t channels;
   uint8_t bit_depth;
-  bool pcm; /* false for a codec this milestone cannot decode */
+  sendspin_codec_t codec;
+  /* FLAC: "fLaC" plus the STREAMINFO metadata block, decoded from the
+   * base64 codec_header in stream/start. The decoder learns the format from
+   * it, so it has to be fed before the first frame. */
+  const uint8_t *codec_header;
+  size_t codec_header_len;
 } sendspin_player_format_t;
 
 /**
@@ -71,7 +82,7 @@ void sendspin_player_stream_end(void);
  * Feed one audio chunk.
  *
  * @param timestamp_us server-clock instant for the chunk's first sample.
- * @param data         encoded payload (raw interleaved PCM in this milestone).
+ * @param data         encoded payload: interleaved PCM, or one FLAC frame.
  * @param len          payload length in bytes.
  */
 void sendspin_player_chunk(int64_t timestamp_us, const uint8_t *data,

@@ -10,6 +10,8 @@
 #include "audio_engine_v2.h"
 #include "audio_output.h"
 #include "audio_receiver.h"
+#include "decoder/impl/esp_flac_dec.h"
+#include "esp_audio_dec.h"
 
 static const char *TAG = "sendspin_pl";
 
@@ -25,6 +27,10 @@ static const char *TAG = "sendspin_pl";
 #define SENDSPIN_MIN_BUFFER_MS 300U
 
 #define SENDSPIN_STATUS_PERIOD_US 10000000LL
+
+/* Scratch for one decoded chunk. The protocol caps a chunk at 150 ms and
+ * libFLAC blocks are 4096 samples, so this is several times either. */
+#define SENDSPIN_DECODE_FRAMES 8192U
 
 static audio_engine_v2_t s_engine;
 static bool s_engine_ready = false;
@@ -57,6 +63,11 @@ static uint64_t s_chunks_received = 0;
 static uint64_t s_chunks_dropped = 0;
 static uint64_t s_frames_pushed = 0;
 static int64_t s_last_status_us = 0;
+
+static void *s_flac = NULL;
+static uint8_t *s_pcm = NULL;
+static size_t s_pcm_size = 0;
+static int32_t s_gap_tolerance = 44;
 
 static size_t sendspin_player_read(int16_t *buffer, size_t samples);
 
@@ -148,12 +159,42 @@ static void sendspin_player_reset_alignment(void) {
   s_next_rtp = 0;
 }
 
+static void sendspin_player_close_decoder(void) {
+  if (s_flac) {
+    esp_flac_dec_close(s_flac);
+    s_flac = NULL;
+  }
+  free(s_pcm);
+  s_pcm = NULL;
+  s_pcm_size = 0;
+}
+
+static esp_err_t sendspin_player_open_flac(void) {
+  if (esp_flac_dec_open(NULL, 0, &s_flac) != ESP_AUDIO_ERR_OK) {
+    ESP_LOGE(TAG, "flac decoder would not open");
+    return ESP_ERR_NO_MEM;
+  }
+
+  /* Sized for 32-bit stereo so a wide stream cannot overrun it. */
+  s_pcm_size = SENDSPIN_DECODE_FRAMES * 2U * 4U;
+  s_pcm = heap_caps_malloc(s_pcm_size, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+  if (!s_pcm) {
+    s_pcm = heap_caps_malloc(s_pcm_size, MALLOC_CAP_8BIT);
+  }
+  if (!s_pcm) {
+    sendspin_player_close_decoder();
+    return ESP_ERR_NO_MEM;
+  }
+  return ESP_OK;
+}
+
 esp_err_t sendspin_player_stream_start(const sendspin_player_format_t *format) {
   if (!s_engine_ready || !format) {
     return ESP_ERR_INVALID_STATE;
   }
-  if (!format->pcm) {
-    ESP_LOGW(TAG, "only pcm is implemented in this build");
+  if (format->codec != SENDSPIN_CODEC_PCM &&
+      format->codec != SENDSPIN_CODEC_FLAC) {
+    ESP_LOGW(TAG, "only pcm and flac are implemented in this build");
     return ESP_ERR_NOT_SUPPORTED;
   }
   if (format->channels < 1 || format->channels > 2 ||
@@ -170,6 +211,27 @@ esp_err_t sendspin_player_stream_start(const sendspin_player_format_t *format) {
   s_bit_depth = format->bit_depth;
   s_bytes_per_frame =
       (uint8_t)((format->bit_depth / 8U) * (uint32_t)format->channels);
+
+  sendspin_player_close_decoder();
+  if (format->codec == SENDSPIN_CODEC_FLAC) {
+    /* codec_header carries "fLaC" plus STREAMINFO, but esp_flac_dec decodes
+     * bare frames and rejects it as a bad frame header; every frame header
+     * repeats the rate, channels and depth anyway. */
+    const esp_err_t err = sendspin_player_open_flac();
+    if (err != ESP_OK) {
+      return err;
+    }
+  }
+
+  /* PCM chunk timestamps match the byte count to the sample, so a mismatch
+   * there really is the server jumping. A codec's do not: the reference
+   * encoder concatenates every packet one encode() call yields into a single
+   * chunk but bills it for one block, so a chunk carries two blocks exactly
+   * once, when the encoder's pipeline fills. Re-anchoring on that is an
+   * audible stop in exchange for an inaudible offset. */
+  s_gap_tolerance = format->codec == SENDSPIN_CODEC_FLAC
+                        ? (int32_t)(format->sample_rate / 5U)
+                        : (int32_t)(format->sample_rate / 1000U);
 
   const audio_format_t engine_format = {
       .codec = "pcm",
@@ -197,7 +259,8 @@ esp_err_t sendspin_player_stream_start(const sendspin_player_format_t *format) {
   audio_output_set_source(sendspin_player_read);
   audio_output_start();
 
-  ESP_LOGI(TAG, "stream start: %" PRIu32 " Hz, %u ch, %u bit",
+  ESP_LOGI(TAG, "stream start: %s, %" PRIu32 " Hz, %u ch, %u bit",
+           format->codec == SENDSPIN_CODEC_FLAC ? "flac" : "pcm",
            format->sample_rate, (unsigned)format->channels,
            (unsigned)format->bit_depth);
   return ESP_OK;
@@ -210,6 +273,9 @@ void sendspin_player_stream_clear(void) {
   /* A seek invalidates the timestamp-to-RTP anchor as well as the content:
    * the next chunk restarts both. */
   sendspin_player_reset_alignment();
+  if (s_flac) {
+    esp_flac_dec_reset(s_flac);
+  }
   s_epoch = audio_engine_v2_begin_epoch(&s_engine, esp_timer_get_time());
   audio_engine_v2_wait_for_anchor(&s_engine, esp_timer_get_time());
   audio_engine_v2_set_playing(&s_engine, s_streaming);
@@ -228,6 +294,7 @@ void sendspin_player_stream_end(void) {
   sendspin_player_reset_alignment();
   s_epoch = audio_engine_v2_begin_epoch(&s_engine, esp_timer_get_time());
   audio_output_stop();
+  sendspin_player_close_decoder();
   ESP_LOGI(TAG,
            "stream end: %" PRIu64 " chunks, %" PRIu64 " frames, %" PRIu64
            " dropped",
@@ -241,6 +308,9 @@ void sendspin_player_stream_end(void) {
 static inline int16_t sendspin_sample_at(const uint8_t *p, uint8_t bit_depth) {
   if (bit_depth == 16) {
     return (int16_t)((uint16_t)p[0] | ((uint16_t)p[1] << 8));
+  }
+  if (bit_depth == 32) {
+    return (int16_t)((uint16_t)p[2] | ((uint16_t)p[3] << 8));
   }
   /* 24-bit little-endian packed, truncated to the engine's 16-bit slots. */
   return (int16_t)((uint16_t)p[1] | ((uint16_t)p[2] << 8));
@@ -264,14 +334,56 @@ static bool sendspin_player_flush_block(void) {
   return ok;
 }
 
-void sendspin_player_chunk(int64_t timestamp_us, const uint8_t *data,
-                           size_t len) {
-  if (!s_engine_ready || !s_streaming || !data || len < s_bytes_per_frame) {
+/* Decode one chunk into s_pcm. Returns the number of PCM bytes produced and
+ * reports the decoded layout, which STREAMINFO may put at a wider bit depth
+ * than stream/start advertised. */
+static uint32_t sendspin_player_decode_flac(const uint8_t *data, size_t len,
+                                            uint8_t *bits, uint8_t *channels) {
+  uint32_t produced = 0;
+  uint32_t offset = 0;
+  while (offset < len && produced < s_pcm_size) {
+    esp_audio_dec_in_raw_t raw = {.buffer = (uint8_t *)(data + offset),
+                                  .len = (uint32_t)(len - offset),
+                                  .consumed = 0,
+                                  .frame_recover = ESP_AUDIO_DEC_RECOVERY_NONE};
+    esp_audio_dec_out_frame_t frame = {.buffer = s_pcm + produced,
+                                       .len = (uint32_t)(s_pcm_size - produced),
+                                       .decoded_size = 0};
+    esp_audio_dec_info_t info = {0};
+    const esp_audio_err_t err =
+        esp_flac_dec_decode(s_flac, &raw, &frame, &info);
+    if (err != ESP_AUDIO_ERR_OK) {
+      ESP_LOGW(TAG, "flac decode error %d (needed %" PRIu32 " bytes)", (int)err,
+               frame.needed_size);
+      esp_flac_dec_reset(s_flac);
+      break;
+    }
+    if (raw.consumed == 0) {
+      /* The decoder is holding a partial frame; nothing more to take from
+       * this chunk. */
+      break;
+    }
+    offset += raw.consumed;
+    produced += frame.decoded_size;
+    if (info.bits_per_sample > 0) {
+      *bits = info.bits_per_sample;
+    }
+    if (info.channel > 0) {
+      *channels = info.channel;
+    }
+  }
+  return produced;
+}
+
+/* Place already-decoded PCM on the timeline. Separate from the chunk entry
+ * point because the re-anchor path replays it, and a FLAC frame can only be
+ * decoded once. */
+static void sendspin_player_ingest(int64_t timestamp_us, const uint8_t *pcm,
+                                   uint32_t frames, uint8_t bit_depth,
+                                   uint8_t channels) {
+  if (frames == 0) {
     return;
   }
-
-  s_chunks_received++;
-  const uint32_t frames = (uint32_t)(len / s_bytes_per_frame);
 
   if (!s_anchor_valid) {
     s_anchor_server_us = timestamp_us;
@@ -299,27 +411,27 @@ void sendspin_player_chunk(int64_t timestamp_us, const uint8_t *data,
      * mismatch is only the microsecond quantisation of the timestamp. A real
      * discontinuity means the server jumped, and the clock map has to be
      * re-anchored because RTP is no longer a continuous function of it. */
-    const int32_t tolerance = (int32_t)(s_sample_rate / 1000U);
-    if (gap > tolerance || gap < -tolerance) {
+    if (gap > s_gap_tolerance || gap < -s_gap_tolerance) {
       ESP_LOGI(TAG, "discontinuity of %" PRId32 " samples — re-anchoring", gap);
       sendspin_player_reset_alignment();
       s_epoch = audio_engine_v2_begin_epoch(&s_engine, esp_timer_get_time());
       audio_engine_v2_wait_for_anchor(&s_engine, esp_timer_get_time());
       audio_engine_v2_set_playing(&s_engine, true);
-      sendspin_player_chunk(timestamp_us, data, len);
+      sendspin_player_ingest(timestamp_us, pcm, frames, bit_depth, channels);
       return;
     }
   }
 
-  const uint8_t sample_bytes = (uint8_t)(s_bit_depth / 8U);
-  const uint8_t *p = data;
+  const uint8_t sample_bytes = (uint8_t)(bit_depth / 8U);
+  const uint8_t stride = (uint8_t)(sample_bytes * channels);
+  const uint8_t *p = pcm;
   for (uint32_t i = 0; i < frames; i++) {
-    int16_t l = sendspin_sample_at(p, s_bit_depth);
+    int16_t l = sendspin_sample_at(p, bit_depth);
     int16_t r = l; /* mono is widened by duplicating the sample */
-    if (s_src_channels == 2) {
-      r = sendspin_sample_at(p + sample_bytes, s_bit_depth);
+    if (channels == 2) {
+      r = sendspin_sample_at(p + sample_bytes, bit_depth);
     }
-    p += s_bytes_per_frame;
+    p += stride;
 
     s_fill[s_fill_frames * 2U] = l;
     s_fill[(s_fill_frames * 2U) + 1U] = r;
@@ -331,6 +443,34 @@ void sendspin_player_chunk(int64_t timestamp_us, const uint8_t *data,
 
   s_next_rtp += frames;
   sendspin_player_log_status();
+}
+
+void sendspin_player_chunk(int64_t timestamp_us, const uint8_t *data,
+                           size_t len) {
+  if (!s_engine_ready || !s_streaming || !data || len == 0) {
+    return;
+  }
+  s_chunks_received++;
+
+  if (!s_flac) {
+    if (len < s_bytes_per_frame) {
+      return;
+    }
+    sendspin_player_ingest(timestamp_us, data,
+                           (uint32_t)(len / s_bytes_per_frame), s_bit_depth,
+                           s_src_channels);
+    return;
+  }
+
+  uint8_t bits = s_bit_depth;
+  uint8_t channels = s_src_channels;
+  const uint32_t bytes =
+      sendspin_player_decode_flac(data, len, &bits, &channels);
+  const uint32_t stride = (uint32_t)(bits / 8U) * (uint32_t)channels;
+  if (bytes == 0 || stride == 0) {
+    return;
+  }
+  sendspin_player_ingest(timestamp_us, s_pcm, bytes / stride, bits, channels);
 }
 
 /* ------------------------------------------------------------------ */

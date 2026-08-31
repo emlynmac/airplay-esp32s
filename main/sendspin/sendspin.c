@@ -450,19 +450,24 @@ static void sendspin_send_hello(void) {
   if (support) {
     cJSON *formats = cJSON_AddArrayToObject(support, "supported_formats");
     if (formats) {
-      /* Priority order. FLAC and Opus are not decoded in this build, so
-       * offering them would only get us audio we have to drop. */
+      /* Priority order, so FLAC first: it roughly halves what has to cross
+       * the link, and the clock exchange shares that link with the audio.
+       * Opus is still not decoded, so offering it would only get us audio we
+       * have to drop. */
+      static const char *const codecs[] = {"flac", "pcm"};
       static const int rates[] = {44100, 48000};
-      for (size_t i = 0; i < sizeof(rates) / sizeof(rates[0]); i++) {
-        cJSON *fmt = cJSON_CreateObject();
-        if (!fmt) {
-          continue;
+      for (size_t c = 0; c < sizeof(codecs) / sizeof(codecs[0]); c++) {
+        for (size_t i = 0; i < sizeof(rates) / sizeof(rates[0]); i++) {
+          cJSON *fmt = cJSON_CreateObject();
+          if (!fmt) {
+            continue;
+          }
+          cJSON_AddStringToObject(fmt, "codec", codecs[c]);
+          cJSON_AddNumberToObject(fmt, "channels", 2);
+          cJSON_AddNumberToObject(fmt, "sample_rate", rates[i]);
+          cJSON_AddNumberToObject(fmt, "bit_depth", 16);
+          cJSON_AddItemToArray(formats, fmt);
         }
-        cJSON_AddStringToObject(fmt, "codec", "pcm");
-        cJSON_AddNumberToObject(fmt, "channels", 2);
-        cJSON_AddNumberToObject(fmt, "sample_rate", rates[i]);
-        cJSON_AddNumberToObject(fmt, "bit_depth", 16);
-        cJSON_AddItemToArray(formats, fmt);
       }
     }
     cJSON_AddNumberToObject(support, "buffer_capacity",
@@ -1138,12 +1143,38 @@ static void sendspin_handle_stream_start(const cJSON *payload) {
   }
 
   const cJSON *codec = cJSON_GetObjectItemCaseSensitive(player, "codec");
+  const char *codec_name =
+      cJSON_IsString(codec) ? cJSON_GetStringValue(codec) : "";
+
+  /* "fLaC" plus a STREAMINFO block is 42 bytes; the field is standard base64
+   * with padding. */
+  uint8_t header[64];
+  size_t header_len = 0;
+  const cJSON *hdr = cJSON_GetObjectItemCaseSensitive(player, "codec_header");
+  if (cJSON_IsString(hdr)) {
+    const char *b64 = cJSON_GetStringValue(hdr);
+    if (sodium_base642bin(header, sizeof(header), b64, strlen(b64), NULL,
+                          &header_len, NULL,
+                          sodium_base64_VARIANT_ORIGINAL) != 0) {
+      ESP_LOGW(TAG, "codec_header did not decode");
+      header_len = 0;
+    }
+  }
+
+  sendspin_codec_t which = SENDSPIN_CODEC_UNSUPPORTED;
+  if (strcmp(codec_name, "pcm") == 0) {
+    which = SENDSPIN_CODEC_PCM;
+  } else if (strcmp(codec_name, "flac") == 0) {
+    which = SENDSPIN_CODEC_FLAC;
+  }
+
   const sendspin_player_format_t format = {
       .sample_rate = (uint32_t)sendspin_number(player, "sample_rate", 44100),
       .channels = (uint8_t)sendspin_number(player, "channels", 2),
       .bit_depth = (uint8_t)sendspin_number(player, "bit_depth", 16),
-      .pcm = cJSON_IsString(codec) &&
-             strcmp(cJSON_GetStringValue(codec), "pcm") == 0,
+      .codec = which,
+      .codec_header = header_len > 0 ? header : NULL,
+      .codec_header_len = header_len,
   };
 
   if (!s_output_available) {
