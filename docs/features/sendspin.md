@@ -5,11 +5,11 @@ server pushes timestamped audio chunks to every player over a WebSocket, and eac
 schedules them against a shared clock. This firmware can act as a Sendspin **player**,
 sharing the same output path, DSP and volume control that AirPlay uses.
 
-!!! warning "Experimental — PCM only"
+!!! warning "Experimental"
 
-    FLAC and Opus are not implemented, so the server must be willing to send raw PCM.
-    Everything else about a session is in place: the transport is encrypted, and the
-    board can be paired so that it is authenticated too.
+    PCM and FLAC are decoded; Opus is not, so the server must be willing to send one of
+    the first two. Everything else about a session is in place: the transport is
+    encrypted, and the board can be paired so that it is authenticated too.
 
 ## What works
 
@@ -21,6 +21,8 @@ sharing the same output path, DSP and volume control that AirPlay uses.
 - Continuous clock sync, so playback is aligned with the server rather than free-running
 - The `player@v1` role: 16- and 24-bit PCM, mono or stereo, 8–192 kHz in, played out as
   44.1 or 48 kHz stereo
+- **FLAC**, which is what a lossless server will reach for first and what cuts the
+  bandwidth a 44.1 kHz stereo stream needs from about 1.4 Mbit/s to roughly half that
 - Stream start, clear and end, including re-anchoring when the server jumps
 - The `metadata@v1` role: title, artist, album and progress reach the
   [OLED](oled-display.md) and [TFT](tft-display.md) displays and the LEDs on the same
@@ -43,7 +45,7 @@ sharing the same output path, DSP and volume control that AirPlay uses.
 
 - **The dynamic pairing code.** It needs a display or a spoken prompt the board does not
   have, so only the static code is offered
-- **FLAC and Opus.** The server must be told to send PCM
+- **Opus.** The server must be told to send PCM or FLAC
 - The artwork and visualizer roles
 
 ## How it works
@@ -54,7 +56,8 @@ second HTTP server is started; the endpoint costs one URI handler and two socket
 ```mermaid
 flowchart LR
     S[Sendspin server] -- WebSocket --> W[/sendspin endpoint/]
-    W -- audio chunks --> T[Playout timeline]
+    W -- audio chunks --> D[FLAC decoder]
+    D -- PCM --> T[Playout timeline]
     W -- client/time --> C[Clock estimator]
     C -- offset --> R[Render hook]
     T --> R
@@ -64,10 +67,10 @@ flowchart LR
 Audio chunks carry a server timestamp. The clock estimator turns the four-timestamp
 `client/time` exchange into a local-to-server offset, filtering out samples whose round
 trip was slow and fitting a straight line through the rest so it tracks the two crystals
-drifting apart. Chunks are then re-cut into fixed 512-frame blocks and filed in a playout
-timeline by their position on the server's clock. On every I2S refill the render hook asks
-where the DAC will actually be when those samples emerge, converts that to server time, and
-pulls the matching block.
+drifting apart. Chunks are decoded if the stream is compressed, then re-cut into fixed
+512-frame blocks and filed in a playout timeline by their position on the server's clock.
+On every I2S refill the render hook asks where the DAC will actually be when those samples
+emerge, converts that to server time, and pulls the matching block.
 
 That is the same machinery AirPlay uses — Sendspin simply supplies a different clock and a
 different transport.
@@ -172,11 +175,22 @@ The board keeps its identity, its token and its PIN, so any server can pair agai
 
 !!! warning "This only forgets the board's half"
 
-    A server that still holds a record keeps offering a PSK the board no longer has. The
-    board answers with the Sentinel, the server cannot verify that, and it drops the
-    connection — forever. Worse, most servers only offer their unpair control for a device
-    that is *connected*, so the deadlock puts the fix out of reach. Clear the server's
-    record too, and clear it first.
+    A pairing record lives at both ends, and clearing one side strands the other: the
+    server keeps offering a PSK the board can no longer resolve, the handshake aborts, and
+    neither end reports why. Music Assistant logs that abort at debug level and then
+    retries forever, so it looks like a board that has stopped answering.
+
+    Unpairing from the **server's** UI is the route that prunes both records. Prefer it
+    whenever the server is reachable.
+
+Because of that, the endpoint refuses with **409 Conflict** while a server is connected —
+which is exactly when the server-side control is available to you. With nothing connected
+the request goes through, since that is the case the endpoint exists for. To clear the
+records anyway, when you know the server is gone for good:
+
+```bash
+curl -X POST 'http://<board>/api/sendspin/unpair?force=1'
+```
 
 ### Getting out of a stale pairing
 
@@ -244,7 +258,8 @@ It needs **PSRAM**, so it is unavailable on boards without it.
 | `CONFIG_SENDSPIN_TIME_SYNC_INTERVAL_MS` | `2000` | Steady-state clock sync interval |
 
 The defaults cost roughly **448 KB of PSRAM**: 384 KB for about 2.2 seconds of playout
-timeline, and 64 KB for the receive and reassembly buffers.
+timeline, and 64 KB for the receive and reassembly buffers. A FLAC stream takes a further
+64 KB of decoder scratch, allocated when the stream starts and released when it ends.
 
 ## Identity
 
@@ -267,3 +282,8 @@ PIN.
 - `send_ahead` on each chunk is ignored; the timestamp alone decides when audio plays
 - If a chunk arrives after its slot has already been rendered it is dropped, which is
   audible as a gap rather than as drift
+- A FLAC chunk's timestamp is not sample-exact. The reference server bills a chunk for one
+  encoder block but sends whatever the encoder handed back, so once per stream — when the
+  encoder's pipeline fills — a chunk carries two blocks. The board tolerates 200 ms of
+  drift on a compressed stream for that reason, and only re-anchors beyond it; on PCM,
+  where the byte count does match the timestamp, the tolerance stays at 1 ms
