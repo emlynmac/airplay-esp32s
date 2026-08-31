@@ -12,8 +12,17 @@
 #include "audio_receiver.h"
 #include "decoder/impl/esp_flac_dec.h"
 #include "esp_audio_dec.h"
+#ifdef CONFIG_SENDSPIN_OPUS
+#include "decoder/impl/esp_opus_dec.h"
+#endif
 
 static const char *TAG = "sendspin_pl";
+
+#ifdef CONFIG_SENDSPIN_OPUS
+#define SENDSPIN_HAS_OPUS 1
+#else
+#define SENDSPIN_HAS_OPUS 0
+#endif
 
 /* Timeline block length. Shorter than the AAC block the AirPlay path uses:
  * Sendspin chunks are timestamped individually and can be as short as 15 ms,
@@ -65,6 +74,9 @@ static uint64_t s_frames_pushed = 0;
 static int64_t s_last_status_us = 0;
 
 static void *s_flac = NULL;
+#ifdef CONFIG_SENDSPIN_OPUS
+static void *s_opus = NULL;
+#endif
 static uint8_t *s_pcm = NULL;
 static size_t s_pcm_size = 0;
 static int32_t s_gap_tolerance = 44;
@@ -72,17 +84,17 @@ static int32_t s_gap_tolerance = 44;
 static size_t sendspin_player_read(int16_t *buffer, size_t samples);
 
 uint32_t sendspin_player_buffer_capacity(void) {
-  /* Bytes of *compressed* audio the server may keep queued on us, so quote
-   * the timeline in bytes at the widest format we accept -- but only a third
-   * of it. The server fills right up to whatever it is told, so the rest has
-   * to absorb the preroll and the jitter; quote the whole ring and every
-   * transient overflows, and the overflow is dropped and comes back as a
-   * hole to conceal. The margin has to cover compression too: bytes stop
-   * bounding *duration* once FLAC is on the wire, and the server's own
-   * duration cap is 30 s, which is no help at all. */
-  const uint32_t frames =
-      ((uint32_t)CONFIG_SENDSPIN_TIMELINE_BLOCKS / 3U) * SENDSPIN_FRAME_SAMPLES;
-  return frames * 2U * (uint32_t)sizeof(int16_t);
+  /* Bytes of *compressed* audio the server may keep queued on us. There is
+   * only this one number and it goes out in client/init, before a codec has
+   * been chosen, so it has to be safe for the most compressible one we
+   * offer: bytes stop bounding *duration* once FLAC -- let alone Opus -- is
+   * on the wire, and the server's own duration cap is 30 s, which is no help
+   * at all. Quote a fixed budget rather than a share of the timeline, so
+   * that deepening the timeline for Opus does not invite the server to run
+   * proportionally further ahead of us. At 48 kHz this is ~0.5 s of PCM,
+   * ~1 s of FLAC and several seconds of Opus, all of which the timeline can
+   * hold. */
+  return 96U * 1024U;
 }
 
 uint32_t sendspin_player_min_buffer_ms(void) {
@@ -124,7 +136,9 @@ esp_err_t sendspin_player_init(const sendspin_time_t *clock) {
   ESP_LOGI(TAG, "timeline ready: %u blocks x %u frames (%u KB, %u ms)",
            (unsigned)CONFIG_SENDSPIN_TIMELINE_BLOCKS,
            (unsigned)SENDSPIN_FRAME_SAMPLES,
-           (unsigned)(sendspin_player_buffer_capacity() / 1024U),
+           (unsigned)(((uint32_t)CONFIG_SENDSPIN_TIMELINE_BLOCKS *
+                       SENDSPIN_FRAME_SAMPLES * 2U * sizeof(int16_t)) /
+                      1024U),
            (unsigned)((uint64_t)CONFIG_SENDSPIN_TIMELINE_BLOCKS *
                       SENDSPIN_FRAME_SAMPLES * 1000U / 44100U));
   return ESP_OK;
@@ -159,23 +173,37 @@ static void sendspin_player_reset_alignment(void) {
   s_next_rtp = 0;
 }
 
+static const char *sendspin_player_codec_name(sendspin_codec_t codec) {
+  switch (codec) {
+  case SENDSPIN_CODEC_FLAC:
+    return "flac";
+  case SENDSPIN_CODEC_OPUS:
+    return "opus";
+  case SENDSPIN_CODEC_PCM:
+    return "pcm";
+  default:
+    return "?";
+  }
+}
+
 static void sendspin_player_close_decoder(void) {
   if (s_flac) {
     esp_flac_dec_close(s_flac);
     s_flac = NULL;
   }
+#ifdef CONFIG_SENDSPIN_OPUS
+  if (s_opus) {
+    esp_opus_dec_close(s_opus);
+    s_opus = NULL;
+  }
+#endif
   free(s_pcm);
   s_pcm = NULL;
   s_pcm_size = 0;
 }
 
-static esp_err_t sendspin_player_open_flac(void) {
-  if (esp_flac_dec_open(NULL, 0, &s_flac) != ESP_AUDIO_ERR_OK) {
-    ESP_LOGE(TAG, "flac decoder would not open");
-    return ESP_ERR_NO_MEM;
-  }
-
-  /* Sized for 32-bit stereo so a wide stream cannot overrun it. */
+/* Sized for 32-bit stereo so a wide stream cannot overrun it. */
+static esp_err_t sendspin_player_alloc_pcm(void) {
   s_pcm_size = SENDSPIN_DECODE_FRAMES * 2U * 4U;
   s_pcm = heap_caps_malloc(s_pcm_size, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
   if (!s_pcm) {
@@ -188,13 +216,47 @@ static esp_err_t sendspin_player_open_flac(void) {
   return ESP_OK;
 }
 
+static esp_err_t sendspin_player_open_flac(void) {
+  if (esp_flac_dec_open(NULL, 0, &s_flac) != ESP_AUDIO_ERR_OK) {
+    ESP_LOGE(TAG, "flac decoder would not open");
+    return ESP_ERR_NO_MEM;
+  }
+  return sendspin_player_alloc_pcm();
+}
+
+#ifdef CONFIG_SENDSPIN_OPUS
+static esp_err_t sendspin_player_open_opus(uint32_t sample_rate,
+                                           uint8_t channels) {
+  esp_opus_dec_cfg_t cfg = {
+      .sample_rate = sample_rate,
+      .channel = channels,
+      /* The packet's own TOC byte carries the real duration; this only sizes
+       * the decoder's output expectation, and INVALID means 60 ms. */
+      .frame_duration = ESP_OPUS_DEC_FRAME_DURATION_INVALID,
+      /* PyAV hands libopus's plain packets to the wire, with no length
+       * prefix, so the decoder must not look for one. */
+      .self_delimited = false,
+  };
+  if (esp_opus_dec_open(&cfg, sizeof(cfg), &s_opus) != ESP_AUDIO_ERR_OK) {
+    ESP_LOGE(TAG, "opus decoder would not open");
+    return ESP_ERR_NO_MEM;
+  }
+  return sendspin_player_alloc_pcm();
+}
+#endif
+
 esp_err_t sendspin_player_stream_start(const sendspin_player_format_t *format) {
   if (!s_engine_ready || !format) {
     return ESP_ERR_INVALID_STATE;
   }
+  if (format->codec == SENDSPIN_CODEC_OPUS && !SENDSPIN_HAS_OPUS) {
+    ESP_LOGW(TAG, "opus is not enabled in this build");
+    return ESP_ERR_NOT_SUPPORTED;
+  }
   if (format->codec != SENDSPIN_CODEC_PCM &&
-      format->codec != SENDSPIN_CODEC_FLAC) {
-    ESP_LOGW(TAG, "only pcm and flac are implemented in this build");
+      format->codec != SENDSPIN_CODEC_FLAC &&
+      format->codec != SENDSPIN_CODEC_OPUS) {
+    ESP_LOGW(TAG, "only pcm, flac and opus are implemented in this build");
     return ESP_ERR_NOT_SUPPORTED;
   }
   if (format->channels < 1 || format->channels > 2 ||
@@ -221,6 +283,14 @@ esp_err_t sendspin_player_stream_start(const sendspin_player_format_t *format) {
     if (err != ESP_OK) {
       return err;
     }
+  } else if (format->codec == SENDSPIN_CODEC_OPUS) {
+#ifdef CONFIG_SENDSPIN_OPUS
+    const esp_err_t err =
+        sendspin_player_open_opus(format->sample_rate, format->channels);
+    if (err != ESP_OK) {
+      return err;
+    }
+#endif
   }
 
   /* PCM chunk timestamps match the byte count to the sample, so a mismatch
@@ -229,9 +299,9 @@ esp_err_t sendspin_player_stream_start(const sendspin_player_format_t *format) {
    * chunk but bills it for one block, so a chunk carries two blocks exactly
    * once, when the encoder's pipeline fills. Re-anchoring on that is an
    * audible stop in exchange for an inaudible offset. */
-  s_gap_tolerance = format->codec == SENDSPIN_CODEC_FLAC
-                        ? (int32_t)(format->sample_rate / 5U)
-                        : (int32_t)(format->sample_rate / 1000U);
+  s_gap_tolerance = format->codec == SENDSPIN_CODEC_PCM
+                        ? (int32_t)(format->sample_rate / 1000U)
+                        : (int32_t)(format->sample_rate / 5U);
 
   const audio_format_t engine_format = {
       .codec = "pcm",
@@ -260,9 +330,8 @@ esp_err_t sendspin_player_stream_start(const sendspin_player_format_t *format) {
   audio_output_start();
 
   ESP_LOGI(TAG, "stream start: %s, %" PRIu32 " Hz, %u ch, %u bit",
-           format->codec == SENDSPIN_CODEC_FLAC ? "flac" : "pcm",
-           format->sample_rate, (unsigned)format->channels,
-           (unsigned)format->bit_depth);
+           sendspin_player_codec_name(format->codec), format->sample_rate,
+           (unsigned)format->channels, (unsigned)format->bit_depth);
   return ESP_OK;
 }
 
@@ -276,6 +345,11 @@ void sendspin_player_stream_clear(void) {
   if (s_flac) {
     esp_flac_dec_reset(s_flac);
   }
+#ifdef CONFIG_SENDSPIN_OPUS
+  if (s_opus) {
+    esp_opus_dec_reset(s_opus);
+  }
+#endif
   s_epoch = audio_engine_v2_begin_epoch(&s_engine, esp_timer_get_time());
   audio_engine_v2_wait_for_anchor(&s_engine, esp_timer_get_time());
   audio_engine_v2_set_playing(&s_engine, s_streaming);
@@ -375,6 +449,37 @@ static uint32_t sendspin_player_decode_flac(const uint8_t *data, size_t len,
   return produced;
 }
 
+#ifdef CONFIG_SENDSPIN_OPUS
+/* One chunk, one call: a non-self-delimited Opus packet carries no length, so
+ * the decoder infers the last frame's size from the buffer it is handed.
+ * Looping over a remainder the way the FLAC path does would hand it a
+ * truncated packet, and there is no sync code to resynchronise on. */
+static uint32_t sendspin_player_decode_opus(const uint8_t *data, size_t len,
+                                            uint8_t *bits, uint8_t *channels) {
+  esp_audio_dec_in_raw_t raw = {.buffer = (uint8_t *)data,
+                                .len = (uint32_t)len,
+                                .consumed = 0,
+                                .frame_recover = ESP_AUDIO_DEC_RECOVERY_NONE};
+  esp_audio_dec_out_frame_t frame = {
+      .buffer = s_pcm, .len = (uint32_t)s_pcm_size, .decoded_size = 0};
+  esp_audio_dec_info_t info = {0};
+  const esp_audio_err_t err = esp_opus_dec_decode(s_opus, &raw, &frame, &info);
+  if (err != ESP_AUDIO_ERR_OK) {
+    ESP_LOGW(TAG, "opus decode error %d (needed %" PRIu32 " bytes)", (int)err,
+             frame.needed_size);
+    esp_opus_dec_reset(s_opus);
+    return 0;
+  }
+  if (info.bits_per_sample > 0) {
+    *bits = info.bits_per_sample;
+  }
+  if (info.channel > 0) {
+    *channels = info.channel;
+  }
+  return frame.decoded_size;
+}
+#endif
+
 /* Place already-decoded PCM on the timeline. Separate from the chunk entry
  * point because the re-anchor path replays it, and a FLAC frame can only be
  * decoded once. */
@@ -452,7 +557,13 @@ void sendspin_player_chunk(int64_t timestamp_us, const uint8_t *data,
   }
   s_chunks_received++;
 
-  if (!s_flac) {
+  void *decoder = s_flac;
+#ifdef CONFIG_SENDSPIN_OPUS
+  if (!decoder) {
+    decoder = s_opus;
+  }
+#endif
+  if (!decoder) {
     if (len < s_bytes_per_frame) {
       return;
     }
@@ -464,8 +575,15 @@ void sendspin_player_chunk(int64_t timestamp_us, const uint8_t *data,
 
   uint8_t bits = s_bit_depth;
   uint8_t channels = s_src_channels;
-  const uint32_t bytes =
-      sendspin_player_decode_flac(data, len, &bits, &channels);
+  uint32_t bytes = 0;
+  if (s_flac) {
+    bytes = sendspin_player_decode_flac(data, len, &bits, &channels);
+  }
+#ifdef CONFIG_SENDSPIN_OPUS
+  if (s_opus) {
+    bytes = sendspin_player_decode_opus(data, len, &bits, &channels);
+  }
+#endif
   const uint32_t stride = (uint32_t)(bits / 8U) * (uint32_t)channels;
   if (bytes == 0 || stride == 0) {
     return;

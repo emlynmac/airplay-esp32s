@@ -477,22 +477,28 @@ static void sendspin_send_hello(void) {
     if (formats) {
       /* Priority order, so FLAC first: it roughly halves what has to cross
        * the link, and the clock exchange shares that link with the audio.
-       * Opus is still not decoded, so offering it would only get us audio we
-       * have to drop. */
-      static const char *const codecs[] = {"flac", "pcm"};
-      static const int rates[] = {44100, 48000};
-      for (size_t c = 0; c < sizeof(codecs) / sizeof(codecs[0]); c++) {
-        for (size_t i = 0; i < sizeof(rates) / sizeof(rates[0]); i++) {
-          cJSON *fmt = cJSON_CreateObject();
-          if (!fmt) {
-            continue;
-          }
-          cJSON_AddStringToObject(fmt, "codec", codecs[c]);
-          cJSON_AddNumberToObject(fmt, "channels", 2);
-          cJSON_AddNumberToObject(fmt, "sample_rate", rates[i]);
-          cJSON_AddNumberToObject(fmt, "bit_depth", 16);
-          cJSON_AddItemToArray(formats, fmt);
+       * Opus halves it again but is lossy, so it sits behind PCM and is
+       * something an operator opts into. It is defined at 48 kHz only --
+       * the reference encoder rejects 44.1. */
+      static const struct {
+        const char *codec;
+        int rate;
+      } offered[] = {
+          {"flac", 44100}, {"flac", 48000}, {"pcm", 44100}, {"pcm", 48000},
+#ifdef CONFIG_SENDSPIN_OPUS
+          {"opus", 48000},
+#endif
+      };
+      for (size_t i = 0; i < sizeof(offered) / sizeof(offered[0]); i++) {
+        cJSON *fmt = cJSON_CreateObject();
+        if (!fmt) {
+          continue;
         }
+        cJSON_AddStringToObject(fmt, "codec", offered[i].codec);
+        cJSON_AddNumberToObject(fmt, "channels", 2);
+        cJSON_AddNumberToObject(fmt, "sample_rate", offered[i].rate);
+        cJSON_AddNumberToObject(fmt, "bit_depth", 16);
+        cJSON_AddItemToArray(formats, fmt);
       }
     }
     cJSON_AddNumberToObject(support, "buffer_capacity",
@@ -1204,6 +1210,10 @@ static void sendspin_handle_stream_start(const cJSON *payload) {
     which = SENDSPIN_CODEC_PCM;
   } else if (strcmp(codec_name, "flac") == 0) {
     which = SENDSPIN_CODEC_FLAC;
+#ifdef CONFIG_SENDSPIN_OPUS
+  } else if (strcmp(codec_name, "opus") == 0) {
+    which = SENDSPIN_CODEC_OPUS;
+#endif
   }
 
   const sendspin_player_format_t format = {

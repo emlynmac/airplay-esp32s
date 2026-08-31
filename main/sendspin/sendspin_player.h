@@ -34,6 +34,7 @@ typedef enum {
   SENDSPIN_CODEC_UNSUPPORTED = 0,
   SENDSPIN_CODEC_PCM,
   SENDSPIN_CODEC_FLAC,
+  SENDSPIN_CODEC_OPUS,
 } sendspin_codec_t;
 
 typedef struct {
@@ -41,9 +42,9 @@ typedef struct {
   uint8_t channels;
   uint8_t bit_depth;
   sendspin_codec_t codec;
-  /* FLAC: "fLaC" plus the STREAMINFO metadata block, decoded from the
-   * base64 codec_header in stream/start. The decoder learns the format from
-   * it, so it has to be fed before the first frame. */
+  /* FLAC: "fLaC" plus the STREAMINFO metadata block, decoded from the base64
+   * codec_header in stream/start. Not fed to the decoder -- esp_flac_dec takes
+   * bare frames and rejects it -- and Opus sends none at all. */
   const uint8_t *codec_header;
   size_t codec_header_len;
 } sendspin_player_format_t;

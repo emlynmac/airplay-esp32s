@@ -2246,7 +2246,13 @@ esp_err_t web_server_start(uint16_t port) {
   config.max_uri_handlers += 11; // tuning page + HF1/HF3 get/post/commit/revert
 #endif
   config.max_resp_headers = 8;
+#ifdef CONFIG_SENDSPIN_OPUS
+  /* libopus keeps its CELT scratch on the stack: measured peak is 11.7 KB at
+   * 48 kHz stereo, on top of what serving a request already needs. */
+  config.stack_size = 16384;
+#else
   config.stack_size = 8192;
+#endif
 
   esp_err_t err = httpd_start(&s_server, &config);
   if (err != ESP_OK) {
