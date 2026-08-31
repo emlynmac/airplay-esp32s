@@ -2272,3 +2272,7 @@ esp_err_t sendspin_reset_identity(void) {
   ESP_LOGI(TAG, "new client identity %s", s_client_id);
   return ESP_OK;
 }
+
+bool sendspin_server_connected(void) {
+  return s_fd >= 0 && s_state != SENDSPIN_IDLE;
+}

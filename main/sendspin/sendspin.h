@@ -105,6 +105,9 @@ const char *sendspin_pairing_pin(void);
 /** How many servers this device is currently paired with. */
 unsigned sendspin_paired_count(void);
 
+/** True while a server holds the WebSocket session. */
+bool sendspin_server_connected(void);
+
 /**
  * Forget every pairing record.  The device keeps its identity, its pairing
  * token and its PIN, so a server can pair again; until one does, sessions
@@ -113,6 +116,11 @@ unsigned sendspin_paired_count(void);
  *
  * There are only four slots and a fifth pairing evicts the oldest, so this is
  * how an operator clears out servers that are no longer around.
+ *
+ * Forgetting one side of a pairing strands the other: the server goes on
+ * offering a PSK this device can no longer resolve, and the handshake then
+ * fails in a way neither end reports.  Unpairing from the server is the
+ * route that prunes both, so prefer it whenever the server is reachable.
  */
 esp_err_t sendspin_forget_pairings(void);
 

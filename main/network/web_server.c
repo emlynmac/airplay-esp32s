@@ -1051,6 +1051,29 @@ static esp_err_t system_restart_handler(httpd_req_t *req) {
 
 #ifdef CONFIG_SENDSPIN_ENABLE
 static esp_err_t sendspin_unpair_handler(httpd_req_t *req) {
+  bool force = false;
+  char qbuf[64];
+  if (httpd_req_get_url_query_str(req, qbuf, sizeof(qbuf)) == ESP_OK) {
+    char val[8];
+    if (httpd_query_key_value(qbuf, "force", val, sizeof(val)) == ESP_OK) {
+      force = strcmp(val, "1") == 0 || strcmp(val, "true") == 0;
+    }
+  }
+
+  /* Forgetting only this side leaves the server offering a PSK the board can
+   * no longer resolve, and that handshake fails silently at both ends.  While
+   * a server is connected it can be unpaired from its own UI, which prunes
+   * both records, so send the operator there rather than into the deadlock. */
+  if (!force && sendspin_paired_count() > 0 && sendspin_server_connected()) {
+    httpd_resp_set_status(req, "409 Conflict");
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_sendstr(
+        req,
+        "{\"success\":false,\"error\":\"a server is connected; unpair from the "
+        "server so both sides forget, or repeat with ?force=1\"}");
+    return ESP_OK;
+  }
+
   const esp_err_t err = sendspin_forget_pairings();
   if (err != ESP_OK) {
     httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR,
