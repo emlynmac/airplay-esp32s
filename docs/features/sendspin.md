@@ -168,9 +168,17 @@ will start evicting the ones that do. Clear them all:
 curl -X POST http://<board>/api/sendspin/unpair
 ```
 
-The board keeps its identity, its token and its PIN, so any server can pair again. Sessions
-fall back to the Sentinel until one does — a server that still holds a record will report a
-credential mismatch and offer to re-pair.
+The board keeps its identity, its token and its PIN, so any server can pair again.
+
+!!! warning "Clear the server's record too, and clear it first"
+
+    This only forgets the board's half. A server that still holds a record keeps offering a
+    PSK the board no longer has, and every handshake fails — which usually means the server
+    can no longer show the device as connected, so its own unpair button is out of reach.
+
+    In Music Assistant the record lives in `<storage>/sendspin/pairing_store.json` (`/data`
+    on the add-on). Stop the server, remove the board's entry, and start it again. Then pair
+    with the PIN.
 
 !!! tip "Music Assistant"
 

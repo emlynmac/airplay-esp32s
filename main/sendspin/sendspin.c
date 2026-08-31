@@ -940,12 +940,13 @@ static const uint8_t *sendspin_select_psk(const char *json, size_t len) {
   const uint8_t *psk = sendspin_psk_lookup(id_str, &kind);
   if (!psk) {
     /* A lookup miss. The spec's Sentinel Fallback says to answer with the
-     * Sentinel anyway; the server reads that as a credential mismatch and
-     * should offer its operator a re-pair. */
+     * Sentinel anyway, but the server cannot verify a message 2 keyed with it
+     * and will just drop the connection and retry forever. Only deleting the
+     * server's own record breaks that loop. */
     ESP_LOGW(TAG,
              "server referenced an unknown PSK (%s, category %s) -- "
-             "falling back to the Sentinel; re-pair on the server to "
-             "clear it",
+             "answering with the Sentinel, which it cannot verify; delete "
+             "this device's record on the server, then pair again",
              id_str,
              cJSON_IsString(category) ? cJSON_GetStringValue(category)
                                       : "unspecified");
