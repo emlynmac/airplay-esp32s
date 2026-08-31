@@ -31,15 +31,15 @@ sharing the same output path, DSP and volume control that AirPlay uses.
   [web UI](../reference/spiffs.md) shows up in the server's UI
 - The `controller@v1` role: the board's play/pause, next and previous buttons drive the
   server's queue, the way DACP does for AirPlay
-- **Pairing PSK**, the pairing method the specification requires of every client: hand the
-  board's pairing token to a server and the two agree a long-term key, after which the
-  connection is authenticated rather than merely encrypted. See
-  [Pairing](#pairing)
+- **Two pairing methods**: a **static PIN**, an eight-digit code the board prints at boot,
+  and the **Pairing PSK** the specification requires of every client. Either way the two
+  ends agree a long-term key and the connection becomes authenticated rather than merely
+  encrypted. See [Pairing](#pairing)
 
 ## What does not
 
-- **The pairing-code methods.** `static_pairing_code` and `dynamic_pairing_code` need a
-  CPace PAKE round and are optional for a client, so neither is implemented
+- **The dynamic pairing code.** It needs a display or a spoken prompt the board does not
+  have, so only the static code is offered
 - **Re-handshaking.** A second `noise/handshake` mid-session closes the connection instead
   of rekeying, so a server that would rather promote the channel in band has to reconnect
 - **FLAC and Opus.** The server must be told to send PCM
@@ -108,12 +108,30 @@ silently, depending on which key the server actually used.
 ## Pairing
 
 Pairing replaces the Sentinel with a secret both sides hold, so the handshake starts proving
-who is on the other end. The specification defines three methods; only **Pairing PSK** is
-required of a client, and it is the one implemented here. It has no PAKE round, because the
-operator carries the secret across by hand instead.
+who is on the other end. The board offers two of the specification's three methods and lets
+the server pick: a **static PIN**, which is the one a user interface will normally reach
+for, and the **Pairing PSK** every client is required to support.
 
-The board generates a 32-byte **pairing PSK** from the hardware RNG on first boot and keeps
-it in NVS. That key plus the board's public key make up its **pairing token**:
+### Static PIN
+
+On first boot the board draws an eight-digit PIN and keeps it in NVS. Read it from the boot
+log, or from `/api/system/info` as `sendspin_pairing_pin`:
+
+```bash
+curl -s http://<board>/api/system/info | grep pairing_pin
+```
+
+Type it into the server when it asks. The two then run a **CPace** PAKE — a balanced
+password-authenticated key exchange over Curve25519 — which turns those eight digits into a
+strong shared key without ever putting them on the wire. An eavesdropper learns nothing, and
+an impostor server gets exactly one guess per attempt. The board wraps its fresh long-term
+PSK under a key derived from the PAKE result before sending it, so the PIN, not the
+Sentinel-keyed channel, is what protects the handover.
+
+### Pairing PSK
+
+The board also generates a 32-byte **pairing PSK** from the hardware RNG on first boot and
+keeps it in NVS. That key plus the board's public key make up its **pairing token**:
 
 ```
 payload = client_key (32 bytes) ‖ pairing_psk (32 bytes)
@@ -134,18 +152,25 @@ generates a fresh 32-byte **long-term PSK**, sends it in `client/pair-finalize`,
 the record once the server acknowledges. Every later session with that server uses the
 long-term key.
 
-!!! danger "The pairing token is a credential"
+!!! danger "The PIN and the pairing token are credentials"
 
-    Anyone who can read it can adopt the board. It is not rotated automatically — erasing
-    NVS is what changes it. The board keeps records for up to four servers; a fifth pairing
-    evicts the oldest.
+    Anyone who can read either one can adopt the board. Neither is rotated automatically —
+    erasing NVS is what changes them. The board keeps records for up to four servers; a
+    fifth pairing evicts the oldest.
 
 !!! tip "Music Assistant"
 
     Add the board with an explicit port, `<ip>:80` — a bare address is assumed to be on
     Sendspin's default port and will not connect. Then **approve** the device when Music
     Assistant asks: until you do, it activates the connection with an empty activity set and
-    no audio will flow. You will not be asked for a password.
+    no audio will flow. Choosing to pair prompts for the eight-digit PIN.
+
+!!! note "The server reconnects after pairing"
+
+    A second `noise/handshake` on a live connection is not supported, so once the long-term
+    PSK is agreed the board closes the socket rather than rekeying in band. The server
+    reconnects a moment later with the new key. Pairing still completes; the only symptom is
+    a brief drop.
 
 !!! note "Sendspin gets its own timeline"
 
@@ -189,8 +214,9 @@ On first boot the board generates a Curve25519 key pair and stores the secret in
 public key, Base64url encoded, is the `client_id` the server sees, and it is stable across
 reboots and firmware updates. The same key pair is the board's Noise static key, so
 erasing the `sendspin` NVS namespace gives the board a new identity and invalidates any
-pairing a server has recorded for it. The pairing PSK and the pairing records live in the
-same namespace, so erasing it also changes the pairing token.
+pairing a server has recorded for it. The pairing PSK, the static PIN and the pairing
+records live in the same namespace, so erasing it also changes the pairing token and the
+PIN.
 
 ## Caveats
 
