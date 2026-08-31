@@ -7,8 +7,8 @@ sharing the same output path, DSP and volume control that AirPlay uses.
 
 !!! warning "Experimental"
 
-    PCM and FLAC are decoded; Opus is not, so the server must be willing to send one of
-    the first two. Everything else about a session is in place: the transport is
+    PCM and FLAC are decoded everywhere, and Opus on the ESP32-S3 and P4.
+    Everything else about a session is in place: the transport is
     encrypted, and the board can be paired so that it is authenticated too.
 
 ## What works
@@ -23,6 +23,8 @@ sharing the same output path, DSP and volume control that AirPlay uses.
   44.1 or 48 kHz stereo
 - **FLAC**, which is what a lossless server will reach for first and what cuts the
   bandwidth a 44.1 kHz stereo stream needs from about 1.4 Mbit/s to roughly half that
+- **Opus** at 48 kHz, on boards whose SoC can keep up — see
+  [Opus](#opus) below
 - Stream start, clear and end, including re-anchoring when the server jumps
 - The `metadata@v1` role: title, artist, album and progress reach the
   [OLED](oled-display.md) and [TFT](tft-display.md) displays and the LEDs on the same
@@ -45,7 +47,8 @@ sharing the same output path, DSP and volume control that AirPlay uses.
 
 - **The dynamic pairing code.** It needs a display or a spoken prompt the board does not
   have, so only the static code is offered
-- **Opus.** The server must be told to send PCM or FLAC
+- **Opus on the original ESP32.** It is offered only where the SoC can decode it in
+  realtime; see [Opus](#opus)
 - The artwork and visualizer roles
 
 ## How it works
@@ -56,7 +59,7 @@ second HTTP server is started; the endpoint costs one URI handler and two socket
 ```mermaid
 flowchart LR
     S[Sendspin server] -- WebSocket --> W[/sendspin endpoint/]
-    W -- audio chunks --> D[FLAC decoder]
+    W -- audio chunks --> D[FLAC / Opus decoder]
     D -- PCM --> T[Playout timeline]
     W -- client/time --> C[Clock estimator]
     C -- offset --> R[Render hook]
@@ -74,6 +77,26 @@ emerge, converts that to server time, and pulls the matching block.
 
 That is the same machinery AirPlay uses — Sendspin simply supplies a different clock and a
 different transport.
+
+## Opus
+
+Opus is advertised at **48 kHz only**, which is the one rate the reference encoder
+accepts, and it sits behind PCM and FLAC in the priority the board advertises: it is
+lossy, so it is something you opt into rather than the first thing a server reaches for.
+
+It is enabled by default on the **ESP32-S3 and ESP32-P4**, and off on the original
+ESP32. That is not caution — it genuinely does not work there. The decoder keeps about
+26 KB of state, which on an ESP32 lands in PSRAM, and a 20 ms stereo packet then takes
+around 7.7 ms to decode with peaks past realtime. That starves the task decoding it, the
+task watchdog fires and the audio breaks up. FLAC already halves the bandwidth on those
+boards, so little is lost. Set `CONFIG_SENDSPIN_OPUS` if you want to try it anyway.
+
+Opus also makes the playout timeline much more expensive, because the server meters what
+it may queue **in bytes**. The same byte budget buys roughly ten times the duration once
+Opus is on the wire, so a server will happily run several seconds further ahead than it
+would with PCM. Anything arriving past the end of the timeline window is rejected and
+comes back later as a hole to conceal, which is why an Opus build gets 1024 blocks rather
+than 192.
 
 ## Encryption
 
@@ -253,13 +276,20 @@ It needs **PSRAM**, so it is unavailable on boards without it.
 | Option | Default | Purpose |
 | --- | --- | --- |
 | `CONFIG_SENDSPIN_ENABLE` | `n` | Build and advertise the player role |
-| `CONFIG_SENDSPIN_TIMELINE_BLOCKS` | `192` | Playout depth, in 512-frame blocks |
+| `CONFIG_SENDSPIN_OPUS` | `y` on S3/P4 | Offer Opus as well as FLAC and PCM |
+| `CONFIG_SENDSPIN_TIMELINE_BLOCKS` | `1024` with Opus, else `192` | Playout depth, in 512-frame blocks |
 | `CONFIG_SENDSPIN_RX_BUFFER_SIZE` | `32768` | Largest message accepted from the server |
 | `CONFIG_SENDSPIN_TIME_SYNC_INTERVAL_MS` | `2000` | Steady-state clock sync interval |
 
 The defaults cost roughly **448 KB of PSRAM**: 384 KB for about 2.2 seconds of playout
-timeline, and 64 KB for the receive and reassembly buffers. A FLAC stream takes a further
-64 KB of decoder scratch, allocated when the stream starts and released when it ends.
+timeline, and 64 KB for the receive and reassembly buffers. A compressed stream takes a
+further 64 KB of decoder scratch, allocated when the stream starts and released when it
+ends.
+
+An Opus build is much hungrier, because the timeline has to cover how far ahead the
+server will run: 1024 blocks is **2 MB** of playout timeline. Enabling Opus also adds
+8 KB to the web server task's stack, since libopus keeps its CELT scratch on the stack
+and the decode runs on the task serving the WebSocket.
 
 ## Identity
 

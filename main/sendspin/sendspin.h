@@ -24,9 +24,10 @@
  *   - pairing by static PIN (CPace) or by pairing PSK;
  *   - the init/hello/activate handshake, the client/time clock exchange and
  *     client/state reporting;
- *   - PCM and FLAC stream playout through audio_engine_v2.
+ *   - PCM, FLAC and -- where the SoC can keep up -- Opus stream playout
+ *     through audio_engine_v2.
  *
- * It does NOT implement Opus, or the dynamic pairing code.  Keying with the
+ * It does NOT implement the dynamic pairing code.  Keying with the
  * Sentinel leaves the session *unpaired*: encrypted and replay-protected, but
  * with neither peer's identity proven, so a server may only use it for
  * playback once its operator has approved the device.
