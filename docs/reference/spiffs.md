@@ -24,6 +24,7 @@ data/
 │   ├── index.html     # Setup and control panel
 │   ├── logs.html      # Live log viewer
 │   ├── bq.html        # Parametric biquad chains (TAS5825M boards)
+│   ├── hf.html        # Hybrid flow tuning (SqueezeAMP)
 │   └── speedtest.html # Network throughput test
 ├── hf/                # DSP programs loaded at boot
 │   ├── base-hf1-44100.bin  # Hybrid flow 1 base image (SqueezeAMP)
@@ -37,6 +38,32 @@ The `hf/` names carry the sample rate the DSP image was built for, and a 48000 t
 beside each. Only the hybrid flow base images ship with the repository; a PPC3 dump is
 yours to export and drop in, as is the background image — at 106 KB it does not fit
 alongside the web UI on a 4 MB board.
+
+## Compression
+
+`data/` is not flashed verbatim. `scripts/gen_spiffs_image.py` stages it first and gzips
+every `.html`, so the image holds `index.html.gz` rather than `index.html`. That takes the
+payload from 256 KB to 101 KB, which matters because the smallest layout gives SPIFFS only
+188 KB — the pages alone overflow it uncompressed. Pages also load noticeably faster over
+WiFi.
+
+The image only ever stores the `.gz`, so the web server tries the plain name first and falls
+back to `<path>.gz`, setting `Content-Encoding: gzip` when it serves one; browsers
+decompress transparently. That order is what makes `/api/fs/upload` useful — an uploaded
+`index.html` replaces the page that shipped, and deleting it again restores the built-in
+one. The `hf/` and `bg/` binaries are read straight off the filesystem by the DAC and
+display drivers, which cannot decompress, so they are copied through untouched.
+
+Staging also drops what a build cannot use. Both DAC drivers keep their DSP images in
+`hf/`, so each build carries only the family it can load: `base-hf*.bin` and
+`tas57xx_fw*.bin` need `CONFIG_DAC_TAS57XX`, `tas5825m_fw*.bin` needs `CONFIG_DAC_TAS58XX`.
+That hands another 24 KB back to any board without a TAS57xx, taking the image to 78 KB.
+
+Both build systems go through that staging step. ESP-IDF runs it from `CMakeLists.txt`
+before `spiffs_create_partition_image`, and PlatformIO — which packs `data/` itself rather
+than using the image CMake builds — runs it from `scripts/pio_stage_spiffs.py`, wired in as
+an `extra_scripts` hook. So `idf.py flash`, `pio run -t uploadfs` and the prebuilt release
+binaries all end up with the same filesystem.
 
 ## Flashing the image
 
