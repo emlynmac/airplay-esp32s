@@ -31,8 +31,18 @@
 #define BOARD_MUTE_GPIO_LEVEL CONFIG_MUTE_GPIO_LEVEL
 
 // DAC I2C (optional)
+#define BOARD_I2C_PORT     0
 #define BOARD_I2C_SDA_GPIO CONFIG_DAC_I2C_SDA
 #define BOARD_I2C_SCL_GPIO CONFIG_DAC_I2C_SCL
+
+// Both pins default to -1, which means "no DAC on this board". The values are
+// compile-time constants, so the bus is left out of the build entirely rather
+// than tested at runtime.
+#if BOARD_I2C_SDA_GPIO >= 0 && BOARD_I2C_SCL_GPIO >= 0
+#define BOARD_HAS_DAC_I2C 1
+#else
+#define BOARD_HAS_DAC_I2C 0
+#endif
 
 // Battery monitoring
 #define BOARD_BAT_CHANNEL CONFIG_BAT_CHANNEL

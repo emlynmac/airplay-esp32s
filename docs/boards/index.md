@@ -33,6 +33,7 @@ original ESP32.
 | --- | --- | --- | :-: | :-: | :-: |
 | [ESP32-S3 + PCM5102A](esp32s3-pcm5102a.md) | ESP32-S3 | External I2S | — | — | yes |
 | [Waveshare ESP32-S3](esp32s3-pcm5102a.md#waveshare-esp32-s3) | ESP32-S3 | External I2S | — | — | yes |
+| [PCM5121 / PCM5122](pcm512x.md) | ESP32 / S3 | PCM512x | — | — | — |
 | [SqueezeAMP](squeezeamp.md) | ESP32 | TAS5756 | yes | — | yes |
 | [Esparagus Audio Brick](esparagus-audio-brick.md) | ESP32 / S3 | TAS5825M | ESP32 only | yes | ESP32 only |
 | [Esparagus Audio Brick Dual-DAC](esparagus-audio-brick-dual-dac.md) | ESP32-S3 | 2× TAS5825M | — | yes | — |

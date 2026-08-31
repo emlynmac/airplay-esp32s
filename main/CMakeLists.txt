@@ -107,6 +107,7 @@ set( DEPS
     dac
     dac_tas58xx
     dac_tas57xx
+    dac_pcm512x
     display
     audio-resampler
     esp_eth

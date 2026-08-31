@@ -107,6 +107,7 @@ nav:
   - Boards:
       - boards/index.md
       - ESP32-S3 + PCM5102A: boards/esp32s3-pcm5102a.md
+      - PCM5121 / PCM5122: boards/pcm512x.md
       - SqueezeAMP: boards/squeezeamp.md
       - Esparagus Audio Brick: boards/esparagus-audio-brick.md
       - Esparagus Audio Brick rev D: boards/esparagus-audio-brick-dual-dac.md

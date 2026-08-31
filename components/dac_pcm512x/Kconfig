@@ -1,0 +1,36 @@
+if DAC_PCM512X
+
+    config PCM512X_MAX_VOLUME
+        int "Maximum DAC volume (dB)"
+        range -100 0
+        default 0
+        help
+            Maximum volume level in dB that corresponds to AirPlay volume 0 dB.
+            The usable P0-R61/R62 range is 0 dB to -103 dB; the boost half of
+            the register (up to +24 dB) is deliberately not used.
+
+            Unlike the TAS57xx, a PCM512x drives a 2.1 Vrms line output rather
+            than a speaker, so the default is 0 dB — full scale. Lower it if
+            the amplifier downstream clips before the volume control reaches
+            the top of its range.
+
+    config PCM512X_ANALOG_GAIN_MINUS_6DB
+        bool "Attenuate the line output by 6 dB"
+        default n
+        help
+            Set P1-R2 LAGN/RAGN, dropping full scale from 2.1 Vrms to about
+            1.05 Vrms. Useful when feeding an input that expects a 1 Vrms
+            consumer line level. This is analogue attenuation, so it costs no
+            resolution — prefer it over PCM512X_MAX_VOLUME for a fixed offset.
+
+    config PCM512X_FORCE_BCK_PLL
+        bool "Always derive the PLL from BCK"
+        default n
+        help
+            By default the driver puts the PLL on MCLK when it detects one on
+            the SCK pin, and falls back to BCK otherwise. Set this to keep the
+            PLL on BCK even when MCLK is present.
+
+            Only useful for testing the no-MCLK path on a board that has one.
+
+endif

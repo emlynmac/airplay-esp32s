@@ -35,6 +35,8 @@ idf.py -p /dev/ttyUSB0 monitor
 | `esp32s3-jtag` | ESP32-S3 with JTAG | Extends esp32s3 |
 | `esp32c5-xiao` | Seeed XIAO ESP32-C5 | Needs the pioarduino platform fork; the ESP-IDF native flow works too |
 | `esp32wrover-dev` | Freenove ESP32-WROVER devkit | 4MB, Bluetooth |
+| `pcm512x` | ESP32 + PCM5121/PCM5122 line-out DAC | 4MB, I2C-controlled volume |
+| `pcm512x-s3` | ESP32-S3 + PCM5121/PCM5122 | Same, with MCLK wired |
 | `waveshare-esp32s3` | Waveshare ESP32-S3 audio board | 16MB |
 | `squeezeamp` | ESP32 + TAS5756 DAC/amp | 8MB flash |
 | `squeezeamp-bt` | Same + Bluetooth A2DP | |
@@ -119,6 +121,7 @@ components/
 ├── dac_tas57xx/            # TI TAS57xx (TAS5756/5754/5751) DAC driver with hybrid flow DSP
 ├── dac_tas58xx/            # TI TAS58xx (TAS5825M/TAS5805M) driver with on-chip DSP + biquad chains
 ├── dac_es8311/             # Everest ES8311 codec driver
+├── dac_pcm512x/            # TI PCM5121/PCM5122 line-out DAC driver (no miniDSP)
 ├── display/                # Display drivers
 │   ├── display.c           # Common display API
 │   ├── display_st7789.c    # ST7789 TFT with LVGL 9 rendering (ESP32-S3)
@@ -156,6 +159,13 @@ components/
 - **A TAS5805M has no process flow.** PPC3 dumps are skipped for it (`tas58xx_load_hf()` returns early unless the model is a TAS5825M) and the input mixer refuses anything but stereo. Volume, mute and the 15 biquads per channel work on both parts, so the `/bq` web UI is the tuning route for a 5805M.
 - **PPC3 dump filenames**, searched most specific first: `tas5825m_fw<i>-<rate>.bin` → `tas5825m_fw-<rate>.bin` → `tas5825m_fw<i>.bin` → `tas5825m_fw.bin`. The unindexed names only stand in for device 0. `components/dac_tas58xx/ppc3_convert.py` produces them from a PPC3 export.
 - **Fault handling.** A clock fault is expected when the I2S clock stops at the end of a track, so it is logged and cleared rather than muting the amplifier; channel and global2 faults still mute. Rev D has no fault line at all and is polled instead.
+
+## PCM512x notes
+
+- **Same silicon as the TAS575x, minus the amplifier and the DSP.** Page 0 — reset, power, mute, clocking, volume, status — is register-for-register identical, so `dac_pcm512x.c` is a trimmed copy of the TAS57xx bring-up. Page 1 configures a 2.1 Vrms line driver instead of a class-D stage.
+- **No user miniDSP.** P0-R43 only accepts the ROM process flows (1, 2, 3, 5, 7); the "program in RAM" setting HybridFlow needs is reserved on this part. Nothing has to be restored after a powerdown, so `DAC_POWER_OFF` is cheap and the whole flow-resident state machine is absent. `/hf` and `/bq` are unavailable and nothing lands in SPIFFS.
+- **Both families answer on 0x4C–0x4F and neither has a device ID register**, so the driver is a build-time choice (`CONFIG_DAC_PCM512X` vs `CONFIG_DAC_TAS57XX`). The driver reads P1-R5 before writing anything and warns when the reset value (0x00 on a PCM512x, 0x11 on a TAS575x) looks like the wrong part.
+- **MCLK is optional and auto-detected.** P0-R94 bit 6 is read in `on_i2s_started()` — not at `dac_init()`, where the I2S channel does not exist yet — and the PLL is pointed at SCK or BCK accordingly. Without MCLK the clock-halt and LRCK/BCK-missing detectors are masked, exactly as the TAS57xx driver does.
 
 ## Code Quality
 

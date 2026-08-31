@@ -1,0 +1,21 @@
+# Generic ESP32-S3 dev board + TI PCM5121/PCM5122 line-out DAC (I2C controlled).
+#
+# The DAC's ADR1/ADR2 straps put it somewhere in 0x4C-0x4F; the driver probes
+# the whole range. MCLK is wired here, and the driver checks P0-R94 before it
+# commits to it — set CONFIG_I2S_SCK_IO=-1 and the PLL falls back to BCK.
+CONFIG_BOARD_ESP32S3_GENERIC=y
+CONFIG_ESPTOOLPY_FLASHSIZE_16MB=y
+CONFIG_ESPTOOLPY_FLASHSIZE="16MB"
+CONFIG_SPIRAM_MODE_OCT=y
+
+CONFIG_DAC_PCM512X=y
+CONFIG_DAC_CONTROLS_VOLUME=y
+
+# GPIO config
+CONFIG_I2S_SCK_IO=8
+CONFIG_I2S_BCK_IO=11
+CONFIG_I2S_WS_IO=13
+CONFIG_I2S_DO_IO=12
+CONFIG_DAC_I2C_SDA=1
+CONFIG_DAC_I2C_SCL=2
+CONFIG_LED_RGB_GPIO=48

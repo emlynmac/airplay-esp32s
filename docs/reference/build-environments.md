@@ -11,6 +11,8 @@ Every PlatformIO environment defined in `platformio.ini`. The default is `esp32s
 | `waveshare-esp32s3` | ESP32-S3 | 16 MB | Waveshare ESP32-S3 pin arrangement |
 | `esp32c5-xiao` | ESP32-C5 | 8 MB | Seeed XIAO, needs the community pioarduino platform |
 | `esp32wrover-dev` | ESP32 | 4 MB | Freenove WROVER, includes Bluetooth |
+| `pcm512x` | ESP32 | 4 MB | [PCM5121/PCM5122](../boards/pcm512x.md) line-out DAC over I2C |
+| `pcm512x-s3` | ESP32-S3 | 16 MB | Same, on an ESP32-S3 |
 
 ## Amplifier boards
 
