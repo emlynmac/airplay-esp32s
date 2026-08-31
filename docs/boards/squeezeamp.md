@@ -1,7 +1,7 @@
 # SqueezeAMP
 
 The [SqueezeAMP](https://github.com/philippe44/SqueezeAMP) is an ESP32 board with a
-TAS5756 DAC and a built-in Class-D amplifier. No external DAC is needed — connect speakers
+TAS575xx (combined DAC and Class-D amplifier). Connect speakers
 directly to the board.
 
 ## Flashing
@@ -53,35 +53,24 @@ from 5000 to 2500 frames to fit the original ESP32's more limited PSRAM bandwidt
 
 ## Hybrid flow DSP
 
-The TAS575xM supports **hybrid flow** DSP programs that run on the chip's miniDSP core. At
-boot the driver looks for `/spiffs/hf/tas57xx_fw.bin` and loads it automatically if
-present. There is no menuconfig setting — place the file and reboot.
+The SqueezeAMP's TAS5754M has a miniDSP core, so it can run a TI **HybridFlow** process
+flow: a full-range stereo chain with EQ, bass enhancement and a compander, or a two-way
+bi-amp crossover. The firmware ships the base flows and tunes them live from the
+`/hf` page.
 
-To add or update a hybrid flow:
-
-1. Export a `.cfg` file from TI PurePath Console.
-2. Convert it to binary:
-   ```bash
-   python3 components/dac_tas57xx/hybridflows/hybridflow_convert_cfg.py --bin my_flow.cfg
-   ```
-3. Rename the output to `tas57xx_fw.bin`.
-4. Copy it to `data/hf/` for a serial flash, or upload it over WiFi:
-   ```bash
-   curl -X POST "http://<device-ip>/api/fs/upload?path=/spiffs/hf/tas57xx_fw.bin" \
-        --data-binary @tas57xx_fw.bin
-   ```
-5. Reboot the device.
-
-Delete the file to disable the hybrid flow.
+The TAS5754M is the part all of this has been tested on. See
+[HybridFlow DSP](../features/hybridflow.md) for the flows, the tuning workflow and the
+file layout.
 
 !!! note
 
-    Hybrid flows are only supported on TAS575xM chips. The driver detects the chip family
-    at boot and skips hybrid flow loading on TAS578x devices.
+    HybridFlow needs a TAS57xx with a miniDSP. The driver detects the chip family at boot
+    and skips flow loading on TAS578x devices, which have no DSP core.
 
 See [SPIFFS filesystem](../reference/spiffs.md) for the file management API.
 
 ## Related
 
+- [HybridFlow DSP](../features/hybridflow.md)
 - [Bluetooth A2DP](../features/bluetooth.md)
 - [Build environments](../reference/build-environments.md)

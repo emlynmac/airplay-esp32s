@@ -25,6 +25,7 @@ static const char *TAG = "settings";
 #define NVS_KEY_AMP_MIX        "amp_mix"
 #define NVS_KEY_SECOND_PBTL    "amp2_pbtl"
 #define NVS_KEY_AIRPLAY_V1     "ap_v1"
+#define NVS_KEY_CH_TRIM        "ch_trim"
 
 #define MAX_WIFI_SSID_LEN     32
 #define MAX_WIFI_PASSWORD_LEN 64
@@ -530,6 +531,54 @@ esp_err_t settings_set_amp_gain(const float gain_db[SETTINGS_AMP_OUTPUTS]) {
              gain_db[1], gain_db[2], gain_db[3]);
   } else {
     ESP_LOGE(TAG, "Failed to save amp levels: %s", esp_err_to_name(err));
+  }
+  return err;
+}
+
+esp_err_t settings_get_channel_trim(float trim_db[SETTINGS_CHANNELS]) {
+  if (!trim_db) {
+    return ESP_ERR_INVALID_ARG;
+  }
+
+  nvs_handle_t nvs;
+  esp_err_t err = nvs_open(NVS_NAMESPACE, NVS_READONLY, &nvs);
+  if (err != ESP_OK) {
+    return ESP_ERR_NOT_FOUND;
+  }
+
+  size_t len = sizeof(float) * SETTINGS_CHANNELS;
+  err = nvs_get_blob(nvs, NVS_KEY_CH_TRIM, trim_db, &len);
+  nvs_close(nvs);
+  if (err == ESP_OK && len != sizeof(float) * SETTINGS_CHANNELS) {
+    return ESP_ERR_INVALID_SIZE;
+  }
+  return err;
+}
+
+esp_err_t settings_set_channel_trim(const float trim_db[SETTINGS_CHANNELS]) {
+  if (!trim_db) {
+    return ESP_ERR_INVALID_ARG;
+  }
+
+  nvs_handle_t nvs;
+  esp_err_t err = nvs_open(NVS_NAMESPACE, NVS_READWRITE, &nvs);
+  if (err != ESP_OK) {
+    ESP_LOGE(TAG, "Failed to open NVS: %s", esp_err_to_name(err));
+    return err;
+  }
+
+  err = nvs_set_blob(nvs, NVS_KEY_CH_TRIM, trim_db,
+                     sizeof(float) * SETTINGS_CHANNELS);
+  if (err == ESP_OK) {
+    err = nvs_commit(nvs);
+  }
+  nvs_close(nvs);
+
+  if (err == ESP_OK) {
+    ESP_LOGI(TAG, "Saved channel trim: A %+.1f dB, B %+.1f dB", trim_db[0],
+             trim_db[1]);
+  } else {
+    ESP_LOGE(TAG, "Failed to save channel trim: %s", esp_err_to_name(err));
   }
   return err;
 }

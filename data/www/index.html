@@ -92,6 +92,8 @@ input:focus{outline:none;border-color:#e94560}
 <div id='dual-msg'></div></div>
 <div id='eq-link' style='display:none;margin-top:18px'>
 <a href='/bq' class='btn btn-secondary'>Biquad EQ</a></div>
+<div id='hf1-link' style='display:none;margin-top:18px'>
+<a href='/hf' class='btn btn-secondary'>HybridFlow Tuning</a></div>
 </div>
 <div class='card'><h2>Firmware Update</h2>
 <div class='file-row'><input type='file' id='fw-file' accept='.bin' style='display:none'>
@@ -259,6 +261,7 @@ async function loadInfo(){
       document.getElementById('info-phy').textContent=i.wifi_phy||'-';
       document.getElementById('info-bssid').textContent=i.wifi_bssid||'-';
       if(i.eq_supported||i.sub_supported){document.getElementById('eq-link').style.display='';}
+      if(i.hf1_supported||i.hf3_supported){document.getElementById('hf1-link').style.display='';}
       /* Only a TAS58xx build registers /api/audio/dual; asking anyway logs a
          warning on the device for every page load. */
       if(i.dual_supported&&!dualLoaded){dualLoaded=true;loadDual();}
