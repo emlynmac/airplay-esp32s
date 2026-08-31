@@ -76,6 +76,11 @@ typedef enum {
 } sendspin_state_t;
 
 static httpd_handle_t s_server = NULL;
+/* Guards every static below that outlives a single call.  Two tasks reach
+ * them: the httpd task, which dispatches received frames and serves the
+ * /api/sendspin endpoints, and the housekeeping task, which holds this for a
+ * whole tick.  Without it a state change lands between the tick's test and
+ * the action it decided on. */
 static SemaphoreHandle_t s_lock = NULL;
 /* Serialises socket writes.  Replies are sent from the httpd task while the
  * housekeeping task sends time requests and state reports, and a WebSocket
@@ -169,6 +174,26 @@ static uint32_t s_pairing_index = 0;
 /* Defined with the rest of the pairing code, but a session teardown has to
  * clear the PAKE too. */
 static void sendspin_pake_reset(void);
+
+/* ------------------------------------------------------------------ */
+/*  Locking                                                            */
+/* ------------------------------------------------------------------ */
+
+/* Long enough to outlast a housekeeping tick stuck on a slow socket, short
+ * enough that a wedged session cannot hold the whole HTTP surface hostage --
+ * the httpd task serves the web UI and OTA as well. */
+#define SENDSPIN_LOCK_WAIT_MS 2000
+
+static bool sendspin_lock(void) {
+  return s_lock &&
+         xSemaphoreTake(s_lock, pdMS_TO_TICKS(SENDSPIN_LOCK_WAIT_MS)) == pdTRUE;
+}
+
+static void sendspin_unlock(void) {
+  if (s_lock) {
+    xSemaphoreGive(s_lock);
+  }
+}
 
 /* ------------------------------------------------------------------ */
 /*  Identity                                                           */
@@ -674,6 +699,19 @@ static void sendspin_session_close(const char *reason) {
       s_activity_cb(false);
     }
   }
+}
+
+/* sendspin_session_close() for a caller that does not hold s_lock. */
+static void sendspin_locked_close(const char *reason) {
+  if (!sendspin_lock()) {
+    /* The housekeeping task reaps a dead fd on its next tick, so a close that
+     * cannot get the lock costs a tick rather than the session. */
+    ESP_LOGW(TAG, "session lock timed out; leaving the close to the tick (%s)",
+             reason);
+    return;
+  }
+  sendspin_session_close(reason);
+  sendspin_unlock();
 }
 
 /* ------------------------------------------------------------------ */
@@ -1804,6 +1842,11 @@ static void sendspin_handle_binary(const uint8_t *data, size_t len,
  * a session that no WebSocket is behind. */
 static esp_err_t sendspin_ws_connected(httpd_req_t *req) {
   const int fd = httpd_req_to_sockfd(req);
+  if (!sendspin_lock()) {
+    ESP_LOGE(TAG, "session lock timed out; rejecting fd=%d", fd);
+    return ESP_FAIL;
+  }
+
   if (s_fd >= 0 && s_fd != fd && sendspin_fd_is_live(s_fd)) {
     /* One server at a time. The protocol's own answer to a second one is
      * client/goodbye with reason another_server; dropping the newcomer is
@@ -1811,6 +1854,7 @@ static esp_err_t sendspin_ws_connected(httpd_req_t *req) {
      * Only an incumbent that is demonstrably still connected gets to win,
      * or a dead one would lock the endpoint out until a reboot. */
     ESP_LOGW(TAG, "rejecting a second server on fd=%d", fd);
+    sendspin_unlock();
     return ESP_FAIL;
   }
   if (s_fd >= 0 && s_fd != fd) {
@@ -1827,7 +1871,45 @@ static esp_err_t sendspin_ws_connected(httpd_req_t *req) {
   /* client/init is sent from the housekeeping task rather than here, so that
    * it cannot race the handshake response onto the socket. */
   s_state = SENDSPIN_NEED_INIT;
+  sendspin_unlock();
   return ESP_OK;
+}
+
+/* Acts on one received frame. Runs under s_lock, so it may read and write
+ * session state freely. */
+static void sendspin_ws_dispatch(const httpd_ws_frame_t *frame,
+                                 int64_t arrival_us) {
+  if (frame->type == HTTPD_WS_TYPE_TEXT) {
+    if (sendspin_noise_ready(&s_noise)) {
+      ESP_LOGE(TAG, "cleartext frame after the handshake");
+      sendspin_session_close("cleartext in transport mode");
+      return;
+    }
+    sendspin_handle_message((const char *)s_rx, frame->len, arrival_us);
+    return;
+  }
+
+  if (frame->type != HTTPD_WS_TYPE_BINARY) {
+    return;
+  }
+  if (!sendspin_noise_ready(&s_noise)) {
+    ESP_LOGE(TAG, "binary frame before the handshake");
+    sendspin_session_close("unencrypted binary frame");
+    return;
+  }
+
+  size_t plain_len = 0;
+  /* A single AEAD failure is terminal by design: the nonce counters have
+   * diverged, so nothing after this frame would decrypt either. */
+  if (sendspin_noise_decrypt(&s_noise, s_rx, frame->len, s_pt,
+                             (size_t)CONFIG_SENDSPIN_RX_BUFFER_SIZE,
+                             &plain_len) != ESP_OK) {
+    ESP_LOGE(TAG, "transport decryption failed on a %u byte frame",
+             (unsigned)frame->len);
+    sendspin_session_close("decryption failed");
+    return;
+  }
+  sendspin_handle_binary(s_pt, plain_len, arrival_us);
 }
 
 static esp_err_t sendspin_ws_handler(httpd_req_t *req) {
@@ -1836,8 +1918,8 @@ static esp_err_t sendspin_ws_handler(httpd_req_t *req) {
                                "WebSocket upgrade required");
   }
 
-  /* Timestamped before anything else in the handler so the clock estimate
-   * measures the network, not our own dispatch. */
+  /* Timestamped before anything else in the handler, the lock included, so
+   * the clock estimate measures the network and not our own dispatch. */
   const int64_t arrival_us = esp_timer_get_time();
 
   httpd_ws_frame_t frame = {0};
@@ -1846,7 +1928,7 @@ static esp_err_t sendspin_ws_handler(httpd_req_t *req) {
   }
 
   if (frame.type == HTTPD_WS_TYPE_CLOSE) {
-    sendspin_session_close("peer closed");
+    sendspin_locked_close("peer closed");
     return ESP_OK;
   }
 
@@ -1859,42 +1941,26 @@ static esp_err_t sendspin_ws_handler(httpd_req_t *req) {
      * has to go rather than the message. */
     ESP_LOGE(TAG, "frame of %u bytes exceeds the receive buffer",
              (unsigned)frame.len);
-    sendspin_session_close("frame too large");
+    sendspin_locked_close("frame too large");
     return ESP_FAIL;
   }
 
+  /* Read the payload before taking the lock. A frame split across segments
+   * blocks here, and waiting on the network is the one thing that must not
+   * happen with the housekeeping task's lock held. */
   frame.payload = s_rx;
   if (httpd_ws_recv_frame(req, &frame,
                           (size_t)CONFIG_SENDSPIN_RX_BUFFER_SIZE) != ESP_OK) {
     return ESP_OK;
   }
 
-  if (frame.type == HTTPD_WS_TYPE_TEXT) {
-    if (sendspin_noise_ready(&s_noise)) {
-      ESP_LOGE(TAG, "cleartext frame after the handshake");
-      sendspin_session_close("cleartext in transport mode");
-      return ESP_OK;
-    }
-    sendspin_handle_message((const char *)s_rx, frame.len, arrival_us);
-  } else if (frame.type == HTTPD_WS_TYPE_BINARY) {
-    if (!sendspin_noise_ready(&s_noise)) {
-      ESP_LOGE(TAG, "binary frame before the handshake");
-      sendspin_session_close("unencrypted binary frame");
-      return ESP_OK;
-    }
-    size_t plain_len = 0;
-    /* A single AEAD failure is terminal by design: the nonce counters have
-     * diverged, so nothing after this frame would decrypt either. */
-    if (sendspin_noise_decrypt(&s_noise, s_rx, frame.len, s_pt,
-                               (size_t)CONFIG_SENDSPIN_RX_BUFFER_SIZE,
-                               &plain_len) != ESP_OK) {
-      ESP_LOGE(TAG, "transport decryption failed on a %u byte frame",
-               (unsigned)frame.len);
-      sendspin_session_close("decryption failed");
-      return ESP_OK;
-    }
-    sendspin_handle_binary(s_pt, plain_len, arrival_us);
+  if (!sendspin_lock()) {
+    ESP_LOGE(TAG, "session lock timed out; dropped a %u byte frame",
+             (unsigned)frame.len);
+    return ESP_OK;
   }
+  sendspin_ws_dispatch(&frame, arrival_us);
+  sendspin_unlock();
   return ESP_OK;
 }
 
@@ -2109,7 +2175,14 @@ bool sendspin_is_streaming(void) {
 }
 
 void sendspin_set_output_available(bool available) {
+  /* Called from whichever task noticed the takeover -- the USB writer or the
+   * Bluetooth stack -- so it races both the tick and the httpd task. */
+  if (!sendspin_lock()) {
+    ESP_LOGE(TAG, "session lock timed out; output availability not applied");
+    return;
+  }
   if (s_output_available == available) {
+    sendspin_unlock();
     return;
   }
   s_output_available = available;
@@ -2122,6 +2195,7 @@ void sendspin_set_output_available(bool available) {
     sendspin_player_stream_end();
   }
   s_state_dirty = true;
+  sendspin_unlock();
 }
 
 bool sendspin_send_command(sendspin_command_t cmd) {
@@ -2152,7 +2226,11 @@ unsigned sendspin_paired_count(void) {
 }
 
 esp_err_t sendspin_forget_pairings(void) {
+  if (!sendspin_lock()) {
+    return ESP_ERR_TIMEOUT;
+  }
   const esp_err_t err = sendspin_psk_forget_all();
+  sendspin_unlock();
   if (err != ESP_OK) {
     return err;
   }
@@ -2163,6 +2241,10 @@ esp_err_t sendspin_forget_pairings(void) {
 }
 
 esp_err_t sendspin_reset_identity(void) {
+  if (!sendspin_lock()) {
+    return ESP_ERR_TIMEOUT;
+  }
+
   uint8_t previous[sizeof(s_client_priv)];
   memcpy(previous, s_client_priv, sizeof(previous));
 
@@ -2171,6 +2253,7 @@ esp_err_t sendspin_reset_identity(void) {
   if (err != ESP_OK) {
     memcpy(s_client_priv, previous, sizeof(previous));
     sodium_memzero(previous, sizeof(previous));
+    sendspin_unlock();
     return err;
   }
   sodium_memzero(previous, sizeof(previous));
@@ -2179,11 +2262,10 @@ esp_err_t sendspin_reset_identity(void) {
    * reach them again.  Clear them before sendspin_derive_identity() reloads
    * the table from NVS. */
   err = sendspin_psk_forget_all();
-  if (err != ESP_OK) {
-    return err;
+  if (err == ESP_OK) {
+    err = sendspin_derive_identity();
   }
-
-  err = sendspin_derive_identity();
+  sendspin_unlock();
   if (err != ESP_OK) {
     return err;
   }
