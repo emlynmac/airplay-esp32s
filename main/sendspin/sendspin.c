@@ -15,6 +15,7 @@
 #include "sodium.h"
 
 #include "ethernet.h"
+#include "rtsp_events.h"
 #include "sendspin_noise.h"
 #include "sendspin_player.h"
 #include "sendspin_time.h"
@@ -85,6 +86,11 @@ static volatile sendspin_state_t s_state = SENDSPIN_IDLE;
 
 static sendspin_time_t s_clock;
 static sendspin_activity_cb_t s_activity_cb = NULL;
+
+/* Roles the server has activated. Carried across activations that omit
+ * active_roles, so they cannot be re-derived per message. */
+static bool s_role_player = false;
+static bool s_role_metadata = false;
 
 /* Availability has two independent inputs: whether another source owns the
  * output, and whether the clock estimate is good enough to place audio. The
@@ -370,6 +376,8 @@ static void sendspin_send_hello(void) {
   cJSON *roles = cJSON_AddArrayToObject(payload, "supported_roles");
   if (roles) {
     cJSON_AddItemToArray(roles, cJSON_CreateString("player@v1"));
+    /* metadata@v1 has no support object; listing it is the whole opt-in. */
+    cJSON_AddItemToArray(roles, cJSON_CreateString("metadata@v1"));
   }
 
   cJSON *support = cJSON_AddObjectToObject(payload, "player@v1_support");
@@ -456,6 +464,55 @@ static void sendspin_send_time_request(void) {
 }
 
 /* ------------------------------------------------------------------ */
+/*  Playback events                                                    */
+/* ------------------------------------------------------------------ */
+
+/* The display, the LEDs and the boards that gate their amplifier on playback
+ * all listen on the RTSP event bus, so a Sendspin session has to raise the
+ * same events an AirPlay or a Bluetooth one would.  Without them a SqueezeAMP
+ * or Esparagus board never leaves DAC_POWER_OFF and the stream is rendered
+ * into a powered-down amplifier. */
+
+typedef struct {
+  rtsp_metadata_t meta; /* position_secs is filled in at emit time */
+  int64_t timestamp_us; /* server clock the progress was measured at */
+  int64_t progress_ms;  /* track position at timestamp_us */
+  int32_t speed;        /* playback_speed; 1000 is normal, 0 is paused */
+  bool has_progress;
+} sendspin_meta_t;
+
+static sendspin_meta_t s_meta;
+static sendspin_meta_t s_meta_pending;
+static bool s_meta_pending_valid = false;
+static bool s_events_connected = false;
+static bool s_events_playing = false;
+
+static void sendspin_events_playing(bool playing) {
+  if (playing == s_events_playing) {
+    return;
+  }
+  s_events_playing = playing;
+  rtsp_events_emit(playing ? RTSP_EVENT_PLAYING : RTSP_EVENT_PAUSED, NULL);
+}
+
+static void sendspin_events_connected(bool connected) {
+  if (connected == s_events_connected) {
+    return;
+  }
+  s_events_connected = connected;
+  if (connected) {
+    /* Listeners read this as "a new source has the output": the display drops
+     * whatever it was showing and the amplifier comes up into standby. */
+    rtsp_events_emit(RTSP_EVENT_CLIENT_CONNECTED, NULL);
+    return;
+  }
+  s_events_playing = false;
+  memset(&s_meta, 0, sizeof(s_meta));
+  s_meta_pending_valid = false;
+  rtsp_events_emit(RTSP_EVENT_DISCONNECTED, NULL);
+}
+
+/* ------------------------------------------------------------------ */
 /*  Session lifecycle                                                  */
 /* ------------------------------------------------------------------ */
 
@@ -471,8 +528,11 @@ static void sendspin_session_close(const char *reason) {
   s_reported_available = false;
   s_state_dirty = false;
   s_prologue_len = 0;
+  s_role_player = false;
+  s_role_metadata = false;
   sendspin_noise_reset(&s_noise);
   sendspin_time_reset(&s_clock);
+  sendspin_events_connected(false);
 
   if (sendspin_player_is_streaming()) {
     sendspin_player_stream_end();
@@ -490,6 +550,137 @@ static double sendspin_number(const cJSON *object, const char *key,
                               double fallback) {
   const cJSON *item = cJSON_GetObjectItemCaseSensitive(object, key);
   return cJSON_IsNumber(item) ? cJSON_GetNumberValue(item) : fallback;
+}
+
+/* ------------------------------------------------------------------ */
+/*  metadata@v1                                                        */
+/* ------------------------------------------------------------------ */
+
+/* Metadata timestamps are on the server's clock, the same domain the audio
+ * chunks are addressed in. */
+static bool sendspin_server_now_us(int64_t *server_us) {
+  const int64_t local_us = esp_timer_get_time();
+  int64_t offset_ns = 0;
+  if (!sendspin_time_offset_ns(&s_clock, local_us, &offset_ns)) {
+    return false;
+  }
+  *server_us = local_us + offset_ns / 1000;
+  return true;
+}
+
+/* The state reports the position at its own timestamp, so a state that has
+ * been sitting here -- a scheduled update that has just come due, or a late
+ * join partway through a track -- has to be run forward to now. */
+static uint32_t sendspin_meta_position_secs(void) {
+  if (!s_meta.has_progress) {
+    return 0;
+  }
+  int64_t ms = s_meta.progress_ms;
+  int64_t now_us = 0;
+  if (s_meta.speed != 0 && sendspin_server_now_us(&now_us)) {
+    ms += (now_us - s_meta.timestamp_us) * s_meta.speed / 1000000;
+  }
+  const int64_t duration_ms = (int64_t)s_meta.meta.duration_secs * 1000;
+  if (duration_ms > 0 && ms > duration_ms) {
+    ms = duration_ms;
+  }
+  return ms > 0 ? (uint32_t)(ms / 1000) : 0;
+}
+
+/* Listeners interpolate the position themselves from the last one they were
+ * given, so this only runs on a real change. */
+static void sendspin_meta_apply(const sendspin_meta_t *next) {
+  s_meta = *next;
+
+  /* A server with an idle queue activates the role and immediately sends an
+   * empty state. Taking that as a source would wake the amplifier and light
+   * the display for as long as the server stayed connected, which for Music
+   * Assistant is for ever. */
+  const bool has_content = next->meta.title[0] != '\0' ||
+                           next->meta.artist[0] != '\0' ||
+                           next->meta.album[0] != '\0' || next->has_progress;
+  if (!has_content && !sendspin_player_is_streaming()) {
+    sendspin_events_connected(false);
+    return;
+  }
+
+  sendspin_events_connected(true);
+
+  rtsp_event_data_t data = {.metadata = s_meta.meta};
+  data.metadata.position_secs = sendspin_meta_position_secs();
+  rtsp_events_emit(RTSP_EVENT_METADATA, &data);
+
+  if (next->has_progress) {
+    sendspin_events_playing(next->speed != 0);
+  }
+}
+
+static void sendspin_meta_string(const cJSON *object, const char *key,
+                                 char *dst, size_t size) {
+  const cJSON *item = cJSON_GetObjectItemCaseSensitive(object, key);
+  if (cJSON_IsString(item) && item->valuestring) {
+    snprintf(dst, size, "%s", item->valuestring);
+  }
+}
+
+/* server/state carries the full state of every role object it includes: an
+ * omitted object means unchanged, and an explicit null clears the role. */
+static void sendspin_handle_server_state(const cJSON *payload) {
+  const cJSON *meta = cJSON_GetObjectItemCaseSensitive(payload, "metadata");
+  if (!meta) {
+    return;
+  }
+  if (cJSON_IsNull(meta)) {
+    memset(&s_meta, 0, sizeof(s_meta));
+    s_meta_pending_valid = false;
+    if (!sendspin_player_is_streaming()) {
+      sendspin_events_connected(false);
+    }
+    return;
+  }
+  if (!cJSON_IsObject(meta)) {
+    return;
+  }
+
+  sendspin_meta_t next = {0};
+  next.timestamp_us = (int64_t)sendspin_number(meta, "timestamp", 0);
+  sendspin_meta_string(meta, "title", next.meta.title, sizeof(next.meta.title));
+  sendspin_meta_string(meta, "artist", next.meta.artist,
+                       sizeof(next.meta.artist));
+  sendspin_meta_string(meta, "album", next.meta.album, sizeof(next.meta.album));
+
+  const cJSON *progress = cJSON_GetObjectItemCaseSensitive(meta, "progress");
+  if (cJSON_IsObject(progress)) {
+    next.has_progress = true;
+    next.progress_ms = (int64_t)sendspin_number(progress, "track_progress", 0);
+    next.speed = (int32_t)sendspin_number(progress, "playback_speed", 1000);
+    next.meta.duration_secs =
+        (uint32_t)(sendspin_number(progress, "track_duration", 0) / 1000.0);
+  }
+
+  /* A future timestamp schedules the update -- usually the next track, timed
+   * to the audible change -- and replaces any update still pending. */
+  int64_t now_us = 0;
+  if (next.timestamp_us > 0 && sendspin_server_now_us(&now_us) &&
+      next.timestamp_us > now_us) {
+    s_meta_pending = next;
+    s_meta_pending_valid = true;
+    return;
+  }
+
+  s_meta_pending_valid = false;
+  sendspin_meta_apply(&next);
+}
+
+static void sendspin_meta_tick(void) {
+  int64_t now_us = 0;
+  if (!s_meta_pending_valid || !sendspin_server_now_us(&now_us) ||
+      now_us < s_meta_pending.timestamp_us) {
+    return;
+  }
+  const sendspin_meta_t due = s_meta_pending;
+  s_meta_pending_valid = false;
+  sendspin_meta_apply(&due);
 }
 
 /* ------------------------------------------------------------------ */
@@ -680,7 +871,11 @@ static void sendspin_handle_stream_start(const cJSON *payload) {
     if (s_activity_cb) {
       s_activity_cb(false);
     }
+    return;
   }
+
+  sendspin_events_connected(true);
+  sendspin_events_playing(true);
 }
 
 static bool sendspin_role_selected(const cJSON *payload) {
@@ -710,7 +905,6 @@ static void sendspin_handle_activate(const cJSON *payload) {
       cJSON_GetObjectItemCaseSensitive(payload, "active_roles");
 
   bool playback = false;
-  bool player = false;
   const cJSON *item = NULL;
   cJSON_ArrayForEach(item, activities) {
     if (cJSON_IsString(item) &&
@@ -718,14 +912,28 @@ static void sendspin_handle_activate(const cJSON *payload) {
       playback = true;
     }
   }
-  cJSON_ArrayForEach(item, roles) {
-    if (cJSON_IsString(item) &&
-        strcmp(cJSON_GetStringValue(item), "player@v1") == 0) {
-      player = true;
+
+  /* active_roles is required on the first activation and persists across
+   * later ones that omit it, so re-deriving it every time would silently
+   * drop the roles the moment the server changed only its activity set. */
+  if (cJSON_IsArray(roles)) {
+    s_role_player = false;
+    s_role_metadata = false;
+    cJSON_ArrayForEach(item, roles) {
+      if (!cJSON_IsString(item)) {
+        continue;
+      }
+      const char *role = cJSON_GetStringValue(item);
+      if (strcmp(role, "player@v1") == 0) {
+        s_role_player = true;
+      } else if (strcmp(role, "metadata@v1") == 0) {
+        s_role_metadata = true;
+      }
     }
   }
-  ESP_LOGI(TAG, "activated: playback=%s player@v1=%s", playback ? "yes" : "no",
-           player ? "yes" : "no");
+  ESP_LOGI(TAG, "activated: playback=%s player@v1=%s metadata@v1=%s",
+           playback ? "yes" : "no", s_role_player ? "yes" : "no",
+           s_role_metadata ? "yes" : "no");
 
   s_state = SENDSPIN_ACTIVATED;
   /* The server must not send audio before this first report. */
@@ -782,6 +990,8 @@ static void sendspin_handle_message(const char *json, size_t len,
     sendspin_send_hello();
   } else if (strcmp(type, "server/activate") == 0) {
     sendspin_handle_activate(payload);
+  } else if (strcmp(type, "server/state") == 0) {
+    sendspin_handle_server_state(payload);
   } else if (strcmp(type, "server/time") == 0) {
     sendspin_handle_server_time(payload, arrival_us);
   } else if (strcmp(type, "stream/start") == 0) {
@@ -793,6 +1003,7 @@ static void sendspin_handle_message(const char *json, size_t len,
   } else if (strcmp(type, "stream/end") == 0) {
     if (sendspin_role_selected(payload) && sendspin_player_is_streaming()) {
       sendspin_player_stream_end();
+      sendspin_events_connected(false);
       if (s_activity_cb) {
         s_activity_cb(false);
       }
@@ -1091,6 +1302,7 @@ static void sendspin_task(void *arg) {
       if (s_state_dirty || available != s_reported_available) {
         sendspin_send_state();
       }
+      sendspin_meta_tick();
       break;
     }
     }
