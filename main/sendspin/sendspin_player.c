@@ -375,7 +375,8 @@ void sendspin_player_log_status(void) {
   const size_t blocks = audio_timeline_count(&s_engine.timeline);
   ESP_LOGI(TAG,
            "%s buf=%u blk (%u ms) err=%" PRId32 " smp drift=%" PRId32
-           " ppm rtt=%" PRId64 " us skew=%" PRId32 " ppm drops=%" PRIu64,
+           " ppm rtt=%" PRId64 " us skew=%" PRId32 " ppm clk=%" PRIu32
+           "/%" PRIu32 " drops=%" PRIu64,
            audio_scheduler_state_name(s_engine.scheduler.state),
            (unsigned)blocks,
            (unsigned)((uint64_t)blocks * SENDSPIN_FRAME_SAMPLES * 1000U /
@@ -383,5 +384,5 @@ void sendspin_player_log_status(void) {
            s_engine.scheduler.playout_error_samples,
            s_engine.scheduler.estimated_drift_ppm,
            sendspin_time_best_rtt_us(s_clock), sendspin_time_skew_ppm(s_clock),
-           s_chunks_dropped);
+           s_clock->accepted, s_clock->rejected, s_chunks_dropped);
 }

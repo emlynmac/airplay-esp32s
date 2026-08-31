@@ -10,8 +10,18 @@
 
 /* ...but on a quiet LAN the best RTT can be a few hundred microseconds, and
  * then the multiple above rejects almost everything. Always allow this much
- * absolute slack on top. */
-#define SENDSPIN_TIME_RTT_SLACK_US 2000LL
+ * absolute slack on top.  It has to be generous: the exchange shares one TCP
+ * connection with the audio, so a chunk in flight delays it by milliseconds
+ * as a matter of course.  Rejecting those wholesale leaves only the samples
+ * forced through by the reject-run escape below, which are the delayed ones
+ * by construction -- the worst possible selection.  The fit anchors on the
+ * least-delayed sample it holds, so a wide gate costs little. */
+#define SENDSPIN_TIME_RTT_SLACK_US 10000LL
+
+/* No LAN round trip takes this long; one side stalled. Such a sample in the
+ * window sets a baseline that makes the gate above meaningless until it ages
+ * out, so it never gets in. */
+#define SENDSPIN_TIME_RTT_CEILING_US 500000LL
 
 /* Largest rate error the fit will report. Two crystals within spec differ by
  * well under 200 ppm; anything larger means the regression is fitting noise
@@ -74,16 +84,28 @@ static void sendspin_time_refit(sendspin_time_t *t) {
     }
   }
 
-  /* Anchor the fit at the newest sample rather than at the intercept: the
-   * renderer only ever evaluates it at or slightly after "now", so keeping
-   * the lever arm short bounds the error the skew term can contribute. */
-  const double mean_x = sum_x / n;
-  const double mean_y = sum_y / n;
-  const double at_newest =
-      mean_y + (skew * ((double)(newest_us - origin_us) - mean_x));
+  /* Take the offset from the least-delayed exchange in the window, not from
+   * the regression's mean. A delayed exchange biases its own offset by half
+   * the excess delay and always in the same direction, so the mean of a
+   * jittery window sits well off the truth -- and audio sharing this TCP
+   * connection makes the window jittery by construction. The minimum-RTT
+   * sample is the one whose two one-way delays are most nearly equal, which
+   * is the assumption the offset formula rests on. */
+  uint8_t best = 0;
+  for (uint8_t i = 1; i < t->count; i++) {
+    if (t->samples[i].rtt_us < t->samples[best].rtt_us) {
+      best = i;
+    }
+  }
 
+  /* Carry it to the newest sample rather than leaving it where it was
+   * measured: the renderer only ever evaluates the fit at or slightly after
+   * "now", so keeping the lever arm short bounds what the skew term can
+   * contribute. */
   t->base_us = newest_us;
-  t->base_offset_us = origin_offset + (int64_t)at_newest;
+  t->base_offset_us =
+      t->samples[best].offset_us +
+      (int64_t)(skew * (double)(newest_us - t->samples[best].local_us));
   t->skew = skew;
   t->valid = t->count >= SENDSPIN_TIME_MIN_SAMPLES;
 }
@@ -100,6 +122,10 @@ bool sendspin_time_update(sendspin_time_t *t, int64_t client_transmitted,
   if (rtt_us < 0 || client_received < client_transmitted) {
     /* Either clock stepped mid-exchange, or the server echoed a stale
      * client_transmitted. Neither is a usable measurement. */
+    t->rejected++;
+    return false;
+  }
+  if (rtt_us > SENDSPIN_TIME_RTT_CEILING_US) {
     t->rejected++;
     return false;
   }
