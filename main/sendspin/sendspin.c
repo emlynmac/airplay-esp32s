@@ -63,7 +63,7 @@ static const char *TAG = "sendspin";
 #define SENDSPIN_BIN_JSON        0
 #define SENDSPIN_BIN_FRAGMENT    1
 #define SENDSPIN_BIN_AUDIO_CHUNK 4
-#define SENDSPIN_AUDIO_HEADER    13
+#define SENDSPIN_AUDIO_HEADER    9
 
 typedef enum {
   SENDSPIN_IDLE = 0,  /* no socket */
@@ -1748,8 +1748,8 @@ static void sendspin_handle_binary(const uint8_t *data, size_t len,
 
   case SENDSPIN_BIN_AUDIO_CHUNK:
     if (len > SENDSPIN_AUDIO_HEADER) {
-      /* Bytes 9-12 are send_ahead, which the spec explicitly says carries no
-       * scheduling meaning; only the timestamp places the audio. */
+      /* Header is a type byte and a big-endian int64 timestamp, and nothing
+       * else -- send_ahead is a scheduling term the server keeps to itself. */
       sendspin_player_chunk(sendspin_read_be64(&data[1]),
                             &data[SENDSPIN_AUDIO_HEADER],
                             len - SENDSPIN_AUDIO_HEADER);
