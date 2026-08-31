@@ -110,9 +110,7 @@ static void apply_level(float db) {
 
 static void local_adjust_volume(float step_db) {
   float current_db;
-  if (settings_get_volume(&current_db) != ESP_OK) {
-    current_db = -15.0f; // default 50 %
-  }
+  (void)settings_get_volume(&current_db);
   if (s_muted) {
     current_db = s_pre_mute_db;
   }
@@ -277,9 +275,7 @@ void playback_control_set_muted(bool muted) {
     return;
   }
   if (muted) {
-    if (settings_get_volume(&s_pre_mute_db) != ESP_OK) {
-      s_pre_mute_db = -15.0f; // default 50 %
-    }
+    (void)settings_get_volume(&s_pre_mute_db);
     dac_set_volume(VOLUME_MIN_DB);
     s_muted = true;
     rtsp_events_emit(RTSP_EVENT_PAUSED, NULL);
@@ -341,8 +337,8 @@ int playback_control_get_level_percent(void) {
   float db;
   if (s_muted) {
     db = s_pre_mute_db;
-  } else if (settings_get_volume(&db) != ESP_OK) {
-    db = -15.0f;
+  } else {
+    (void)settings_get_volume(&db);
   }
   return (int)(db_to_dacp_percent(clamp_volume(db)) + 0.5f);
 }

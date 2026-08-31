@@ -16,9 +16,9 @@
 esp_err_t settings_init(void);
 
 /**
- * Get saved volume in dB
+ * Get saved volume in dB, falling back to the built-in default
  * @param volume_db Output: volume in dB (0 = max, -30 = mute)
- * @return ESP_OK if found, ESP_ERR_NOT_FOUND if no saved value
+ * @return ESP_OK unless volume_db is NULL
  */
 esp_err_t settings_get_volume(float *volume_db);
 

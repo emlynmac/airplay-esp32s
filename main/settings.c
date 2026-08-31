@@ -31,12 +31,14 @@ static const char *TAG = "settings";
 #define MAX_WIFI_PASSWORD_LEN 64
 #define MAX_DEVICE_NAME_LEN   64
 
-// Cached values  (defaults = 50 %)
-static float g_volume_db = -15.0f;
+// Cached values. Only ever used on a board that has never stored a volume,
+// so err quiet: an amplified board at half scale is startlingly loud, and a
+// sender that already agrees with the level we report never corrects it.
+static float g_volume_db = -24.0f; /* default: 20 % */
 static bool g_volume_loaded = false;
 
 #ifdef CONFIG_BT_A2DP_ENABLE
-static uint8_t g_bt_volume = 64; /* default: 50 % */
+static uint8_t g_bt_volume = 25; /* default: 20 % */
 static bool g_bt_volume_loaded = false;
 #endif
 
@@ -76,10 +78,10 @@ esp_err_t settings_get_volume(float *volume_db) {
     return ESP_ERR_INVALID_ARG;
   }
 
-  if (!g_volume_loaded) {
-    return ESP_ERR_NOT_FOUND;
-  }
-
+  /* Hand back the default rather than failing, so a board that has never
+   * stored a volume still applies one. Reporting not-found left every caller
+   * to skip the DAC write entirely, which left the amplifier at its own
+   * register default of full scale. */
   *volume_db = g_volume_db;
   return ESP_OK;
 }

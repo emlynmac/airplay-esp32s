@@ -279,9 +279,7 @@ esp_err_t usb_audio_sink_init(usb_audio_sink_state_cb_t state_cb) {
     return ESP_ERR_INVALID_STATE;
   }
 
-  if (settings_get_volume(&s_unmuted_db) != ESP_OK) {
-    s_unmuted_db = -15.0f; // 50 %
-  }
+  (void)settings_get_volume(&s_unmuted_db);
 
   s_state_cb = state_cb;
   s_last_rx_us = esp_timer_get_time();
