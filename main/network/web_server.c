@@ -2226,7 +2226,7 @@ esp_err_t web_server_start(uint16_t port) {
   // is log_stream's /ws/logs. Keep these in step with the handlers below.
   config.max_uri_handlers = 38; // 32 here + /ws/logs, plus 5 spare
 #ifdef CONFIG_SENDSPIN_ENABLE
-  config.max_uri_handlers += 1; // /sendspin
+  config.max_uri_handlers += 3; // /sendspin + unpair + reset-identity
   // The Sendspin server holds its WebSocket open for as long as the speaker
   // exists, so it permanently occupies a slot that the web UI would otherwise
   // reuse.  Without this, opening the config page evicts the audio session.
