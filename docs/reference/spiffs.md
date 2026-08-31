@@ -53,6 +53,12 @@ uploaded through `/api/fs/upload` still works. The `hf/` and `bg/` binaries are 
 straight off the filesystem by the DAC and display drivers, which cannot decompress, so
 they are copied through untouched.
 
+Both build systems go through that staging step. ESP-IDF runs it from `CMakeLists.txt`
+before `spiffs_create_partition_image`, and PlatformIO — which packs `data/` itself rather
+than using the image CMake builds — runs it from `scripts/pio_stage_spiffs.py`, wired in as
+an `extra_scripts` hook. So `idf.py flash`, `pio run -t uploadfs` and the prebuilt release
+binaries all end up with the same filesystem.
+
 ## Flashing the image
 
 !!! warning "PlatformIO does not do this for you"
