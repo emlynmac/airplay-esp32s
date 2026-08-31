@@ -159,6 +159,19 @@ long-term key.
     erasing NVS is what changes them. The board keeps records for up to four servers; a
     fifth pairing evicts the oldest.
 
+### Forgetting servers
+
+There are only four slots, so a board that has been paired with servers that no longer exist
+will start evicting the ones that do. Clear them all:
+
+```bash
+curl -X POST http://<board>/api/sendspin/unpair
+```
+
+The board keeps its identity, its token and its PIN, so any server can pair again. Sessions
+fall back to the Sentinel until one does — a server that still holds a record will report a
+credential mismatch and offer to re-pair.
+
 !!! tip "Music Assistant"
 
     Add the board with an explicit port, `<ip>:80` — a bare address is assumed to be on

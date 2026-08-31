@@ -517,19 +517,21 @@ static void sendspin_send_state(void) {
   }
   cJSON_AddBoolToObject(payload, "available", available);
 
-  cJSON *player = cJSON_AddObjectToObject(payload, "player");
+  /* A role object may only appear while its role is active. */
+  cJSON *player =
+      s_role_player ? cJSON_AddObjectToObject(payload, "player") : NULL;
   if (player) {
     /* The DAC and DMA ring are already compensated for by
      * audio_output_get_next_playout_time_ns(), so there is no delay left
      * beyond the audio port for the server to add. */
-    cJSON_AddNumberToObject(player, "output_delay_ms", 0);
+    cJSON_AddNumberToObject(player, "static_delay_ms", 0);
     cJSON_AddNumberToObject(player, "required_lead_time_ms",
                             (double)sendspin_player_min_buffer_ms());
     cJSON_AddNumberToObject(player, "min_buffer_ms",
                             (double)sendspin_player_min_buffer_ms());
     cJSON_AddNumberToObject(player, "volume", volume);
     cJSON_AddBoolToObject(player, "muted", muted);
-    /* This list is only ever set_output_delay; volume and mute are advertised
+    /* This list is only ever set_static_delay; volume and mute are advertised
      * in player@v1_support instead. */
     cJSON_AddArrayToObject(player, "supported_commands");
   }
@@ -2096,4 +2098,15 @@ const char *sendspin_pairing_pin(void) {
 
 unsigned sendspin_paired_count(void) {
   return (unsigned)sendspin_psk_record_count();
+}
+
+esp_err_t sendspin_forget_pairings(void) {
+  const esp_err_t err = sendspin_psk_forget_all();
+  if (err != ESP_OK) {
+    return err;
+  }
+  /* A session already keyed with a long-term PSK keeps running; the records
+   * only decide what the *next* handshake can resolve. */
+  ESP_LOGI(TAG, "pairing records cleared");
+  return ESP_OK;
 }

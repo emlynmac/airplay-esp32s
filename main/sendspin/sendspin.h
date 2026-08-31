@@ -104,3 +104,13 @@ const char *sendspin_pairing_pin(void);
 
 /** How many servers this device is currently paired with. */
 unsigned sendspin_paired_count(void);
+
+/**
+ * Forget every pairing record and drop the current session.  The device keeps
+ * its identity, its pairing token and its PIN, so a server can pair again;
+ * until one does, sessions fall back to the Sentinel.
+ *
+ * There are only four slots and a fifth pairing evicts the oldest, so this is
+ * how an operator clears out servers that are no longer around.
+ */
+esp_err_t sendspin_forget_pairings(void);

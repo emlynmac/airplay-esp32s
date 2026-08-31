@@ -1049,6 +1049,30 @@ static esp_err_t system_restart_handler(httpd_req_t *req) {
   return ESP_OK;
 }
 
+#ifdef CONFIG_SENDSPIN_ENABLE
+static esp_err_t sendspin_unpair_handler(httpd_req_t *req) {
+  const esp_err_t err = sendspin_forget_pairings();
+  if (err != ESP_OK) {
+    httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR,
+                        esp_err_to_name(err));
+    return ESP_FAIL;
+  }
+
+  cJSON *json = cJSON_CreateObject();
+  cJSON_AddBoolToObject(json, "success", true);
+  cJSON_AddNumberToObject(json, "sendspin_paired", sendspin_paired_count());
+
+  char *json_str = cJSON_Print(json);
+  httpd_resp_set_type(req, "application/json");
+  httpd_resp_send(req, json_str, HTTPD_RESP_USE_STRLEN);
+  free(json_str);
+  cJSON_Delete(json);
+
+  ESP_LOGI(TAG, "Sendspin pairings cleared via web interface");
+  return ESP_OK;
+}
+#endif
+
 /* ================================================================== */
 /*  SPIFFS File Management API                                         */
 /* ================================================================== */
@@ -2327,6 +2351,13 @@ esp_err_t web_server_start(uint16_t port) {
                                     .method = HTTP_POST,
                                     .handler = system_restart_handler};
   httpd_register_uri_handler(s_server, &system_restart_uri);
+
+#ifdef CONFIG_SENDSPIN_ENABLE
+  httpd_uri_t sendspin_unpair_uri = {.uri = "/api/sendspin/unpair",
+                                     .method = HTTP_POST,
+                                     .handler = sendspin_unpair_handler};
+  httpd_register_uri_handler(s_server, &sendspin_unpair_uri);
+#endif
 
   // File management API
   httpd_uri_t fs_upload_uri = {.uri = "/api/fs/upload",
