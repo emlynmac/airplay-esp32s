@@ -30,12 +30,13 @@ data/
 │   ├── base-hf3-44100.bin  # Hybrid flow 3 base image (SqueezeAMP)
 │   └── tas5825m_fw-44100.bin # PPC3 dump, if you supply one (TAS5825M boards)
 └── bg/                # ST7789 background image
-    └── background.bin
+    └── background.bin  # if you supply one
 ```
 
 The `hf/` names carry the sample rate the DSP image was built for, and a 48000 twin sits
 beside each. Only the hybrid flow base images ship with the repository; a PPC3 dump is
-yours to export and drop in.
+yours to export and drop in, as is the background image — at 106 KB it does not fit
+alongside the web UI on a 4 MB board.
 
 ## Flashing the image
 
