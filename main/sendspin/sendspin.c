@@ -10,6 +10,7 @@
 #include "esp_log.h"
 #include "esp_mac.h"
 #include "esp_timer.h"
+#include "freertos/queue.h"
 #include "mdns.h"
 #include "nvs.h"
 #include "sodium.h"
@@ -92,6 +93,13 @@ static sendspin_activity_cb_t s_activity_cb = NULL;
  * active_roles, so they cannot be re-derived per message. */
 static bool s_role_player = false;
 static bool s_role_metadata = false;
+static bool s_role_controller = false;
+
+/* Commands the server says the group accepts, as a bitmask over
+ * sendspin_command_t. Sending one it has not offered is defined as ignored,
+ * so this is what lets a button fall back to a local action instead. */
+static uint32_t s_ctrl_commands = 0;
+static QueueHandle_t s_cmd_queue = NULL;
 
 /* Availability has two independent inputs: whether another source owns the
  * output, and whether the clock estimate is good enough to place audio. The
@@ -385,6 +393,7 @@ static void sendspin_send_hello(void) {
     cJSON_AddItemToArray(roles, cJSON_CreateString("player@v1"));
     /* metadata@v1 has no support object; listing it is the whole opt-in. */
     cJSON_AddItemToArray(roles, cJSON_CreateString("metadata@v1"));
+    cJSON_AddItemToArray(roles, cJSON_CreateString("controller@v1"));
   }
 
   cJSON *support = cJSON_AddObjectToObject(payload, "player@v1_support");
@@ -550,6 +559,11 @@ static void sendspin_session_close(const char *reason) {
   s_prologue_len = 0;
   s_role_player = false;
   s_role_metadata = false;
+  s_role_controller = false;
+  s_ctrl_commands = 0;
+  if (s_cmd_queue) {
+    xQueueReset(s_cmd_queue);
+  }
   sendspin_noise_reset(&s_noise);
   sendspin_time_reset(&s_clock);
   sendspin_events_connected(false);
@@ -645,7 +659,7 @@ static void sendspin_meta_string(const cJSON *object, const char *key,
 
 /* server/state carries the full state of every role object it includes: an
  * omitted object means unchanged, and an explicit null clears the role. */
-static void sendspin_handle_server_state(const cJSON *payload) {
+static void sendspin_handle_state_metadata(const cJSON *payload) {
   const cJSON *meta = cJSON_GetObjectItemCaseSensitive(payload, "metadata");
   if (!meta) {
     return;
@@ -701,6 +715,88 @@ static void sendspin_meta_tick(void) {
   const sendspin_meta_t due = s_meta_pending;
   s_meta_pending_valid = false;
   sendspin_meta_apply(&due);
+}
+
+/* ------------------------------------------------------------------ */
+/*  controller@v1                                                      */
+/* ------------------------------------------------------------------ */
+
+/* Indexed by sendspin_command_t; s_ctrl_commands is a bitmask over the same
+ * order. The protocol has many more commands, but these are the four a set of
+ * hardware buttons can raise. */
+static const char *const SENDSPIN_CMD_NAMES[] = {
+    [SENDSPIN_CMD_PLAY] = "play",
+    [SENDSPIN_CMD_PAUSE] = "pause",
+    [SENDSPIN_CMD_NEXT] = "next",
+    [SENDSPIN_CMD_PREVIOUS] = "previous",
+};
+#define SENDSPIN_CMD_COUNT \
+  (sizeof(SENDSPIN_CMD_NAMES) / sizeof(SENDSPIN_CMD_NAMES[0]))
+
+static void sendspin_handle_state_controller(const cJSON *payload) {
+  const cJSON *controller =
+      cJSON_GetObjectItemCaseSensitive(payload, "controller");
+  if (!controller) {
+    return;
+  }
+  if (!cJSON_IsObject(controller)) {
+    s_ctrl_commands = 0;
+    return;
+  }
+
+  const cJSON *commands =
+      cJSON_GetObjectItemCaseSensitive(controller, "supported_commands");
+  uint32_t mask = 0;
+  const cJSON *item = NULL;
+  cJSON_ArrayForEach(item, commands) {
+    if (!cJSON_IsString(item)) {
+      continue;
+    }
+    for (size_t i = 0; i < SENDSPIN_CMD_COUNT; i++) {
+      if (strcmp(cJSON_GetStringValue(item), SENDSPIN_CMD_NAMES[i]) == 0) {
+        mask |= 1U << i;
+      }
+    }
+  }
+
+  if (mask != s_ctrl_commands) {
+    ESP_LOGI(TAG, "controller commands: play=%s pause=%s next=%s previous=%s",
+             (mask & (1U << SENDSPIN_CMD_PLAY)) ? "yes" : "no",
+             (mask & (1U << SENDSPIN_CMD_PAUSE)) ? "yes" : "no",
+             (mask & (1U << SENDSPIN_CMD_NEXT)) ? "yes" : "no",
+             (mask & (1U << SENDSPIN_CMD_PREVIOUS)) ? "yes" : "no");
+  }
+  s_ctrl_commands = mask;
+}
+
+static void sendspin_handle_server_state(const cJSON *payload) {
+  sendspin_handle_state_metadata(payload);
+  sendspin_handle_state_controller(payload);
+}
+
+static void sendspin_send_controller_command(sendspin_command_t cmd) {
+  cJSON *payload = NULL;
+  cJSON *root = sendspin_new_message("client/command", &payload);
+  if (!root) {
+    return;
+  }
+  cJSON *controller = cJSON_AddObjectToObject(payload, "controller");
+  if (controller) {
+    cJSON_AddStringToObject(controller, "command", SENDSPIN_CMD_NAMES[cmd]);
+  }
+  ESP_LOGI(TAG, "controller command: %s", SENDSPIN_CMD_NAMES[cmd]);
+  (void)sendspin_send_json(root);
+}
+
+/* Drains the queue the buttons post to. Sending has to happen here because
+ * the socket belongs to this task. */
+static void sendspin_command_tick(void) {
+  uint8_t cmd = 0;
+  while (s_cmd_queue && xQueueReceive(s_cmd_queue, &cmd, 0) == pdTRUE) {
+    if (cmd < SENDSPIN_CMD_COUNT) {
+      sendspin_send_controller_command((sendspin_command_t)cmd);
+    }
+  }
 }
 
 /* ------------------------------------------------------------------ */
@@ -939,6 +1035,7 @@ static void sendspin_handle_activate(const cJSON *payload) {
   if (cJSON_IsArray(roles)) {
     s_role_player = false;
     s_role_metadata = false;
+    s_role_controller = false;
     cJSON_ArrayForEach(item, roles) {
       if (!cJSON_IsString(item)) {
         continue;
@@ -948,12 +1045,16 @@ static void sendspin_handle_activate(const cJSON *payload) {
         s_role_player = true;
       } else if (strcmp(role, "metadata@v1") == 0) {
         s_role_metadata = true;
+      } else if (strcmp(role, "controller@v1") == 0) {
+        s_role_controller = true;
       }
     }
   }
-  ESP_LOGI(TAG, "activated: playback=%s player@v1=%s metadata@v1=%s",
+  ESP_LOGI(TAG,
+           "activated: playback=%s player@v1=%s metadata@v1=%s "
+           "controller@v1=%s",
            playback ? "yes" : "no", s_role_player ? "yes" : "no",
-           s_role_metadata ? "yes" : "no");
+           s_role_metadata ? "yes" : "no", s_role_controller ? "yes" : "no");
 
   s_state = SENDSPIN_ACTIVATED;
   /* The server must not send audio before this first report. */
@@ -1367,6 +1468,7 @@ static void sendspin_task(void *arg) {
         sendspin_send_state();
       }
       sendspin_meta_tick();
+      sendspin_command_tick();
       break;
     }
     }
@@ -1391,7 +1493,8 @@ esp_err_t sendspin_init(sendspin_activity_cb_t callback) {
 
   s_lock = xSemaphoreCreateMutex();
   s_tx_lock = xSemaphoreCreateMutex();
-  if (!s_lock || !s_tx_lock) {
+  s_cmd_queue = xQueueCreate(4, sizeof(uint8_t));
+  if (!s_lock || !s_tx_lock || !s_cmd_queue) {
     return ESP_ERR_NO_MEM;
   }
 
@@ -1487,4 +1590,19 @@ void sendspin_set_output_available(bool available) {
     sendspin_player_stream_end();
   }
   s_state_dirty = true;
+}
+
+bool sendspin_send_command(sendspin_command_t cmd) {
+  if (!s_cmd_queue || !s_role_controller || cmd >= SENDSPIN_CMD_COUNT) {
+    return false;
+  }
+  if ((s_ctrl_commands & (1U << (uint32_t)cmd)) == 0) {
+    return false;
+  }
+  const uint8_t item = (uint8_t)cmd;
+  return xQueueSend(s_cmd_queue, &item, 0) == pdTRUE;
+}
+
+bool sendspin_is_playing(void) {
+  return s_events_playing;
 }

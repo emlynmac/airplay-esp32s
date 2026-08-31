@@ -61,3 +61,28 @@ bool sendspin_is_streaming(void);
  * audio.  It will not resume on its own when we become available again.
  */
 void sendspin_set_output_available(bool available);
+
+/** Transport commands the board's buttons can send as a controller. */
+typedef enum {
+  SENDSPIN_CMD_PLAY,
+  SENDSPIN_CMD_PAUSE,
+  SENDSPIN_CMD_NEXT,
+  SENDSPIN_CMD_PREVIOUS,
+} sendspin_command_t;
+
+/**
+ * Queue a controller command for the server.
+ *
+ * Safe to call from any task: the command is handed to the Sendspin task,
+ * which owns the socket, and goes out on its next tick.  Returns false if the
+ * server has not activated the controller role or does not accept the
+ * command, which is the caller's cue to fall back to a local action.
+ */
+bool sendspin_send_command(sendspin_command_t cmd);
+
+/**
+ * True when the server's metadata says the group is playing, as opposed to
+ * paused.  A controller has to pick between 'play' and 'pause'; there is no
+ * toggle in the protocol.
+ */
+bool sendspin_is_playing(void);

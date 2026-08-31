@@ -33,6 +33,10 @@
 #include "usb_hid_control.h"
 #endif
 
+#ifdef CONFIG_SENDSPIN_ENABLE
+#include "sendspin.h"
+#endif
+
 static const char *TAG = "playback_ctrl";
 
 #define VOLUME_STEP_DB 3.0f
@@ -158,6 +162,16 @@ void playback_control_play_pause(void) {
     usb_hid_control_send(USB_HID_KEY_PLAY_PAUSE);
     break;
 #endif
+#ifdef CONFIG_SENDSPIN_ENABLE
+  case PLAYBACK_SOURCE_SENDSPIN:
+    // The protocol has no toggle, so pick the command from what the server
+    // last said the group was doing.
+    if (!sendspin_send_command(sendspin_is_playing() ? SENDSPIN_CMD_PAUSE
+                                                     : SENDSPIN_CMD_PLAY)) {
+      playback_control_set_muted(!s_muted);
+    }
+    break;
+#endif
   default:
     ESP_LOGI(TAG, "Play/pause: no active source (source=%d)", s_source);
     break;
@@ -222,6 +236,11 @@ void playback_control_next(void) {
     usb_hid_control_send(USB_HID_KEY_NEXT);
     break;
 #endif
+#ifdef CONFIG_SENDSPIN_ENABLE
+  case PLAYBACK_SOURCE_SENDSPIN:
+    sendspin_send_command(SENDSPIN_CMD_NEXT);
+    break;
+#endif
   default:
     break;
   }
@@ -241,6 +260,11 @@ void playback_control_prev(void) {
 #ifdef CONFIG_USB_AUDIO_SINK
   case PLAYBACK_SOURCE_USB:
     usb_hid_control_send(USB_HID_KEY_PREV);
+    break;
+#endif
+#ifdef CONFIG_SENDSPIN_ENABLE
+  case PLAYBACK_SOURCE_SENDSPIN:
+    sendspin_send_command(SENDSPIN_CMD_PREVIOUS);
     break;
 #endif
   default:

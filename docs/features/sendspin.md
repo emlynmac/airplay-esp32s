@@ -27,6 +27,11 @@ sharing the same output path, DSP and volume control that AirPlay uses.
   [OLED](oled-display.md) and [TFT](tft-display.md) displays and the LEDs on the same
   event bus AirPlay and Bluetooth use, so a board that powers its amplifier down between
   tracks wakes for a Sendspin stream too
+- Volume and mute: the server can set either, and the board reports its own back — so a
+  change made with the [hardware buttons](buttons.md) or the
+  [web UI](../reference/spiffs.md) shows up in the server's UI
+- The `controller@v1` role: the board's play/pause, next and previous buttons drive the
+  server's queue, the way DACP does for AirPlay
 
 ## What does not
 
@@ -35,10 +40,7 @@ sharing the same output path, DSP and volume control that AirPlay uses.
 - **Re-handshaking.** A second `noise/handshake` mid-session closes the connection instead
   of rekeying
 - **FLAC and Opus.** The server must be told to send PCM
-- **Commands.** The client advertises no `supported_commands`, so the server will not send
-  volume or transport requests. Use the [web UI](../reference/spiffs.md) or
-  [hardware buttons](buttons.md) instead
-- The controller, artwork and visualizer roles
+- The artwork and visualizer roles
 
 ## How it works
 
