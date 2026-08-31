@@ -23,6 +23,10 @@ sharing the same output path, DSP and volume control that AirPlay uses.
 - The `player@v1` role: 16- and 24-bit PCM, mono or stereo, 8–192 kHz in, played out as
   44.1 or 48 kHz stereo
 - Stream start, clear and end, including re-anchoring when the server jumps
+- The `metadata@v1` role: title, artist, album and progress reach the
+  [OLED](oled-display.md) and [TFT](tft-display.md) displays and the LEDs on the same
+  event bus AirPlay and Bluetooth use, so a board that powers its amplifier down between
+  tracks wakes for a Sendspin stream too
 
 ## What does not
 
@@ -34,7 +38,7 @@ sharing the same output path, DSP and volume control that AirPlay uses.
 - **Commands.** The client advertises no `supported_commands`, so the server will not send
   volume or transport requests. Use the [web UI](../reference/spiffs.md) or
   [hardware buttons](buttons.md) instead
-- The controller, metadata, artwork and visualizer roles
+- The controller, artwork and visualizer roles
 
 ## How it works
 
