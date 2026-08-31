@@ -15,6 +15,7 @@
 #include "sodium.h"
 
 #include "ethernet.h"
+#include "playback_control.h"
 #include "rtsp_events.h"
 #include "sendspin_noise.h"
 #include "sendspin_player.h"
@@ -98,6 +99,12 @@ static bool s_role_metadata = false;
 static bool s_output_available = true;
 static bool s_reported_available = false;
 static bool s_state_dirty = false;
+
+/* Last volume and mute state sent to the server. The device's own buttons and
+ * web UI move these too, so the tick compares them rather than relying on
+ * every local path knowing to notify us. */
+static int s_reported_volume = -1;
+static bool s_reported_muted = false;
 
 static uint8_t *s_rx = NULL;  /* one WebSocket frame */
 static uint8_t *s_asm = NULL; /* fragment reassembly */
@@ -401,9 +408,11 @@ static void sendspin_send_hello(void) {
     }
     cJSON_AddNumberToObject(support, "buffer_capacity",
                             sendspin_player_buffer_capacity());
-    /* Empty: volume is owned by the device's own UI and buttons in this
-     * milestone, so the server must not expect to drive it. */
-    cJSON_AddArrayToObject(support, "supported_commands");
+    cJSON *commands = cJSON_AddArrayToObject(support, "supported_commands");
+    if (commands) {
+      cJSON_AddItemToArray(commands, cJSON_CreateString("volume"));
+      cJSON_AddItemToArray(commands, cJSON_CreateString("mute"));
+    }
   }
 
   /* An object keyed by method identifier, empty because no pairing method is
@@ -421,6 +430,8 @@ static void sendspin_send_hello(void) {
 static void sendspin_send_state(void) {
   const bool available =
       s_output_available && sendspin_time_converged(&s_clock);
+  const int volume = playback_control_get_level_percent();
+  const bool muted = playback_control_is_muted();
 
   cJSON *payload = NULL;
   cJSON *root = sendspin_new_message("client/state", &payload);
@@ -439,11 +450,17 @@ static void sendspin_send_state(void) {
                             (double)sendspin_player_min_buffer_ms());
     cJSON_AddNumberToObject(player, "min_buffer_ms",
                             (double)sendspin_player_min_buffer_ms());
+    cJSON_AddNumberToObject(player, "volume", volume);
+    cJSON_AddBoolToObject(player, "muted", muted);
+    /* This list is only ever set_output_delay; volume and mute are advertised
+     * in player@v1_support instead. */
     cJSON_AddArrayToObject(player, "supported_commands");
   }
 
   if (sendspin_send_json(root)) {
     s_reported_available = available;
+    s_reported_volume = volume;
+    s_reported_muted = muted;
     s_state_dirty = false;
   }
 }
@@ -527,6 +544,9 @@ static void sendspin_session_close(const char *reason) {
   s_asm_len = 0;
   s_reported_available = false;
   s_state_dirty = false;
+  /* A server MUST NOT assume volume and mute are unchanged after a
+   * reconnect, so make sure the next state report is treated as news. */
+  s_reported_volume = -1;
   s_prologue_len = 0;
   s_role_player = false;
   s_role_metadata = false;
@@ -940,6 +960,46 @@ static void sendspin_handle_activate(const cJSON *payload) {
   sendspin_send_state();
 }
 
+/* Volume is a perceived-loudness percentage, and the DAC drivers already
+ * expand the firmware's -30..0 dB scale onto their own taper, so map straight
+ * onto that scale rather than applying the spec's amplitude curve on top of a
+ * curve. This is also the scale the buttons and the web UI report, which is
+ * what keeps the three agreeing. */
+static void sendspin_handle_command(const cJSON *payload) {
+  const cJSON *player = cJSON_GetObjectItemCaseSensitive(payload, "player");
+  if (!cJSON_IsObject(player)) {
+    return;
+  }
+  const cJSON *command = cJSON_GetObjectItemCaseSensitive(player, "command");
+  if (!cJSON_IsString(command)) {
+    return;
+  }
+  const char *cmd = cJSON_GetStringValue(command);
+
+  if (strcmp(cmd, "volume") == 0) {
+    const cJSON *volume = cJSON_GetObjectItemCaseSensitive(player, "volume");
+    if (!cJSON_IsNumber(volume)) {
+      return;
+    }
+    int pct = (int)cJSON_GetNumberValue(volume);
+    pct = pct < 0 ? 0 : (pct > 100 ? 100 : pct);
+    playback_control_set_volume_percent(pct);
+  } else if (strcmp(cmd, "mute") == 0) {
+    const cJSON *mute = cJSON_GetObjectItemCaseSensitive(player, "mute");
+    if (!cJSON_IsBool(mute)) {
+      return;
+    }
+    playback_control_set_muted(cJSON_IsTrue(mute));
+  } else {
+    ESP_LOGD(TAG, "ignoring unsupported command %s", cmd);
+    return;
+  }
+
+  /* "State updates must be sent whenever any state changes, including when
+   * the volume was changed through a server/command." */
+  s_state_dirty = true;
+}
+
 static void sendspin_handle_message(const char *json, size_t len,
                                     int64_t arrival_us) {
   cJSON *root = cJSON_ParseWithLength(json, len);
@@ -992,6 +1052,8 @@ static void sendspin_handle_message(const char *json, size_t len,
     sendspin_handle_activate(payload);
   } else if (strcmp(type, "server/state") == 0) {
     sendspin_handle_server_state(payload);
+  } else if (strcmp(type, "server/command") == 0) {
+    sendspin_handle_command(payload);
   } else if (strcmp(type, "server/time") == 0) {
     sendspin_handle_server_time(payload, arrival_us);
   } else if (strcmp(type, "stream/start") == 0) {
@@ -1299,7 +1361,9 @@ static void sendspin_task(void *arg) {
       }
       const bool available =
           s_output_available && sendspin_time_converged(&s_clock);
-      if (s_state_dirty || available != s_reported_available) {
+      if (s_state_dirty || available != s_reported_available ||
+          playback_control_get_level_percent() != s_reported_volume ||
+          playback_control_is_muted() != s_reported_muted) {
         sendspin_send_state();
       }
       sendspin_meta_tick();
