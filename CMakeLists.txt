@@ -39,10 +39,16 @@ include(cmake/fix_usb_device_uac_platformio.cmake)
 # data/ is staged through a script that gzips the pages first: raw, the web UI
 # alone overflows the 188 KB SPIFFS partition on a 4 MB board.
 set(spiffs_image_dir "${CMAKE_BINARY_DIR}/spiffs_image")
+set(spiffs_stage_args "")
+if(NOT CONFIG_DAC_TAS57XX)
+  # Only dac_tas57xx reads the HybridFlow bases. The rest of hf/ stays: that is
+  # where a TAS58xx user drops their own PPC3 dumps.
+  list(APPEND spiffs_stage_args --exclude "hf/base-hf*.bin")
+endif()
 add_custom_target(
   spiffs_image_stage ALL
   COMMAND ${PYTHON} "${CMAKE_SOURCE_DIR}/scripts/gen_spiffs_image.py"
-          "${CMAKE_SOURCE_DIR}/data" "${spiffs_image_dir}"
+          ${spiffs_stage_args} "${CMAKE_SOURCE_DIR}/data" "${spiffs_image_dir}"
   VERBATIM)
 spiffs_create_partition_image(storage "${spiffs_image_dir}" FLASH_IN_PROJECT
                               DEPENDS spiffs_image_stage)

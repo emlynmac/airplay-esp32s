@@ -6,17 +6,21 @@ well over that on its own, so the pages are stored gzipped and served with
 Content-Encoding: gzip by serve_spiffs_file() in main/network/web_server.c.
 Everything else is copied through untouched — the hybrid flow images are read
 straight off the filesystem by the DAC driver, which cannot decompress.
+
+--exclude drops files the build has no driver for, so a board does not carry
+payload it can never read.
 """
 
+import argparse
+import fnmatch
 import gzip
 import os
 import shutil
-import sys
 
 COMPRESS_SUFFIXES = (".html",)
 
 
-def stage(src, dst):
+def stage(src, dst, exclude=()):
     if os.path.isdir(dst):
         shutil.rmtree(dst)
 
@@ -28,6 +32,10 @@ def stage(src, dst):
 
         for name in sorted(names):
             source = os.path.join(root, name)
+            relname = name if rel == "." else os.path.join(rel, name)
+            relname = relname.replace(os.sep, "/")
+            if any(fnmatch.fnmatch(relname, pat) for pat in exclude):
+                continue
             if not name.endswith(COMPRESS_SUFFIXES):
                 shutil.copy2(source, os.path.join(out, name))
                 raw += os.path.getsize(source)
@@ -43,10 +51,21 @@ def stage(src, dst):
             raw += os.path.getsize(source)
             compressed += os.path.getsize(target)
 
-    print(f"SPIFFS image staged: {raw} bytes of data/ -> {compressed} bytes")
+    skipped = f" (excluding {', '.join(sorted(exclude))})" if exclude else ""
+    print(f"SPIFFS image staged{skipped}: {raw} bytes of data/ -> "
+          f"{compressed} bytes")
 
 
 if __name__ == "__main__":
-    if len(sys.argv) != 3:
-        sys.exit(f"usage: {sys.argv[0]} <source-dir> <staging-dir>")
-    stage(sys.argv[1], sys.argv[2])
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("source")
+    parser.add_argument("staging")
+    parser.add_argument(
+        "--exclude",
+        action="append",
+        default=[],
+        metavar="GLOB",
+        help="path glob, relative to the source dir, to leave out of the image",
+    )
+    opts = parser.parse_args()
+    stage(opts.source, opts.staging, opts.exclude)

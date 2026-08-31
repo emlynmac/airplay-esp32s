@@ -53,6 +53,11 @@ uploaded through `/api/fs/upload` still works. The `hf/` and `bg/` binaries are 
 straight off the filesystem by the DAC and display drivers, which cannot decompress, so
 they are copied through untouched.
 
+Staging also drops what a build cannot use. `hf/base-hf*.bin` are HybridFlow bases that
+only the TAS57xx driver reads, so they are left out unless `CONFIG_DAC_TAS57XX` is set —
+another 24 KB back on every other board, taking the image to 78 KB. Anything else you put
+in `hf/`, such as a TAS58xx PPC3 dump, is always included.
+
 Both build systems go through that staging step. ESP-IDF runs it from `CMakeLists.txt`
 before `spiffs_create_partition_image`, and PlatformIO — which packs `data/` itself rather
 than using the image CMake builds — runs it from `scripts/pio_stage_spiffs.py`, wired in as
