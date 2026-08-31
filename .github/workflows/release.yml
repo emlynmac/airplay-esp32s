@@ -58,6 +58,10 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
+      # For the docs republish below. A release created with GITHUB_TOKEN does
+      # not fire the `release` event, so the docs site has to be dispatched
+      # explicitly or the browser installer keeps serving the old binaries.
+      actions: write
     steps:
       - name: Download all firmware artifacts
         uses: actions/download-artifact@v6
@@ -74,3 +78,8 @@ jobs:
           files: release-artifacts/*.bin
           make_latest: true
           generate_release_notes: true
+
+      - name: Republish the docs site so the installer picks up the new binaries
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh workflow run docs.yml --repo "$GITHUB_REPOSITORY" --ref main

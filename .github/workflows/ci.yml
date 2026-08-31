@@ -10,7 +10,7 @@ on:
   # blocks the merge. The workflow therefore always starts on a pull request and
   # decides for itself whether there is any firmware work to do.
   pull_request:
-    branches: [main]
+    branches: [main, staging]
   workflow_dispatch:
 
 jobs:

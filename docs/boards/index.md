@@ -34,9 +34,9 @@ original ESP32.
 | [ESP32-S3 + PCM5102A](esp32s3-pcm5102a.md) | ESP32-S3 | External I2S | — | — | yes |
 | [Waveshare ESP32-S3](esp32s3-pcm5102a.md#waveshare-esp32-s3) | ESP32-S3 | External I2S | — | — | yes |
 | [SqueezeAMP](squeezeamp.md) | ESP32 | TAS5756 | yes | — | yes |
-| [Esparagus Audio Brick](esparagus-audio-brick.md) | ESP32 / S3 | TAS5825M | ESP32 only | yes | ESP32 only |
-| [Esparagus Audio Brick Dual-DAC](esparagus-audio-brick-dual-dac.md) | ESP32-S3 | 2× TAS5825M | — | yes | — |
-| [Esparagus Louder](esparagus-audio-brick.md#esparagus-louder) | ESP32 / S3 | TAS5825M + gain | ESP32 only | — | S3 only |
+| [Esparagus Audio Brick](esparagus-audio-brick.md) | ESP32 / S3 | TAS58xx | ESP32 only | yes | yes |
+| [Esparagus Audio Brick Dual](esparagus-audio-brick-dual-dac.md) | ESP32-S3 | 2× TAS58xx | — | yes | yes |
+| [Esparagus Louder](esparagus-audio-brick.md#esparagus-louder) | ESP32 / S3 | TAS58xx | ESP32 only | — | yes |
 | [Seeed XIAO ESP32-C5](xiao-esp32c5.md) | ESP32-C5 | External I2S | — | — | — |
 | [Custom board](custom.md) | any | any | — | — | — |
 
