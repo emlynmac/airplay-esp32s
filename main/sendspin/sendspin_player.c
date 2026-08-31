@@ -61,11 +61,17 @@ static int64_t s_last_status_us = 0;
 static size_t sendspin_player_read(int16_t *buffer, size_t samples);
 
 uint32_t sendspin_player_buffer_capacity(void) {
-  /* Bytes of *compressed* audio the server may keep queued on us. PCM is its
-   * own worst case, so quote the timeline in bytes at the widest format this
-   * milestone accepts. */
-  return (uint32_t)CONFIG_SENDSPIN_TIMELINE_BLOCKS * SENDSPIN_FRAME_SAMPLES *
-         2U * (uint32_t)sizeof(int16_t);
+  /* Bytes of *compressed* audio the server may keep queued on us, so quote
+   * the timeline in bytes at the widest format we accept -- but only a third
+   * of it. The server fills right up to whatever it is told, so the rest has
+   * to absorb the preroll and the jitter; quote the whole ring and every
+   * transient overflows, and the overflow is dropped and comes back as a
+   * hole to conceal. The margin has to cover compression too: bytes stop
+   * bounding *duration* once FLAC is on the wire, and the server's own
+   * duration cap is 30 s, which is no help at all. */
+  const uint32_t frames =
+      ((uint32_t)CONFIG_SENDSPIN_TIMELINE_BLOCKS / 3U) * SENDSPIN_FRAME_SAMPLES;
+  return frames * 2U * (uint32_t)sizeof(int16_t);
 }
 
 uint32_t sendspin_player_min_buffer_ms(void) {
