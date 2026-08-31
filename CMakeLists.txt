@@ -40,10 +40,14 @@ include(cmake/fix_usb_device_uac_platformio.cmake)
 # alone overflows the 188 KB SPIFFS partition on a 4 MB board.
 set(spiffs_image_dir "${CMAKE_BINARY_DIR}/spiffs_image")
 set(spiffs_stage_args "")
+# Both DAC drivers keep their DSP images in hf/, so each build carries only the
+# family it can actually load.
 if(NOT CONFIG_DAC_TAS57XX)
-  # Only dac_tas57xx reads the HybridFlow bases. The rest of hf/ stays: that is
-  # where a TAS58xx user drops their own PPC3 dumps.
-  list(APPEND spiffs_stage_args --exclude "hf/base-hf*.bin")
+  list(APPEND spiffs_stage_args --exclude "hf/base-hf*.bin"
+       --exclude "hf/tas57xx_fw*.bin")
+endif()
+if(NOT CONFIG_DAC_TAS58XX)
+  list(APPEND spiffs_stage_args --exclude "hf/tas5825m_fw*.bin")
 endif()
 add_custom_target(
   spiffs_image_stage ALL

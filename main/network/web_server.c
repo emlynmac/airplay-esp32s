@@ -61,15 +61,15 @@ static httpd_handle_t s_server = NULL;
 
 static esp_err_t serve_spiffs_file(httpd_req_t *req, const char *path,
                                    const char *content_type) {
-  // Pages are stored gzipped so the web UI fits a 4 MB board's 188 KB
-  // partition. A plain file still wins if one was uploaded over /api/fs.
-  char gz_path[96];
-  snprintf(gz_path, sizeof(gz_path), "%s.gz", path);
-  bool gzipped = true;
-  FILE *f = fopen(gz_path, "r");
+  // The image only ever stores <path>.gz, so trying the plain name first is
+  // what lets a page uploaded over /api/fs replace the one that shipped.
+  bool gzipped = false;
+  FILE *f = fopen(path, "r");
   if (!f) {
-    gzipped = false;
-    f = fopen(path, "r");
+    char gz_path[96];
+    snprintf(gz_path, sizeof(gz_path), "%s.gz", path);
+    gzipped = true;
+    f = fopen(gz_path, "r");
   }
   if (!f) {
     ESP_LOGE(TAG, "Failed to open %s", path);

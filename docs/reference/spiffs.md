@@ -47,16 +47,17 @@ payload from 256 KB to 101 KB, which matters because the smallest layout gives S
 188 KB — the pages alone overflow it uncompressed. Pages also load noticeably faster over
 WiFi.
 
-The web server asks for the `.gz` first and sets `Content-Encoding: gzip`; browsers
-decompress transparently. It falls back to an uncompressed file of the same name, so a page
-uploaded through `/api/fs/upload` still works. The `hf/` and `bg/` binaries are read
-straight off the filesystem by the DAC and display drivers, which cannot decompress, so
-they are copied through untouched.
+The image only ever stores the `.gz`, so the web server tries the plain name first and falls
+back to `<path>.gz`, setting `Content-Encoding: gzip` when it serves one; browsers
+decompress transparently. That order is what makes `/api/fs/upload` useful — an uploaded
+`index.html` replaces the page that shipped, and deleting it again restores the built-in
+one. The `hf/` and `bg/` binaries are read straight off the filesystem by the DAC and
+display drivers, which cannot decompress, so they are copied through untouched.
 
-Staging also drops what a build cannot use. `hf/base-hf*.bin` are HybridFlow bases that
-only the TAS57xx driver reads, so they are left out unless `CONFIG_DAC_TAS57XX` is set —
-another 24 KB back on every other board, taking the image to 78 KB. Anything else you put
-in `hf/`, such as a TAS58xx PPC3 dump, is always included.
+Staging also drops what a build cannot use. Both DAC drivers keep their DSP images in
+`hf/`, so each build carries only the family it can load: `base-hf*.bin` and
+`tas57xx_fw*.bin` need `CONFIG_DAC_TAS57XX`, `tas5825m_fw*.bin` needs `CONFIG_DAC_TAS58XX`.
+That hands another 24 KB back to any board without a TAS57xx, taking the image to 78 KB.
 
 Both build systems go through that staging step. ESP-IDF runs it from `CMakeLists.txt`
 before `spiffs_create_partition_image`, and PlatformIO — which packs `data/` itself rather

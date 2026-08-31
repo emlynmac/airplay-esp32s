@@ -15,9 +15,16 @@ Import("env")  # noqa: F821 - injected by PlatformIO
 
 FS_TARGETS = {"buildfs", "uploadfs", "uploadfsota"}
 
+# Both DAC drivers keep their DSP images in hf/, so each build carries only the
+# family it can actually load.
+DRIVER_ASSETS = {
+    "CONFIG_DAC_TAS57XX=y": ("hf/base-hf*.bin", "hf/tas57xx_fw*.bin"),
+    "CONFIG_DAC_TAS58XX=y": ("hf/tas5825m_fw*.bin",),
+}
 
-def selects_tas57xx(project_dir):
-    """Whether this env's sdkconfig layers choose the HybridFlow DAC driver.
+
+def sdkconfig_text(project_dir):
+    """This env's sdkconfig.defaults layers concatenated, or None if unknown.
 
     Read from platformio.ini, not from a generated sdkconfig — a pre: script
     runs before CMake has configured, so no sdkconfig exists yet.
@@ -27,15 +34,14 @@ def selects_tas57xx(project_dir):
         args = " ".join(args)
     layers = re.search(r"-DSDKCONFIG_DEFAULTS=([^\"\s]+)", args)
     if not layers:
-        return True  # unrecognised config, so ship all of data/
+        return None
+    text = ""
     for layer in layers.group(1).split(";"):
         path = os.path.join(project_dir, layer)
-        if not os.path.isfile(path):
-            continue
-        with open(path, encoding="utf-8") as f:
-            if "CONFIG_DAC_TAS57XX=y" in f.read():
-                return True
-    return False
+        if os.path.isfile(path):
+            with open(path, encoding="utf-8") as f:
+                text += f.read()
+    return text
 
 
 if FS_TARGETS & set(COMMAND_LINE_TARGETS):  # noqa: F821 - SCons global
@@ -43,8 +49,11 @@ if FS_TARGETS & set(COMMAND_LINE_TARGETS):  # noqa: F821 - SCons global
     staged = os.path.join(env.subst("$BUILD_DIR"), "spiffs_image")
     cmd = [sys.executable,
            os.path.join(project_dir, "scripts", "gen_spiffs_image.py")]
-    if not selects_tas57xx(project_dir):
-        cmd += ["--exclude", "hf/base-hf*.bin"]
+    config = sdkconfig_text(project_dir)
+    for symbol, patterns in DRIVER_ASSETS.items():
+        if config is not None and symbol not in config:
+            for pattern in patterns:
+                cmd += ["--exclude", pattern]
     cmd += [env.subst("$PROJECT_DATA_DIR"), staged]
     subprocess.check_call(cmd)
     env.Replace(PROJECT_DATA_DIR=staged)
