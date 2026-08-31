@@ -227,7 +227,9 @@ them on hardware, so treat a failure to boot as expected rather than surprising 
 [report it](https://github.com/rbouteiller/airplay-esp32/issues). Installing the release
 build again always recovers the board.
 
-The beta buttons are absent when no beta is currently published.
+A button only appears when the build behind it exists, so the beta buttons are absent
+between `staging` pushes, and a board added since the last release shows its beta button
+alone until a release carries a build for it.
 
 !!! note "Prefer to flash manually?"
 

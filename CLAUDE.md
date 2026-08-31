@@ -168,7 +168,7 @@ components/
 **Pre-commit hook**: auto-formats staged C/H files with clang-format, runs clang-tidy (requires `build/compile_commands.json`). Install via `git config core.hooksPath .githooks`.
 
 **CI** (`.github/workflows/`), five workflows:
-- `ci.yml` — on push to `main` and on every PR. A `changes` job skips the firmware jobs for a Markdown-only PR; `format-check` (clang-format), `lint-check` (clang-tidy against an esp32s3 build), `output-backends` (links the spdif and usb backends, which the release matrix never covers) and `build` follow. **`ci-gate` is the one required check** — it runs unconditionally and treats skipped as fine, so branch protection does not have to list every matrix job.
+- `ci.yml` — on push to `main`, and on every PR to `main` or `staging`. A `changes` job skips the firmware jobs for a Markdown-only PR; `format-check` (clang-format), `lint-check` (clang-tidy against an esp32s3 build), `output-backends` (links the spdif and usb backends, which the release matrix never covers) and `build` follow. **`ci-gate` is the one required check** — it runs unconditionally and treats skipped as fine, so branch protection does not have to list every matrix job.
 - `build.yml` — reusable, and the single source of truth for the release matrix: esp32s3, waveshare-esp32s3, esp32s2, squeezeamp-bt, squeezeamp-4m, smartamp, and the esparagus targets that ship (audio-brick-bt, -s3, -dual-dac, -dual-uac, louder-bt, louder-s3). Uploads a merged `airplay2-receiver-<name>.bin` per target. **An ESP32 board's published binary is always the Bluetooth one** — the non-BT esparagus envs still exist, they just are not released. Every target here needs a matching `docs/firmware/<name>.json`.
 - `release.yml` — on a `v*` tag. Refuses to release unless the tag matches `version.txt` and points at a commit on `main`, then publishes the merged binaries.
 - `beta.yml` — on push to `staging`. Same matrix, published to a rolling `beta` pre-release that is deleted and recreated each time so the tag follows the staging tip. Fails if `version.txt` on staging is not strictly greater than the latest release, so **bump `version.txt` on staging right after a release**.
@@ -176,7 +176,7 @@ components/
 
 A release created with `GITHUB_TOKEN` does not fire the `release` event, so `release.yml` and `beta.yml` both `gh workflow run docs.yml` explicitly. `workflow_dispatch` is one of only two events that escape the recursion guard.
 
-The `pull_request` triggers in `ci.yml` and `docs.yml` are unfiltered on purpose: a required check whose workflow never fires sits "Expected" forever and blocks the merge.
+The `pull_request` triggers in `ci.yml` and `docs.yml` are unfiltered on purpose: a required check whose workflow never fires sits "Expected" forever and blocks the merge. Both list `staging` as well as `main`, because **PRs are raised against `staging`** — a branch filter of just `main` means a PR to `staging` gets no checks at all.
 
 **Local tooling** (in `scripts/`):
 ```bash

@@ -37,9 +37,25 @@ A hook auto-formats staged C and H files and runs clang-tidy. Enable it once per
 git config core.hooksPath .githooks
 ```
 
+## Branches
+
+**Open pull requests against `staging`, not `main`.**
+
+`staging` is the integration branch. Every push to it rebuilds the firmware matrix and
+replaces the rolling `beta` pre-release, so anything merged there is immediately
+installable from the [browser installer](getting-started/flashing.md#beta-builds) and can
+be tried on real hardware before it reaches anyone running a release.
+
+`main` carries stable releases. It is what the documentation site is published from and
+what the release install buttons serve, and it moves only when `staging` has proved itself
+and a version is tagged.
+
+`version.txt` on `staging` must stay ahead of the latest release or the beta job fails, so
+bump it as soon as a release goes out.
+
 ## CI
 
-On every push and pull request to `main`:
+On every pull request to `main` or `staging`, and on every push to `main`:
 
 | Job | What it does |
 | --- | --- |
@@ -48,13 +64,11 @@ On every push and pull request to `main`:
 | `output-backends` | Builds the S/PDIF and USB output backends so every backend keeps linking |
 | `build` | Builds the full target matrix |
 
+A pull request that touches only Markdown skips the firmware jobs, so a docs typo does not
+cost an ESP-IDF toolchain build.
+
 Tagging `vMAJOR.MINOR.PATCH` triggers a release, which validates the tag against
 `version.txt` and publishes merged firmware binaries.
-
-Every push to `staging` runs the same matrix and replaces the rolling `beta` pre-release,
-which the [browser installer](getting-started/flashing.md#beta-builds) offers alongside the
-stable builds. `version.txt` on `staging` must stay ahead of the latest release or that job
-fails, so bump it as soon as a release goes out.
 
 ## Testing
 

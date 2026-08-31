@@ -87,7 +87,7 @@ extra_css:
 extra_javascript:
   - path: https://unpkg.com/esp-web-tools@10/dist/web/install-button.js?module
     type: module
-  - assets/js/beta-channel.js
+  - assets/js/install-buttons.js
 
 extra:
   social:

@@ -18,14 +18,20 @@
   content: url("../logo_mark_dark.png");
 }
 
-/* Second install button on each firmware card, pointing at the rolling beta
-   build. Kept out of the page until assets/js/beta-channel.js confirms a beta
-   pre-release is actually published — the manifests 404 otherwise. */
+/* A board can be listed here before any published release carries a build for
+   it, and the beta channel is missing entirely until a beta exists.
+   assets/js/install-buttons.js marks each button once it knows which. */
+.install-missing {
+  display: none;
+}
+
+/* Beta starts hidden: usually there is no beta, and revealing one late beats
+   showing a button that turns out to 404. */
 .install-beta {
   display: none;
 }
 
-.beta-available .install-beta {
+.install-beta.install-available {
   display: inline-block;
 }
 

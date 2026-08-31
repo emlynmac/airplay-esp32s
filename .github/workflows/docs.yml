@@ -12,7 +12,7 @@ on:
   # twenty-second build, and running it everywhere also catches a firmware
   # change that invalidates a link in the docs.
   pull_request:
-    branches: [main]
+    branches: [main, staging]
   # Republish after a release so the browser installer picks up new binaries.
   release:
     types: [published]
