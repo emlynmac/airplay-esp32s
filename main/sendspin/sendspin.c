@@ -174,32 +174,24 @@ static void sendspin_pake_reset(void);
 /*  Identity                                                           */
 /* ------------------------------------------------------------------ */
 
-/* client_id is the base64url of a Curve25519 public key, and the same keypair
- * is the client's static key in the Noise handshake -- which is why the
- * private half is kept for the life of the process rather than wiped here. */
-static esp_err_t sendspin_load_identity(void) {
+static esp_err_t sendspin_store_identity(void) {
   nvs_handle_t nvs;
   esp_err_t err = nvs_open(SENDSPIN_NVS_NAMESPACE, NVS_READWRITE, &nvs);
   if (err != ESP_OK) {
     return err;
   }
-
-  size_t len = sizeof(s_client_priv);
-  err = nvs_get_blob(nvs, SENDSPIN_NVS_KEY_SK, s_client_priv, &len);
-  if (err != ESP_OK || len != sizeof(s_client_priv)) {
-    randombytes_buf(s_client_priv, sizeof(s_client_priv));
-    err = nvs_set_blob(nvs, SENDSPIN_NVS_KEY_SK, s_client_priv,
-                       sizeof(s_client_priv));
-    if (err == ESP_OK) {
-      err = nvs_commit(nvs);
-    }
-    if (err != ESP_OK) {
-      ESP_LOGW(TAG, "identity not persisted: %s", esp_err_to_name(err));
-    }
-    ESP_LOGI(TAG, "generated a new client identity");
+  err = nvs_set_blob(nvs, SENDSPIN_NVS_KEY_SK, s_client_priv,
+                     sizeof(s_client_priv));
+  if (err == ESP_OK) {
+    err = nvs_commit(nvs);
   }
   nvs_close(nvs);
+  return err;
+}
 
+/* Derive everything that hangs off the private key: the public half, the
+ * client_id, and the pairing token, which carries the public key too. */
+static esp_err_t sendspin_derive_identity(void) {
   if (crypto_scalarmult_curve25519_base(s_client_pub, s_client_priv) != 0) {
     sodium_memzero(s_client_priv, sizeof(s_client_priv));
     return ESP_FAIL;
@@ -209,6 +201,31 @@ static esp_err_t sendspin_load_identity(void) {
                     sizeof(s_client_pub),
                     sodium_base64_VARIANT_URLSAFE_NO_PADDING);
   return sendspin_psk_init(s_client_pub);
+}
+
+/* client_id is the base64url of a Curve25519 public key, and the same keypair
+ * is the client's static key in the Noise handshake -- which is why the
+ * private half is kept for the life of the process rather than wiped here. */
+static esp_err_t sendspin_load_identity(void) {
+  nvs_handle_t nvs;
+  esp_err_t err = nvs_open(SENDSPIN_NVS_NAMESPACE, NVS_READWRITE, &nvs);
+  if (err != ESP_OK) {
+    return err;
+  }
+  size_t len = sizeof(s_client_priv);
+  err = nvs_get_blob(nvs, SENDSPIN_NVS_KEY_SK, s_client_priv, &len);
+  nvs_close(nvs);
+
+  if (err != ESP_OK || len != sizeof(s_client_priv)) {
+    randombytes_buf(s_client_priv, sizeof(s_client_priv));
+    err = sendspin_store_identity();
+    if (err != ESP_OK) {
+      ESP_LOGW(TAG, "identity not persisted: %s", esp_err_to_name(err));
+    }
+    ESP_LOGI(TAG, "generated a new client identity");
+  }
+
+  return sendspin_derive_identity();
 }
 
 /* ------------------------------------------------------------------ */
@@ -941,12 +958,14 @@ static const uint8_t *sendspin_select_psk(const char *json, size_t len) {
   if (!psk) {
     /* A lookup miss. The spec's Sentinel Fallback says to answer with the
      * Sentinel anyway, but the server cannot verify a message 2 keyed with it
-     * and will just drop the connection and retry forever. Only deleting the
-     * server's own record breaks that loop. */
+     * and will just drop the connection and retry forever. Deleting the
+     * server's own record breaks that loop, and so does taking a new identity
+     * it has no record for. */
     ESP_LOGW(TAG,
              "server referenced an unknown PSK (%s, category %s) -- "
              "answering with the Sentinel, which it cannot verify; delete "
-             "this device's record on the server, then pair again",
+             "this device's record on the server, or POST "
+             "/api/sendspin/reset-identity and restart",
              id_str,
              cJSON_IsString(category) ? cJSON_GetStringValue(category)
                                       : "unspecified");
@@ -2109,5 +2128,34 @@ esp_err_t sendspin_forget_pairings(void) {
   /* A session already keyed with a long-term PSK keeps running; the records
    * only decide what the *next* handshake can resolve. */
   ESP_LOGI(TAG, "pairing records cleared");
+  return ESP_OK;
+}
+
+esp_err_t sendspin_reset_identity(void) {
+  uint8_t previous[sizeof(s_client_priv)];
+  memcpy(previous, s_client_priv, sizeof(previous));
+
+  randombytes_buf(s_client_priv, sizeof(s_client_priv));
+  esp_err_t err = sendspin_store_identity();
+  if (err != ESP_OK) {
+    memcpy(s_client_priv, previous, sizeof(previous));
+    sodium_memzero(previous, sizeof(previous));
+    return err;
+  }
+  sodium_memzero(previous, sizeof(previous));
+
+  /* Records are only ever looked up under the old client_id, so no server can
+   * reach them again.  Clear them before sendspin_derive_identity() reloads
+   * the table from NVS. */
+  err = sendspin_psk_forget_all();
+  if (err != ESP_OK) {
+    return err;
+  }
+
+  err = sendspin_derive_identity();
+  if (err != ESP_OK) {
+    return err;
+  }
+  ESP_LOGI(TAG, "new client identity %s", s_client_id);
   return ESP_OK;
 }

@@ -106,11 +106,24 @@ const char *sendspin_pairing_pin(void);
 unsigned sendspin_paired_count(void);
 
 /**
- * Forget every pairing record and drop the current session.  The device keeps
- * its identity, its pairing token and its PIN, so a server can pair again;
- * until one does, sessions fall back to the Sentinel.
+ * Forget every pairing record.  The device keeps its identity, its pairing
+ * token and its PIN, so a server can pair again; until one does, sessions
+ * fall back to the Sentinel.  Any session already running is left alone --
+ * the records only decide what the next handshake can resolve.
  *
  * There are only four slots and a fifth pairing evicts the oldest, so this is
  * how an operator clears out servers that are no longer around.
  */
 esp_err_t sendspin_forget_pairings(void);
+
+/**
+ * Generate a fresh client identity, and forget every pairing record with it.
+ * The next handshake presents an unrecognised client_id, so a server that
+ * still holds a stale record for this device stops offering a PSK we cannot
+ * resolve and treats us as a device it has never seen -- which is the only
+ * way out of that deadlock without editing the server's own store.
+ *
+ * The pairing token changes with the identity; the PIN does not.  The server
+ * is left holding an orphan record for the old identity.
+ */
+esp_err_t sendspin_reset_identity(void);

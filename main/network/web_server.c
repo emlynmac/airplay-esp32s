@@ -1071,6 +1071,30 @@ static esp_err_t sendspin_unpair_handler(httpd_req_t *req) {
   ESP_LOGI(TAG, "Sendspin pairings cleared via web interface");
   return ESP_OK;
 }
+
+static esp_err_t sendspin_reset_identity_handler(httpd_req_t *req) {
+  const esp_err_t err = sendspin_reset_identity();
+  if (err != ESP_OK) {
+    httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR,
+                        esp_err_to_name(err));
+    return ESP_FAIL;
+  }
+
+  cJSON *json = cJSON_CreateObject();
+  cJSON_AddBoolToObject(json, "success", true);
+  cJSON_AddStringToObject(json, "sendspin_pairing_token",
+                          sendspin_pairing_token());
+  cJSON_AddNumberToObject(json, "sendspin_paired", sendspin_paired_count());
+
+  char *json_str = cJSON_Print(json);
+  httpd_resp_set_type(req, "application/json");
+  httpd_resp_send(req, json_str, HTTPD_RESP_USE_STRLEN);
+  free(json_str);
+  cJSON_Delete(json);
+
+  ESP_LOGI(TAG, "Sendspin identity reset via web interface");
+  return ESP_OK;
+}
 #endif
 
 /* ================================================================== */
@@ -2357,6 +2381,12 @@ esp_err_t web_server_start(uint16_t port) {
                                      .method = HTTP_POST,
                                      .handler = sendspin_unpair_handler};
   httpd_register_uri_handler(s_server, &sendspin_unpair_uri);
+
+  httpd_uri_t sendspin_reset_identity_uri = {
+      .uri = "/api/sendspin/reset-identity",
+      .method = HTTP_POST,
+      .handler = sendspin_reset_identity_handler};
+  httpd_register_uri_handler(s_server, &sendspin_reset_identity_uri);
 #endif
 
   // File management API

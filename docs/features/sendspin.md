@@ -170,15 +170,38 @@ curl -X POST http://<board>/api/sendspin/unpair
 
 The board keeps its identity, its token and its PIN, so any server can pair again.
 
-!!! warning "Clear the server's record too, and clear it first"
+!!! warning "This only forgets the board's half"
 
-    This only forgets the board's half. A server that still holds a record keeps offering a
-    PSK the board no longer has, and every handshake fails — which usually means the server
-    can no longer show the device as connected, so its own unpair button is out of reach.
+    A server that still holds a record keeps offering a PSK the board no longer has. The
+    board answers with the Sentinel, the server cannot verify that, and it drops the
+    connection — forever. Worse, most servers only offer their unpair control for a device
+    that is *connected*, so the deadlock puts the fix out of reach. Clear the server's
+    record too, and clear it first.
 
-    In Music Assistant the record lives in `<storage>/sendspin/pairing_store.json` (`/data`
-    on the add-on). Stop the server, remove the board's entry, and start it again. Then pair
-    with the PIN.
+### Getting out of a stale pairing
+
+If a server is already stuck in that loop, the board can escape without anyone editing the
+server's store: give it a new identity.
+
+```bash
+curl -X POST http://<board>/api/sendspin/reset-identity
+curl -X POST http://<board>/api/system/restart
+```
+
+The board's `client_id` is the public half of its Noise static key, and that is what a
+server looks its records up by. A fresh key means the server finds nothing, falls back to
+the Sentinel, and the handshake succeeds — the board looks like one it has never seen. The
+restart is what re-announces over mDNS; servers generally connect on discovery rather than
+retrying a dead address.
+
+The pairing token changes too, because it carries the public key. The PIN does not, and
+neither does the pairing PSK, so the second half of the token stays the same. Existing
+pairing records are dropped with the old identity, since nothing can reach them again.
+
+!!! note "The server is left holding an orphan"
+
+    A stale record and, usually, a dead player entry. Both are harmless and both can be
+    removed from the server's own UI once the board is back.
 
 !!! tip "Music Assistant"
 
