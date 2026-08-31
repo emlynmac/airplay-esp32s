@@ -63,10 +63,6 @@ CONFIG_COMPILER_OPTIMIZATION_PERF=y
 # HTTP server — limit open sockets to avoid LWIP socket exhaustion.
 # Default is 7; with RTSP + audio + NTP + PTP + WiFi the budget is tight.
 CONFIG_HTTPD_WS_SUPPORT=y
-# The server answers a WebSocket handshake itself and does not call the URI
-# handler for it, so this is the only way to tell which endpoint a socket
-# belongs to.  log_stream needs it to keep log frames off other endpoints.
-CONFIG_HTTPD_WS_POST_HANDSHAKE_CB_SUPPORT=y
 
 # Memory Tweaks
 # Push allocations > 1024 bytes to SPIRAM, keeping internal DRAM free for
