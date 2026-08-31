@@ -18,13 +18,15 @@
  * This build implements enough of it to prove the timing path:
  *
  *   - the WebSocket endpoint and its framing, including reassembly;
- *   - the Noise KKpsk2 handshake keyed with the published Sentinel PSK, and
- *     the encrypted transport that follows it;
+ *   - the Noise KKpsk2 handshake, keyed with a long-term PSK once a server has
+ *     paired and with the published Sentinel PSK until then, and the encrypted
+ *     transport that follows it;
+ *   - pairing by static PIN (CPace) or by pairing PSK;
  *   - the init/hello/activate handshake, the client/time clock exchange and
  *     client/state reporting;
- *   - PCM stream playout through audio_engine_v2.
+ *   - PCM and FLAC stream playout through audio_engine_v2.
  *
- * It does NOT implement pairing or the FLAC and Opus codecs.  Keying with the
+ * It does NOT implement Opus, or the dynamic pairing code.  Keying with the
  * Sentinel leaves the session *unpaired*: encrypted and replay-protected, but
  * with neither peer's identity proven, so a server may only use it for
  * playback once its operator has approved the device.
