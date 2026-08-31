@@ -433,21 +433,24 @@ static void sendspin_send_hello(void) {
     }
   }
 
-  /* An object keyed by method identifier. Only Pairing PSK is implemented:
-   * it is the one method the specification requires of a client, and the only
-   * one with no PAKE round -- the operator carries the secret across in the
-   * pairing token instead. `locations` is an informational hint about where
-   * that token can be found. */
-  cJSON *methods = cJSON_AddObjectToObject(payload, "supported_pair_methods");
+  /* An *array* of descriptors, each naming its own method. The specification's
+   * prose calls this an object keyed by method identifier, but the reference
+   * implementation parses a list and hangs up on anything else, so follow the
+   * code. Only Pairing PSK is implemented: it is the one method required of a
+   * client, and the only one with no PAKE round -- the operator carries the
+   * secret across in the pairing token instead. */
+  cJSON *methods = cJSON_AddArrayToObject(payload, "supported_pair_methods");
   if (methods) {
-    cJSON *psk_method = cJSON_AddObjectToObject(methods, "pairing_psk");
+    cJSON *psk_method = cJSON_CreateObject();
     if (psk_method) {
+      cJSON_AddStringToObject(psk_method, "method", "pairing_psk");
       cJSON *locations = cJSON_AddArrayToObject(psk_method, "locations");
       if (locations) {
         /* The token is on the device's own web page, so an operator with
          * access to it can read it; it is not printed on a label. */
         cJSON_AddItemToArray(locations, cJSON_CreateString("operator"));
       }
+      cJSON_AddItemToArray(methods, psk_method);
     }
   }
 
