@@ -12,6 +12,7 @@ static const char *TAG = "sendspin-psk";
 #define PSK_NVS_NAMESPACE "sendspin"
 #define PSK_NVS_KEY_PAIR  "pair_psk"
 #define PSK_NVS_KEY_RECS  "pair_recs"
+#define PSK_NVS_KEY_PIN   "pair_pin"
 
 /* server_id is the base64url of a 32-byte key, so 43 characters plus a NUL. */
 #define PSK_SERVER_ID_MAX 44
@@ -24,6 +25,7 @@ typedef struct {
 static uint8_t s_pairing_psk[SENDSPIN_PSK_LEN];
 static char s_pairing_psk_id[SENDSPIN_PSK_ID_LEN + 1];
 static char s_token[SENDSPIN_PSK_TOKEN_LEN + 1];
+static char s_static_pin[SENDSPIN_PSK_PIN_LEN + 1];
 
 /* Ordered oldest first, so a full table drops from the front. */
 static psk_record_t s_records[SENDSPIN_PSK_MAX_RECORDS];
@@ -89,6 +91,20 @@ const char *sendspin_psk_token(void) {
   return s_token;
 }
 
+const char *sendspin_psk_static_pin(void) {
+  return s_static_pin;
+}
+
+/* Rejection-free uniform digits: randombytes_uniform() already removes the
+ * modulo bias that a plain rand() % 10 would introduce, and a biased PIN is a
+ * smaller search space for whoever is guessing it. */
+static void psk_generate_pin(void) {
+  for (size_t i = 0; i < SENDSPIN_PSK_PIN_LEN; i++) {
+    s_static_pin[i] = (char)('0' + randombytes_uniform(10));
+  }
+  s_static_pin[SENDSPIN_PSK_PIN_LEN] = '\0';
+}
+
 /* ------------------------------------------------------------------ */
 /*  Persistence                                                        */
 /* ------------------------------------------------------------------ */
@@ -143,6 +159,21 @@ esp_err_t sendspin_psk_init(const uint8_t client_pub[SENDSPIN_PSK_LEN]) {
       ESP_LOGW(TAG, "pairing PSK not persisted: %s", esp_err_to_name(err));
     }
     ESP_LOGI(TAG, "generated a new pairing PSK");
+  }
+
+  /* The static PIN has to survive reboots: it is printed on the device's own
+   * page and an operator may be part way through typing it. */
+  len = sizeof(s_static_pin);
+  err = nvs_get_str(nvs, PSK_NVS_KEY_PIN, s_static_pin, &len);
+  if (err != ESP_OK || strlen(s_static_pin) != SENDSPIN_PSK_PIN_LEN) {
+    psk_generate_pin();
+    err = nvs_set_str(nvs, PSK_NVS_KEY_PIN, s_static_pin);
+    if (err == ESP_OK) {
+      err = nvs_commit(nvs);
+    }
+    if (err != ESP_OK) {
+      ESP_LOGW(TAG, "static PIN not persisted: %s", esp_err_to_name(err));
+    }
   }
 
   len = sizeof(s_records);

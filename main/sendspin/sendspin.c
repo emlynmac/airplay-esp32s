@@ -18,6 +18,7 @@
 #include "ethernet.h"
 #include "playback_control.h"
 #include "rtsp_events.h"
+#include "sendspin_cpace.h"
 #include "sendspin_noise.h"
 #include "sendspin_player.h"
 #include "sendspin_psk.h"
@@ -145,6 +146,27 @@ static sendspin_psk_kind_t s_psk_kind = SENDSPIN_PSK_SENTINEL;
 static char s_server_id[SENDSPIN_CLIENT_ID_LEN + 1];
 static uint8_t s_pending_long_term[SENDSPIN_PSK_LEN];
 static bool s_pair_pending = false;
+
+/* The PAKE behind static-PIN pairing. The session id binds a run to this
+ * Noise session and this attempt, so it is rebuilt for every attempt. */
+#define SENDSPIN_PAKE_SID_LABEL "sendspin-pair-pake-v1"
+#define SENDSPIN_PAKE_SID_LEN \
+  (sizeof(SENDSPIN_PAKE_SID_LABEL) - 1 + SENDSPIN_NOISE_HASH_LEN + 4)
+
+static sendspin_cpace_t s_cpace;
+static uint8_t s_pake_sid[SENDSPIN_PAKE_SID_LEN];
+static size_t s_pake_sid_len = 0;
+static bool s_pake_active = false;
+/* A pairing activation gets the connection to itself: the server reads the
+ * exchange with a parser that only accepts pairing frames, so a clock request
+ * or a state report slipping in between them aborts the attempt. */
+static bool s_pairing_busy = false;
+/* Counted per connection, and compared against the server's own count. */
+static uint32_t s_pairing_index = 0;
+
+/* Defined with the rest of the pairing code, but a session teardown has to
+ * clear the PAKE too. */
+static void sendspin_pake_reset(void);
 
 /* ------------------------------------------------------------------ */
 /*  Identity                                                           */
@@ -436,18 +458,33 @@ static void sendspin_send_hello(void) {
   /* An *array* of descriptors, each naming its own method. The specification's
    * prose calls this an object keyed by method identifier, but the reference
    * implementation parses a list and hangs up on anything else, so follow the
-   * code. Only Pairing PSK is implemented: it is the one method required of a
-   * client, and the only one with no PAKE round -- the operator carries the
-   * secret across in the pairing token instead. */
+   * code. */
   cJSON *methods = cJSON_AddArrayToObject(payload, "supported_pair_methods");
   if (methods) {
+    /* Static PIN first: it is the only method a server will offer its
+     * operator a prompt for. A server shown nothing but Pairing PSK reports
+     * the device as unpairable, because that method is how a server enrols
+     * itself from a token rather than something anyone can type in. */
+    cJSON *pin_method = cJSON_CreateObject();
+    if (pin_method) {
+      cJSON_AddStringToObject(pin_method, "method", "static_pin");
+      cJSON *locations = cJSON_AddArrayToObject(pin_method, "locations");
+      if (locations) {
+        cJSON_AddItemToArray(locations, cJSON_CreateString("operator"));
+      }
+      cJSON_AddItemToArray(methods, pin_method);
+    }
+
+    /* Pairing PSK is the one method required of a client, and the only one
+     * with no PAKE round -- the operator carries the secret across in the
+     * pairing token instead. */
     cJSON *psk_method = cJSON_CreateObject();
     if (psk_method) {
       cJSON_AddStringToObject(psk_method, "method", "pairing_psk");
       cJSON *locations = cJSON_AddArrayToObject(psk_method, "locations");
       if (locations) {
-        /* The token is on the device's own web page, so an operator with
-         * access to it can read it; it is not printed on a label. */
+        /* Both secrets are on the device's own web page, so an operator with
+         * access to it can read them; neither is printed on a label. */
         cJSON_AddItemToArray(locations, cJSON_CreateString("operator"));
       }
       cJSON_AddItemToArray(methods, psk_method);
@@ -568,8 +605,8 @@ static void sendspin_events_connected(bool connected) {
 }
 
 /* ------------------------------------------------------------------ */
-/*  Session lifecycle                                                  */
-/* ------------------------------------------------------------------ */
+/*  Session lifecycle                                                  */ /* ------------------------------------------------------------------
+                                                                           */
 
 static void sendspin_session_close(const char *reason) {
   if (s_fd < 0) {
@@ -594,6 +631,9 @@ static void sendspin_session_close(const char *reason) {
   s_pair_pending = false;
   s_server_id[0] = '\0';
   sodium_memzero(s_pending_long_term, sizeof(s_pending_long_term));
+  /* The pairing index is counted per connection, so it restarts with one. */
+  s_pairing_index = 0;
+  sendspin_pake_reset();
   if (s_cmd_queue) {
     xQueueReset(s_cmd_queue);
   }
@@ -1055,10 +1095,19 @@ static bool sendspin_role_selected(const cJSON *payload) {
 /*  Pairing                                                            */
 /* ------------------------------------------------------------------ */
 
+static void sendspin_pake_reset(void) {
+  sendspin_cpace_reset(&s_cpace);
+  sodium_memzero(s_pake_sid, sizeof(s_pake_sid));
+  s_pake_sid_len = 0;
+  s_pake_active = false;
+  s_pairing_busy = false;
+}
+
 static void sendspin_send_pair_abort(const char *reason) {
   ESP_LOGW(TAG, "pairing aborted: %s", reason);
   s_pair_pending = false;
   sodium_memzero(s_pending_long_term, sizeof(s_pending_long_term));
+  sendspin_pake_reset();
 
   cJSON *payload = NULL;
   cJSON *root = sendspin_new_message("pair/abort", &payload);
@@ -1069,21 +1118,40 @@ static void sendspin_send_pair_abort(const char *reason) {
   (void)sendspin_send_json(root);
 }
 
+/* Decode a base64url field of an exact expected length. Anything else is a
+ * malformed message rather than something to be tolerated: every one of these
+ * fields is a fixed-size key, share or tag. */
+static bool sendspin_b64_field(const cJSON *payload, const char *key,
+                               uint8_t *out, size_t expect_len) {
+  const cJSON *item = cJSON_GetObjectItemCaseSensitive(payload, key);
+  if (!cJSON_IsString(item)) {
+    return false;
+  }
+  const char *b64 = cJSON_GetStringValue(item);
+  size_t len = 0;
+  if (sodium_base642bin(out, expect_len, b64, strlen(b64), NULL, &len, NULL,
+                        sodium_base64_VARIANT_URLSAFE_NO_PADDING) != 0) {
+    return false;
+  }
+  return len == expect_len;
+}
+
+/* Send a fixed-size blob as a base64url string. */
+static void sendspin_add_b64(cJSON *object, const char *key,
+                             const uint8_t *data, size_t len) {
+  char b64[sodium_base64_ENCODED_LEN(SENDSPIN_CPACE_TAG_LEN,
+                                     sodium_base64_VARIANT_URLSAFE_NO_PADDING)];
+  sodium_bin2base64(b64, sizeof(b64), data, len,
+                    sodium_base64_VARIANT_URLSAFE_NO_PADDING);
+  cJSON_AddStringToObject(object, key, b64);
+}
+
 /* Pairing PSK is the whole of the method: there is no PAKE round, because the
  * operator has already carried the secret across by hand in the pairing
  * token. The one thing the client must check is that this connection really
  * is keyed with the pairing PSK -- otherwise anyone who can reach the device
  * over an unpaired session could ask to be adopted. */
-static void sendspin_begin_pairing(const cJSON *payload) {
-  const cJSON *pairing = cJSON_GetObjectItemCaseSensitive(payload, "pairing");
-  const cJSON *method = cJSON_GetObjectItemCaseSensitive(pairing, "method");
-  const char *method_str =
-      cJSON_IsString(method) ? cJSON_GetStringValue(method) : "";
-
-  if (strcmp(method_str, "pairing_psk") != 0) {
-    sendspin_send_pair_abort("method_not_supported");
-    return;
-  }
+static void sendspin_begin_pairing_psk(void) {
   if (s_psk_kind != SENDSPIN_PSK_PAIRING) {
     ESP_LOGW(TAG, "pairing asked for over a session that is not keyed with "
                   "the pairing PSK");
@@ -1102,13 +1170,7 @@ static void sendspin_begin_pairing(const cJSON *payload) {
 
   /* Unwrapped: wrapping the key under the PAKE's shared secret only applies
    * to the pairing-code methods, which have one. */
-  char b64[sodium_base64_ENCODED_LEN(SENDSPIN_PSK_LEN,
-                                     sodium_base64_VARIANT_URLSAFE_NO_PADDING)];
-  sodium_bin2base64(b64, sizeof(b64), s_pending_long_term,
-                    sizeof(s_pending_long_term),
-                    sodium_base64_VARIANT_URLSAFE_NO_PADDING);
-  cJSON_AddStringToObject(out, "long_term_psk", b64);
-  sodium_memzero(b64, sizeof(b64));
+  sendspin_add_b64(out, "long_term_psk", s_pending_long_term, SENDSPIN_PSK_LEN);
 
   if (!sendspin_send_json(root)) {
     sodium_memzero(s_pending_long_term, sizeof(s_pending_long_term));
@@ -1116,6 +1178,188 @@ static void sendspin_begin_pairing(const cJSON *payload) {
   }
   s_pair_pending = true;
   ESP_LOGI(TAG, "pairing: offered a long-term PSK to %s", s_server_id);
+}
+
+/* Static PIN runs CPace over the 8 digits the operator reads off the device.
+ * The PIN never reaches the wire; each attempt gets one guess at it, which is
+ * what makes a secret this short usable at all. */
+static void sendspin_begin_pairing_static_pin(void) {
+  size_t n = 0;
+  memcpy(s_pake_sid, SENDSPIN_PAKE_SID_LABEL,
+         sizeof(SENDSPIN_PAKE_SID_LABEL) - 1);
+  n += sizeof(SENDSPIN_PAKE_SID_LABEL) - 1;
+  memcpy(s_pake_sid + n, sendspin_noise_handshake_hash(&s_noise),
+         SENDSPIN_NOISE_HASH_LEN);
+  n += SENDSPIN_NOISE_HASH_LEN;
+  /* The server bumps its counter before it runs an attempt, so the first
+   * pairing activation of a Noise session is index 1, not 0. It silently
+   * discards a pair-init below its count and errors on one above it. */
+  const uint32_t index = ++s_pairing_index;
+  s_pake_sid[n++] = (uint8_t)(index >> 24);
+  s_pake_sid[n++] = (uint8_t)(index >> 16);
+  s_pake_sid[n++] = (uint8_t)(index >> 8);
+  s_pake_sid[n++] = (uint8_t)index;
+  s_pake_sid_len = n;
+
+  const char *pin = sendspin_psk_static_pin();
+  if (sendspin_cpace_start(&s_cpace, SENDSPIN_CPACE_RESPONDER,
+                           (const uint8_t *)pin, strlen(pin), s_pake_sid,
+                           s_pake_sid_len, (const uint8_t *)"client",
+                           strlen("client")) != ESP_OK) {
+    sendspin_send_pair_abort("method_not_supported");
+    return;
+  }
+
+  cJSON *out = NULL;
+  cJSON *root = sendspin_new_message("client/pair-init", &out);
+  if (!root) {
+    sendspin_pake_reset();
+    return;
+  }
+  /* commit_B belongs to the dynamic-PIN flow; a server rejects it here. */
+  cJSON_AddNumberToObject(out, "pairing_index", (double)index);
+  if (!sendspin_send_json(root)) {
+    sendspin_pake_reset();
+    return;
+  }
+
+  s_pake_active = true;
+  ESP_LOGI(TAG, "pairing: static PIN, attempt %u with %s", (unsigned)index,
+           s_server_id);
+}
+
+static void sendspin_begin_pairing(const cJSON *payload) {
+  const cJSON *pairing = cJSON_GetObjectItemCaseSensitive(payload, "pairing");
+  const cJSON *method = cJSON_GetObjectItemCaseSensitive(pairing, "method");
+  const char *method_str =
+      cJSON_IsString(method) ? cJSON_GetStringValue(method) : "";
+
+  s_pairing_busy = true;
+
+  if (strcmp(method_str, "static_pin") == 0) {
+    sendspin_begin_pairing_static_pin();
+  } else if (strcmp(method_str, "pairing_psk") == 0) {
+    sendspin_begin_pairing_psk();
+  } else {
+    sendspin_send_pair_abort("method_not_supported");
+  }
+}
+
+/* The server opens the PAKE with its share. Ours goes back before the shared
+ * secret is derived, matching the reference client's ordering. */
+static void sendspin_handle_pair_auth(const cJSON *payload) {
+  if (!s_pake_active) {
+    ESP_LOGW(TAG, "unsolicited server/pair-auth");
+    return;
+  }
+
+  uint8_t peer_share[SENDSPIN_CPACE_SHARE_LEN];
+  if (!sendspin_b64_field(payload, "pake_msg_1", peer_share,
+                          sizeof(peer_share))) {
+    sendspin_send_pair_abort("pin_mismatch");
+    return;
+  }
+
+  cJSON *out = NULL;
+  cJSON *root = sendspin_new_message("client/pair-auth", &out);
+  if (!root) {
+    sendspin_pake_reset();
+    return;
+  }
+  sendspin_add_b64(out, "pake_msg_2", s_cpace.public_share,
+                   SENDSPIN_CPACE_SHARE_LEN);
+  if (!sendspin_send_json(root)) {
+    sendspin_pake_reset();
+    return;
+  }
+
+  if (sendspin_cpace_derive(&s_cpace, peer_share, (const uint8_t *)"server",
+                            strlen("server")) != ESP_OK) {
+    /* A degenerate share is indistinguishable from garbage to an operator,
+     * and the abort reasons a client may send do not cover it; pin_mismatch
+     * at least steers them to retry rather than to wait. */
+    sendspin_send_pair_abort("pin_mismatch");
+  }
+}
+
+/* Both sides now prove they reached the same key. The server goes first, so a
+ * device that was given the wrong PIN says so without the operator having to
+ * wait for a timeout. */
+static void sendspin_handle_pair_confirm(const cJSON *payload) {
+  if (!s_pake_active) {
+    ESP_LOGW(TAG, "unsolicited server/pair-confirm");
+    return;
+  }
+
+  uint8_t server_kc[SENDSPIN_CPACE_TAG_LEN];
+  if (!sendspin_b64_field(payload, "server_kc", server_kc, sizeof(server_kc)) ||
+      !sendspin_cpace_verify(&s_cpace, server_kc)) {
+    ESP_LOGW(TAG, "pairing: the server did not prove it knew the PIN");
+    sendspin_send_pair_abort("pin_mismatch");
+    return;
+  }
+
+  uint8_t tag[SENDSPIN_CPACE_TAG_LEN];
+  cJSON *out = NULL;
+  cJSON *root = sendspin_new_message("client/pair-confirm", &out);
+  if (!root || sendspin_cpace_tag(&s_cpace, tag) != ESP_OK) {
+    cJSON_Delete(root);
+    sendspin_pake_reset();
+    return;
+  }
+  /* nonce_B belongs to the dynamic-PIN flow; a server rejects it here. */
+  sendspin_add_b64(out, "client_kc", tag, sizeof(tag));
+  if (!sendspin_send_json(root)) {
+    sendspin_pake_reset();
+    return;
+  }
+
+  /* Wrap the new long-term PSK under the PAKE output. The Noise session is
+   * already encrypted, but it is only keyed with the Sentinel during a PIN
+   * pairing, so this is what actually keeps the PSK away from a man in the
+   * middle: only someone who knew the PIN can unwrap it. */
+  uint8_t wrap_key[crypto_hash_sha256_BYTES];
+  crypto_hash_sha256_state hash;
+  crypto_hash_sha256_init(&hash);
+  crypto_hash_sha256_update(&hash, (const uint8_t *)"sendspin-pair-psk-wrap-v1",
+                            strlen("sendspin-pair-psk-wrap-v1"));
+  crypto_hash_sha256_update(&hash, s_pake_sid, s_pake_sid_len);
+  crypto_hash_sha256_update(&hash, sendspin_cpace_isk(&s_cpace),
+                            SENDSPIN_CPACE_ISK_LEN);
+  crypto_hash_sha256_final(&hash, wrap_key);
+
+  sendspin_psk_generate(s_pending_long_term);
+
+  /* An all-zero nonce is safe only because the key is single-use: the session
+   * id it is derived from carries the Noise handshake hash and the attempt
+   * index, so no two attempts ever share one. */
+  static const uint8_t nonce[crypto_aead_chacha20poly1305_IETF_NPUBBYTES] = {0};
+  uint8_t wrapped[SENDSPIN_PSK_LEN + crypto_aead_chacha20poly1305_IETF_ABYTES];
+  unsigned long long wrapped_len = 0;
+  const int rc = crypto_aead_chacha20poly1305_ietf_encrypt(
+      wrapped, &wrapped_len, s_pending_long_term, SENDSPIN_PSK_LEN, NULL, 0,
+      NULL, nonce, wrap_key);
+  sodium_memzero(wrap_key, sizeof(wrap_key));
+  sodium_memzero(&hash, sizeof(hash));
+
+  out = NULL;
+  root = rc == 0 ? sendspin_new_message("client/pair-finalize", &out) : NULL;
+  if (!root) {
+    sodium_memzero(s_pending_long_term, sizeof(s_pending_long_term));
+    sendspin_pake_reset();
+    return;
+  }
+  sendspin_add_b64(out, "wrapped_psk", wrapped, (size_t)wrapped_len);
+  sodium_memzero(wrapped, sizeof(wrapped));
+
+  if (!sendspin_send_json(root)) {
+    sodium_memzero(s_pending_long_term, sizeof(s_pending_long_term));
+    sendspin_pake_reset();
+    return;
+  }
+  s_pair_pending = true;
+  ESP_LOGI(TAG, "pairing: PIN confirmed, offered a long-term PSK to %s",
+           s_server_id);
 }
 
 /* The server acknowledges, and only then is the pairing real on both sides.
@@ -1132,6 +1376,7 @@ static void sendspin_handle_pair_finalize(void) {
     ESP_LOGI(TAG, "paired with %s", s_server_id);
   }
   sodium_memzero(s_pending_long_term, sizeof(s_pending_long_term));
+  sendspin_pake_reset();
 }
 
 /* server/activate declares what the connection is for. Roles arrive with the
@@ -1296,6 +1541,10 @@ static void sendspin_handle_message(const char *json, size_t len,
     sendspin_handle_server_state(payload);
   } else if (strcmp(type, "server/command") == 0) {
     sendspin_handle_command(payload);
+  } else if (strcmp(type, "server/pair-auth") == 0) {
+    sendspin_handle_pair_auth(payload);
+  } else if (strcmp(type, "server/pair-confirm") == 0) {
+    sendspin_handle_pair_confirm(payload);
   } else if (strcmp(type, "server/pair-finalize") == 0) {
     sendspin_handle_pair_finalize();
   } else if (strcmp(type, "pair/abort") == 0) {
@@ -1305,6 +1554,7 @@ static void sendspin_handle_message(const char *json, size_t len,
                                     : "unspecified");
     s_pair_pending = false;
     sodium_memzero(s_pending_long_term, sizeof(s_pending_long_term));
+    sendspin_pake_reset();
   } else if (strcmp(type, "server/time") == 0) {
     sendspin_handle_server_time(payload, arrival_us);
   } else if (strcmp(type, "stream/start") == 0) {
@@ -1602,6 +1852,10 @@ static void sendspin_task(void *arg) {
       break;
 
     case SENDSPIN_ACTIVATED: {
+      if (s_pairing_busy) {
+        /* The pairing exchange owns the connection until it settles. */
+        break;
+      }
       const int64_t now_us = esp_timer_get_time();
       const uint32_t interval_ms =
           sendspin_time_converged(&s_clock)
@@ -1696,6 +1950,7 @@ esp_err_t sendspin_init(sendspin_activity_cb_t callback) {
    * network with access to the console or the web UI, which is the same
    * "operator" trust boundary the specification assumes. */
   ESP_LOGI(TAG, "pairing token %s", sendspin_psk_token());
+  ESP_LOGI(TAG, "pairing PIN %s", sendspin_psk_static_pin());
   return ESP_OK;
 }
 
@@ -1764,6 +2019,10 @@ bool sendspin_is_playing(void) {
 
 const char *sendspin_pairing_token(void) {
   return sendspin_psk_token();
+}
+
+const char *sendspin_pairing_pin(void) {
+  return sendspin_psk_static_pin();
 }
 
 unsigned sendspin_paired_count(void) {

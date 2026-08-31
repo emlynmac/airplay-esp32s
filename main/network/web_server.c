@@ -1010,10 +1010,13 @@ static esp_err_t system_info_handler(httpd_req_t *req) {
   cJSON_AddBoolToObject(info, "hf3_supported", false);
 #endif
 #ifdef CONFIG_SENDSPIN_ENABLE
-  /* The token a server needs to adopt this device. Anyone who can read it can
-   * pair, so it rides on the same authentication as the rest of this API. */
+  /* The two secrets a server needs to adopt this device: the PIN an operator
+   * types into a pairing prompt, and the token a server enrols itself with.
+   * Anyone who can read either can pair, so they ride on the same
+   * authentication as the rest of this API. */
   cJSON_AddStringToObject(info, "sendspin_pairing_token",
                           sendspin_pairing_token());
+  cJSON_AddStringToObject(info, "sendspin_pairing_pin", sendspin_pairing_pin());
   cJSON_AddNumberToObject(info, "sendspin_paired", sendspin_paired_count());
 #endif
 

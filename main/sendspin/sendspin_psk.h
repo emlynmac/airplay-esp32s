@@ -42,6 +42,9 @@
 /** How many servers the device can stay paired with at once. */
 #define SENDSPIN_PSK_MAX_RECORDS 4
 
+/** The static PIN is exactly 8 decimal digits; no other length is legal. */
+#define SENDSPIN_PSK_PIN_LEN 8
+
 /** Which candidate a handshake matched. */
 typedef enum {
   SENDSPIN_PSK_SENTINEL,  /**< Unpaired: the session proves no identity. */
@@ -71,6 +74,13 @@ const uint8_t *sendspin_psk_lookup(const char *psk_id,
  * This is the string the operator hands to a server to adopt the device.
  */
 const char *sendspin_psk_token(void);
+
+/**
+ * The device's static pairing PIN: 8 decimal digits, generated once and kept
+ * across reboots.  An operator reads it off the device's own page and types
+ * it into the server, which proves knowledge of it through a PAKE.
+ */
+const char *sendspin_psk_static_pin(void);
 
 /** Draw a fresh long-term PSK for a pairing about to be finalized. */
 void sendspin_psk_generate(uint8_t psk[SENDSPIN_PSK_LEN]);

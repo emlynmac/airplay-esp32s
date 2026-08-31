@@ -115,6 +115,17 @@ static inline bool sendspin_noise_ready(const sendspin_noise_t *ns) {
   return ns && ns->transport;
 }
 
+/**
+ * The final handshake hash `h`, valid once the handshake has completed.
+ *
+ * PIN pairing binds its PAKE session id to this, which is what stops a PAKE
+ * exchange being replayed onto a different Noise session.
+ */
+static inline const uint8_t *
+sendspin_noise_handshake_hash(const sendspin_noise_t *ns) {
+  return ns->h;
+}
+
 /** Seal one transport message. @p out needs @p len + 16 bytes. */
 esp_err_t sendspin_noise_encrypt(sendspin_noise_t *ns, const uint8_t *plain,
                                  size_t len, uint8_t *out, size_t out_cap,

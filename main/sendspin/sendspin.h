@@ -95,5 +95,12 @@ bool sendspin_is_playing(void);
  */
 const char *sendspin_pairing_token(void);
 
+/**
+ * The device's static pairing PIN: 8 decimal digits.  This is what an
+ * operator types into a server that offers a pairing prompt, and it is also a
+ * secret -- anyone who learns it can pair.
+ */
+const char *sendspin_pairing_pin(void);
+
 /** How many servers this device is currently paired with. */
 unsigned sendspin_paired_count(void);
