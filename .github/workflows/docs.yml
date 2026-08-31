@@ -49,35 +49,56 @@ jobs:
       # ESP Web Tools fetches firmware from JavaScript, and GitHub release
       # assets send no Access-Control-Allow-Origin header. Serving the binaries
       # from the docs site itself keeps them same-origin.
+      #
+      # Two channels: the stable manifests sit in site/firmware/ next to the
+      # latest release's binaries, and a copy of each lands in
+      # site/firmware/beta/ next to the rolling beta's. Manifest paths are
+      # relative, so the same JSON resolves to whichever binary sits beside it.
       - name: Bundle firmware for the browser installer
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          tag="$(gh release view --repo "$GITHUB_REPOSITORY" --json tagName --jq .tagName 2>/dev/null || true)"
-          if [ -z "$tag" ]; then
+
+          # Drops manifests whose binary is missing from a release, and stamps
+          # the real version in so the installer can report it.
+          bundle() {
+            local dir="$1" tag="$2" version="$3"
+            gh release download "$tag" --repo "$GITHUB_REPOSITORY" \
+              --pattern '*.bin' --dir "$dir"
+            for manifest in "$dir"/*.json; do
+              bin="$(jq -r '.builds[0].parts[0].path' "$manifest")"
+              if [ ! -f "$dir/$bin" ]; then
+                echo "::warning::No $bin in $tag, removing $(basename "$manifest")"
+                rm "$manifest"
+                continue
+              fi
+              jq --arg v "$version" '.version = $v' "$manifest" > "$manifest.tmp"
+              mv "$manifest.tmp" "$manifest"
+            done
+            ls -la "$dir"
+          }
+
+          stable="$(gh release view --repo "$GITHUB_REPOSITORY" --json tagName --jq .tagName 2>/dev/null || true)"
+          if [ -z "$stable" ]; then
             echo "::warning::No published release; the browser installer will be unavailable"
             rm -f site/firmware/*.json
-            exit 0
+          else
+            echo "Bundling stable firmware from release $stable"
+            bundle site/firmware "$stable" "${stable#v}"
           fi
-          echo "Bundling firmware from release $tag"
-          gh release download "$tag" --repo "$GITHUB_REPOSITORY" \
-            --pattern '*.bin' --dir site/firmware
 
-          # Stamp the real version into each manifest so the installer can
-          # report it, and drop manifests whose binary is not in this release.
-          for manifest in site/firmware/*.json; do
-            bin="$(jq -r '.builds[0].parts[0].path' "$manifest")"
-            if [ ! -f "site/firmware/$bin" ]; then
-              echo "::warning::No $bin in release $tag, removing $(basename "$manifest")"
-              rm "$manifest"
-              continue
-            fi
-            jq --arg v "${tag#v}" '.version = $v' "$manifest" > "$manifest.tmp"
-            mv "$manifest.tmp" "$manifest"
-          done
-
-          ls -la site/firmware
+          # `gh release view beta` succeeds for a pre-release; `gh release view`
+          # with no tag above never returns one, which is why they differ.
+          beta="$(gh release view beta --repo "$GITHUB_REPOSITORY" --json name --jq .name 2>/dev/null || true)"
+          if [ -z "$beta" ]; then
+            echo "::warning::No beta pre-release; the beta channel will be hidden"
+          else
+            echo "Bundling beta firmware from release beta ($beta)"
+            mkdir -p site/firmware/beta
+            cp docs/firmware/*.json site/firmware/beta/
+            bundle site/firmware/beta beta "$beta"
+          fi
 
       - name: Upload Pages artifact
         if: github.event_name != 'pull_request'

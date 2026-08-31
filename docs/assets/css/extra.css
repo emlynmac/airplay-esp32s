@@ -17,3 +17,32 @@
 [data-md-color-scheme="slate"] .md-header__button.md-logo img {
   content: url("../logo_mark_dark.png");
 }
+
+/* Second install button on each firmware card, pointing at the rolling beta
+   build. Kept out of the page until assets/js/beta-channel.js confirms a beta
+   pre-release is actually published — the manifests 404 otherwise. */
+.install-beta {
+  display: none;
+}
+
+.beta-available .install-beta {
+  display: inline-block;
+}
+
+/* Dashed and drawn in the accent colour, so it reads as the deliberately
+   riskier of the two buttons rather than a second equal choice. The theme's
+   buttons are borderless pills, so this uses an outline — a real border would
+   make the beta button taller than the release one sitting beside it. */
+.md-button.md-button--beta {
+  margin-left: 0.4rem;
+  background-color: transparent;
+  color: var(--md-accent-fg-color);
+  outline: 1px dashed var(--md-accent-fg-color);
+  outline-offset: -1px;
+}
+
+.md-button.md-button--beta:hover,
+.md-button.md-button--beta:focus {
+  background-color: var(--md-accent-fg-color);
+  color: var(--md-primary-bg-color);
+}

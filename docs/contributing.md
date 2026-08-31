@@ -51,6 +51,11 @@ On every push and pull request to `main`:
 Tagging `vMAJOR.MINOR.PATCH` triggers a release, which validates the tag against
 `version.txt` and publishes merged firmware binaries.
 
+Every push to `staging` runs the same matrix and replaces the rolling `beta` pre-release,
+which the [browser installer](getting-started/flashing.md#beta-builds) offers alongside the
+stable builds. `version.txt` on `staging` must stay ahead of the latest release or that job
+fails, so bump it as soon as a release goes out.
+
 ## Testing
 
 There is no unit test framework — this is embedded firmware and testing means flashing

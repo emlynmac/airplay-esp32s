@@ -19,20 +19,24 @@ Every PlatformIO environment defined in `platformio.ini`. The default is `esp32s
 | `squeezeamp` | ESP32 | TAS5756 | 8 MB | — |
 | `squeezeamp-bt` | ESP32 | TAS5756 | 8 MB | yes |
 | `squeezeamp-4m` | ESP32 | TAS5756 | 4 MB | — |
-| `esparagus-audio-brick` | ESP32 | TAS5825M | 8 MB | — |
-| `esparagus-audio-brick-bt` | ESP32 | TAS5825M | 8 MB | yes |
-| `esparagus-audio-brick-s3` | ESP32-S3 | TAS5825M | 8 MB | — |
-| `esparagus-audio-brick-dual-dac` | ESP32-S3 | 2× TAS5825M | 8 MB | — |
-| `esparagus-audio-brick-dual-uac` | ESP32-S3 | 2× TAS5825M | 8 MB | — |
-| `esparagus-louder` | ESP32 | TAS5825M + gain | 8 MB | — |
-| `esparagus-louder-bt` | ESP32 | TAS5825M + gain | 8 MB | yes |
-| `esparagus-louder-s3` | ESP32-S3 | TAS5825M + gain | 8 MB | — |
+| `esparagus-audio-brick` | ESP32 | TAS58xx | 8 MB | — |
+| `esparagus-audio-brick-bt` | ESP32 | TAS58xx | 8 MB | yes |
+| `esparagus-audio-brick-s3` | ESP32-S3 | TAS58xx | 8 MB | — |
+| `esparagus-audio-brick-dual-dac` | ESP32-S3 | 2× TAS58xx | 8 MB | — |
+| `esparagus-audio-brick-dual-uac` | ESP32-S3 | 2× TAS58xx | 8 MB | — |
+| `esparagus-louder` | ESP32 | TAS58xx | 8 MB | — |
+| `esparagus-louder-bt` | ESP32 | TAS58xx | 8 MB | yes |
+| `esparagus-louder-s3` | ESP32-S3 | TAS58xx | 8 MB | — |
 | `smartamp` | ESP32 | — | 4 MB | yes |
 
-The dual-DAC environments drive a [rev D board](../boards/esparagus-audio-brick-dual-dac.md)
-with two TAS5825M chips: stereo at I2C address 0x4C and a second amplifier at 0x4D, wired
-either as a bridged (PBTL) mono output or as a second stereo pair. `-dual-uac` adds USB
-audio to the same board.
+Every Esparagus board is fitted with a TAS58xx amplifier, either a TAS5825M or a TAS5805M.
+The driver reads the die ID at startup and configures whichever it finds, so the
+environment does not have to know which part is on the board.
+
+The dual-DAC environments drive an [Audio Brick Dual](../boards/esparagus-audio-brick-dual-dac.md)
+with two amplifiers: stereo at I2C address 0x4C and a second at 0x4D, wired either as a
+bridged (PBTL) mono output or as a second stereo pair. `-dual-uac` adds USB audio to the
+same board.
 
 ## Targets without a PlatformIO environment
 
@@ -53,11 +57,17 @@ idf.py -DSDKCONFIG_DEFAULTS="config/sdkconfig.defaults;config/sdkconfig.defaults
 CI builds a subset of environments on every push and attaches them to each release. These
 are the ones available in the [browser installer](../getting-started/flashing.md):
 
-`esp32s3`, `waveshare-esp32s3`, `esp32s2`, `squeezeamp-bt`, `squeezeamp-4m`,
-`esparagus-audio-brick-bt`, `smartamp`, `esparagus-louder-s3`.
+`esp32s3`, `waveshare-esp32s3`, `esp32s2`, `squeezeamp-bt`, `squeezeamp-4m`, `smartamp`,
+`esparagus-audio-brick-bt`, `esparagus-audio-brick-s3`, `esparagus-audio-brick-dual-dac`,
+`esparagus-audio-brick-dual-uac`, `esparagus-louder-bt`, `esparagus-louder-s3`.
 
-Everything else you build yourself. Notably there is **no** prebuilt non-Bluetooth
-SqueezeAMP or Esparagus Audio Brick binary.
+Everything else you build yourself. On an ESP32 board that can do Bluetooth the published
+binary always includes it, so there is no prebuilt `squeezeamp`, `esparagus-audio-brick` or
+`esparagus-louder` — build one of those yourself if you want the RAM and flash back.
+
+The same matrix also runs on every push to `staging` and publishes a rolling
+[beta](../getting-started/flashing.md#beta-builds) pre-release, so each of these boards
+has an untested build of the current development tip available too.
 
 ## How sdkconfig layering works
 

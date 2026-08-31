@@ -1,8 +1,8 @@
-# Esparagus Audio Brick (dual DAC)
+# Esparagus Audio Brick Dual
 
-The [Esparagus Audio Brick](esparagus-audio-brick.md) carries **two TAS5825M**
-amplifiers on one I2S bus. It is **ESP32-S3** based with a pair of
-TAS5825M.
+The **Audio Brick Dual** is an **ESP32-S3** [Esparagus Audio Brick](esparagus-audio-brick.md)
+carrying **two** Class-D amplifiers on one I2S bus. As on every brick, each is either a
+TAS5825M or a TAS5805M and the driver detects which at startup.
 
 Two amplifiers give you a genuine active crossover: satellites on one chip, 
 a bridged subwoofer or a second stereo pair on the other, split in the DSP 
@@ -10,7 +10,7 @@ rather than by a passive network.
 
 ## Features
 
-- 2× TAS5825M, detected at I2C **0x4C** and **0x4D**
+- Two amplifiers, detected at I2C **0x4C** and **0x4D**
 - 15 biquad sections per output, per amplifier — 60 in total across the four outputs
 - Second amplifier wired as a bridged mono subwoofer or as a second stereo pair,
   switchable from the web interface
@@ -41,7 +41,8 @@ idf.py -DSDKCONFIG_DEFAULTS="config/sdkconfig.defaults;config/sdkconfig.defaults
 idf.py -p /dev/ttyUSB0 flash
 ```
 
-No prebuilt binary is published; build it yourself.
+Both variants also have a prebuilt binary in the
+[browser installer](../getting-started/flashing.md).
 
 ## Default GPIO assignments
 

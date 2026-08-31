@@ -19,6 +19,10 @@ Pick your board and click Install. Nothing to download, no toolchain, no command
     Safari and Firefox do not implement, and which is unavailable on iOS and Android.
     Plug the board in over USB before clicking Install.
 
+Each board has an **Install** button for the latest release and, beside it, a dashed
+**Install beta** button for a build of the current `staging` branch. Read
+[beta builds](#beta-builds) before using the second one.
+
 ### Generic boards
 
 <div class="grid cards" markdown>
@@ -31,6 +35,10 @@ Pick your board and click Install. Nothing to download, no toolchain, no command
       <button slot="activate" class="md-button md-button--primary">Install</button>
       <span slot="unsupported">Your browser cannot flash over USB. Use Chrome, Edge or Opera on desktop.</span>
       <span slot="not-allowed">Flashing needs a secure (HTTPS) connection.</span>
+    </esp-web-install-button><esp-web-install-button class="install-beta" manifest="/airplay-esp32/firmware/beta/esp32s3.json">
+      <button slot="activate" class="md-button md-button--beta">Install beta</button>
+      <span slot="unsupported"></span>
+      <span slot="not-allowed"></span>
     </esp-web-install-button>
 
 -   __ESP32-S2 + external DAC__
@@ -41,6 +49,10 @@ Pick your board and click Install. Nothing to download, no toolchain, no command
       <button slot="activate" class="md-button md-button--primary">Install</button>
       <span slot="unsupported">Your browser cannot flash over USB. Use Chrome, Edge or Opera on desktop.</span>
       <span slot="not-allowed">Flashing needs a secure (HTTPS) connection.</span>
+    </esp-web-install-button><esp-web-install-button class="install-beta" manifest="/airplay-esp32/firmware/beta/esp32s2.json">
+      <button slot="activate" class="md-button md-button--beta">Install beta</button>
+      <span slot="unsupported"></span>
+      <span slot="not-allowed"></span>
     </esp-web-install-button>
 
 -   __Waveshare ESP32-S3__
@@ -51,6 +63,10 @@ Pick your board and click Install. Nothing to download, no toolchain, no command
       <button slot="activate" class="md-button md-button--primary">Install</button>
       <span slot="unsupported">Your browser cannot flash over USB. Use Chrome, Edge or Opera on desktop.</span>
       <span slot="not-allowed">Flashing needs a secure (HTTPS) connection.</span>
+    </esp-web-install-button><esp-web-install-button class="install-beta" manifest="/airplay-esp32/firmware/beta/waveshare-esp32s3.json">
+      <button slot="activate" class="md-button md-button--beta">Install beta</button>
+      <span slot="unsupported"></span>
+      <span slot="not-allowed"></span>
     </esp-web-install-button>
 
 </div>
@@ -67,6 +83,10 @@ Pick your board and click Install. Nothing to download, no toolchain, no command
       <button slot="activate" class="md-button md-button--primary">Install</button>
       <span slot="unsupported">Your browser cannot flash over USB. Use Chrome, Edge or Opera on desktop.</span>
       <span slot="not-allowed">Flashing needs a secure (HTTPS) connection.</span>
+    </esp-web-install-button><esp-web-install-button class="install-beta" manifest="/airplay-esp32/firmware/beta/squeezeamp-bt.json">
+      <button slot="activate" class="md-button md-button--beta">Install beta</button>
+      <span slot="unsupported"></span>
+      <span slot="not-allowed"></span>
     </esp-web-install-button>
 
 -   __SqueezeAMP (4 MB flash)__
@@ -77,26 +97,10 @@ Pick your board and click Install. Nothing to download, no toolchain, no command
       <button slot="activate" class="md-button md-button--primary">Install</button>
       <span slot="unsupported">Your browser cannot flash over USB. Use Chrome, Edge or Opera on desktop.</span>
       <span slot="not-allowed">Flashing needs a secure (HTTPS) connection.</span>
-    </esp-web-install-button>
-
--   __Esparagus Audio Brick__
-
-    ESP32 + TAS5825M. Includes Bluetooth A2DP and W5500 Ethernet.
-
-    <esp-web-install-button manifest="/airplay-esp32/firmware/esparagus-audio-brick-bt.json">
-      <button slot="activate" class="md-button md-button--primary">Install</button>
-      <span slot="unsupported">Your browser cannot flash over USB. Use Chrome, Edge or Opera on desktop.</span>
-      <span slot="not-allowed">Flashing needs a secure (HTTPS) connection.</span>
-    </esp-web-install-button>
-
--   __Esparagus Louder S3__
-
-    ESP32-S3 + TAS5825M with extra gain.
-
-    <esp-web-install-button manifest="/airplay-esp32/firmware/esparagus-louder-s3.json">
-      <button slot="activate" class="md-button md-button--primary">Install</button>
-      <span slot="unsupported">Your browser cannot flash over USB. Use Chrome, Edge or Opera on desktop.</span>
-      <span slot="not-allowed">Flashing needs a secure (HTTPS) connection.</span>
+    </esp-web-install-button><esp-web-install-button class="install-beta" manifest="/airplay-esp32/firmware/beta/squeezeamp-4m.json">
+      <button slot="activate" class="md-button md-button--beta">Install beta</button>
+      <span slot="unsupported"></span>
+      <span slot="not-allowed"></span>
     </esp-web-install-button>
 
 -   __SmartAmp__
@@ -107,6 +111,104 @@ Pick your board and click Install. Nothing to download, no toolchain, no command
       <button slot="activate" class="md-button md-button--primary">Install</button>
       <span slot="unsupported">Your browser cannot flash over USB. Use Chrome, Edge or Opera on desktop.</span>
       <span slot="not-allowed">Flashing needs a secure (HTTPS) connection.</span>
+    </esp-web-install-button><esp-web-install-button class="install-beta" manifest="/airplay-esp32/firmware/beta/smartamp.json">
+      <button slot="activate" class="md-button md-button--beta">Install beta</button>
+      <span slot="unsupported"></span>
+      <span slot="not-allowed"></span>
+    </esp-web-install-button>
+
+</div>
+
+### Esparagus boards
+
+Every Esparagus board is fitted with a **TAS58xx** amplifier — a TAS5825M or a TAS5805M,
+detected at startup, so one binary covers both. The Audio Bricks also have W5500
+Ethernet. Bluetooth A2DP only exists on the original ESP32.
+
+<div class="grid cards" markdown>
+
+-   __Esparagus Audio Brick__
+
+    ESP32 + TAS58xx. Includes Bluetooth A2DP and W5500 Ethernet.
+
+    <esp-web-install-button manifest="/airplay-esp32/firmware/esparagus-audio-brick-bt.json">
+      <button slot="activate" class="md-button md-button--primary">Install</button>
+      <span slot="unsupported">Your browser cannot flash over USB. Use Chrome, Edge or Opera on desktop.</span>
+      <span slot="not-allowed">Flashing needs a secure (HTTPS) connection.</span>
+    </esp-web-install-button><esp-web-install-button class="install-beta" manifest="/airplay-esp32/firmware/beta/esparagus-audio-brick-bt.json">
+      <button slot="activate" class="md-button md-button--beta">Install beta</button>
+      <span slot="unsupported"></span>
+      <span slot="not-allowed"></span>
+    </esp-web-install-button>
+
+-   __Esparagus Audio Brick S3__
+
+    ESP32-S3 + TAS58xx, with W5500 Ethernet.
+
+    <esp-web-install-button manifest="/airplay-esp32/firmware/esparagus-audio-brick-s3.json">
+      <button slot="activate" class="md-button md-button--primary">Install</button>
+      <span slot="unsupported">Your browser cannot flash over USB. Use Chrome, Edge or Opera on desktop.</span>
+      <span slot="not-allowed">Flashing needs a secure (HTTPS) connection.</span>
+    </esp-web-install-button><esp-web-install-button class="install-beta" manifest="/airplay-esp32/firmware/beta/esparagus-audio-brick-s3.json">
+      <button slot="activate" class="md-button md-button--beta">Install beta</button>
+      <span slot="unsupported"></span>
+      <span slot="not-allowed"></span>
+    </esp-web-install-button>
+
+-   __Esparagus Audio Brick Dual__
+
+    ESP32-S3 + two amplifiers: stereo plus a bridged mono subwoofer.
+
+    <esp-web-install-button manifest="/airplay-esp32/firmware/esparagus-audio-brick-dual-dac.json">
+      <button slot="activate" class="md-button md-button--primary">Install</button>
+      <span slot="unsupported">Your browser cannot flash over USB. Use Chrome, Edge or Opera on desktop.</span>
+      <span slot="not-allowed">Flashing needs a secure (HTTPS) connection.</span>
+    </esp-web-install-button><esp-web-install-button class="install-beta" manifest="/airplay-esp32/firmware/beta/esparagus-audio-brick-dual-dac.json">
+      <button slot="activate" class="md-button md-button--beta">Install beta</button>
+      <span slot="unsupported"></span>
+      <span slot="not-allowed"></span>
+    </esp-web-install-button>
+
+-   __Esparagus Audio Brick Dual + USB audio__
+
+    The Dual, also enumerating as a USB speaker. See [USB audio](../features/usb-audio.md).
+
+    <esp-web-install-button manifest="/airplay-esp32/firmware/esparagus-audio-brick-dual-uac.json">
+      <button slot="activate" class="md-button md-button--primary">Install</button>
+      <span slot="unsupported">Your browser cannot flash over USB. Use Chrome, Edge or Opera on desktop.</span>
+      <span slot="not-allowed">Flashing needs a secure (HTTPS) connection.</span>
+    </esp-web-install-button><esp-web-install-button class="install-beta" manifest="/airplay-esp32/firmware/beta/esparagus-audio-brick-dual-uac.json">
+      <button slot="activate" class="md-button md-button--beta">Install beta</button>
+      <span slot="unsupported"></span>
+      <span slot="not-allowed"></span>
+    </esp-web-install-button>
+
+-   __Esparagus Louder__
+
+    ESP32 + TAS58xx. Includes Bluetooth A2DP.
+
+    <esp-web-install-button manifest="/airplay-esp32/firmware/esparagus-louder-bt.json">
+      <button slot="activate" class="md-button md-button--primary">Install</button>
+      <span slot="unsupported">Your browser cannot flash over USB. Use Chrome, Edge or Opera on desktop.</span>
+      <span slot="not-allowed">Flashing needs a secure (HTTPS) connection.</span>
+    </esp-web-install-button><esp-web-install-button class="install-beta" manifest="/airplay-esp32/firmware/beta/esparagus-louder-bt.json">
+      <button slot="activate" class="md-button md-button--beta">Install beta</button>
+      <span slot="unsupported"></span>
+      <span slot="not-allowed"></span>
+    </esp-web-install-button>
+
+-   __Esparagus Louder S3__
+
+    ESP32-S3 + TAS58xx.
+
+    <esp-web-install-button manifest="/airplay-esp32/firmware/esparagus-louder-s3.json">
+      <button slot="activate" class="md-button md-button--primary">Install</button>
+      <span slot="unsupported">Your browser cannot flash over USB. Use Chrome, Edge or Opera on desktop.</span>
+      <span slot="not-allowed">Flashing needs a secure (HTTPS) connection.</span>
+    </esp-web-install-button><esp-web-install-button class="install-beta" manifest="/airplay-esp32/firmware/beta/esparagus-louder-s3.json">
+      <button slot="activate" class="md-button md-button--beta">Install beta</button>
+      <span slot="unsupported"></span>
+      <span slot="not-allowed"></span>
     </esp-web-install-button>
 
 </div>
@@ -114,16 +216,29 @@ Pick your board and click Install. Nothing to download, no toolchain, no command
 Once the install finishes, unplug and re-plug the board. It boots into setup mode — carry
 on to [First boot](first-boot.md).
 
+### Beta builds
+
+The dashed **Install beta** buttons flash a build of the tip of the `staging` branch,
+rebuilt on every push. That is where fixes land before a release, so a beta is the way to
+try one — or to confirm a bug you reported is gone.
+
+It is also unreleased code. Betas come off the same CI as a release, but nobody has run
+them on hardware, so treat a failure to boot as expected rather than surprising and
+[report it](https://github.com/rbouteiller/airplay-esp32/issues). Installing the release
+build again always recovers the board.
+
+The beta buttons are absent when no beta is currently published.
+
 !!! note "Prefer to flash manually?"
 
-    Every build above is also published as a merged `.bin` on the
-    [releases page](https://github.com/rbouteiller/airplay-esp32/releases/latest).
-    Merged images are flashed at offset **`0x0`** with `esptool` or the
-    [esptool-js web tool](https://espressif.github.io/esptool-js/).
+    Every build above is also published as a merged `.bin`, on the
+    [releases page](https://github.com/rbouteiller/airplay-esp32/releases/latest) for
+    releases and under the [`beta` tag](https://github.com/rbouteiller/airplay-esp32/releases/tag/beta)
+    for the current staging build. Merged images are flashed at offset **`0x0`** with
+    `esptool` or the [esptool-js web tool](https://espressif.github.io/esptool-js/).
 
-    Note that only the build variants listed above are published. There is no separate
-    non-Bluetooth SqueezeAMP or Esparagus Audio Brick binary — build those yourself with
-    PlatformIO if you want them.
+    Only the variants listed above are published — anything else in
+    [build environments](../reference/build-environments.md) you build yourself.
 
 ## Option B — PlatformIO
 
