@@ -25,12 +25,13 @@
  * exchanged -- so the handshake authenticates whatever the pre-shared key
  * authenticates, and nothing more.
  *
- * This build only ever uses the Sentinel PSK, a constant published in the
- * specification.  That makes the session "unpaired": confidentiality and
- * replay protection hold, but neither peer's identity is proven, so a server
- * may only use an unpaired client for playback if its operator has approved
- * it.  Pairing (which would replace the Sentinel with a secret long-term PSK)
- * is not implemented, and the client advertises no pairing methods.
+ * Until the board is paired that key is the Sentinel, a constant published in
+ * the specification, which leaves the session "unpaired": confidentiality and
+ * replay protection hold, but neither peer's identity is proven.  Pairing
+ * replaces it with a secret long-term PSK.  A server may promote a live
+ * connection onto a new PSK by re-running the handshake in band, in which case
+ * the two messages are ordinary transport frames and the prologue is the
+ * previous handshake's hash.
  *
  * The one-line summary of why the layering matters: the handshake messages
  * are cleartext JSON in WebSocket *text* frames, and everything after it is a

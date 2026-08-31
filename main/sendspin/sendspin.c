@@ -158,8 +158,10 @@ static uint8_t s_pake_sid[SENDSPIN_PAKE_SID_LEN];
 static size_t s_pake_sid_len = 0;
 static bool s_pake_active = false;
 /* A pairing activation gets the connection to itself: the server reads the
- * exchange with a parser that only accepts pairing frames, so a clock request
- * or a state report slipping in between them aborts the attempt. */
+ * exchange, and the re-handshake that follows a successful one, with parsers
+ * that accept only the frame they are waiting for. A clock request or a state
+ * report slipping in between them aborts the attempt. It stays set until the
+ * server/activate that ends pairing. */
 static bool s_pairing_busy = false;
 /* Counted per connection, and compared against the server's own count. */
 static uint32_t s_pairing_index = 0;
@@ -633,6 +635,7 @@ static void sendspin_session_close(const char *reason) {
   sodium_memzero(s_pending_long_term, sizeof(s_pending_long_term));
   /* The pairing index is counted per connection, so it restarts with one. */
   s_pairing_index = 0;
+  s_pairing_busy = false;
   sendspin_pake_reset();
   if (s_cmd_queue) {
     xQueueReset(s_cmd_queue);
@@ -952,22 +955,103 @@ static const uint8_t *sendspin_select_psk(const char *json, size_t len) {
   return psk;
 }
 
-static void sendspin_handle_noise_handshake(const cJSON *payload) {
-  if (s_state != SENDSPIN_HANDSHAKE) {
-    /* An in-band re-handshake, which this build does not implement. The
-     * specified response to any handshake failure is a silent close. */
-    ESP_LOGW(TAG, "unexpected noise/handshake in state %d", (int)s_state);
-    sendspin_session_close("re-handshake unsupported");
+static bool sendspin_handshake_data(const cJSON *payload, uint8_t *out,
+                                    size_t cap, size_t *out_len) {
+  const cJSON *data = cJSON_GetObjectItemCaseSensitive(payload, "data");
+  const char *b64 = cJSON_IsString(data) ? cJSON_GetStringValue(data) : NULL;
+  return b64 &&
+         sodium_base642bin(out, cap, b64, strlen(b64), NULL, out_len, NULL,
+                           sodium_base64_VARIANT_URLSAFE_NO_PADDING) == 0;
+}
+
+/* Encodes Noise message 2 and hands it to @p send, which decides whether it
+ * goes out in the clear or through an already-running transport. */
+static bool sendspin_send_message2(const uint8_t *msg, size_t msg_len,
+                                   bool (*send)(cJSON *)) {
+  char b64[sodium_base64_ENCODED_LEN(SENDSPIN_NOISE_MSG2_LEN,
+                                     sodium_base64_VARIANT_URLSAFE_NO_PADDING)];
+  sodium_bin2base64(b64, sizeof(b64), msg, msg_len,
+                    sodium_base64_VARIANT_URLSAFE_NO_PADDING);
+  cJSON *out = NULL;
+  cJSON *root = sendspin_new_message("noise/handshake", &out);
+  if (!root) {
+    return false;
+  }
+  cJSON_AddStringToObject(out, "data", b64);
+  return send(root);
+}
+
+/* A re-handshake runs *inside* the live session: both Noise messages are
+ * ordinary encrypted frames, and the keys are swapped only once message 2 is
+ * on the wire, so the server can still read it. Its prologue is the previous
+ * handshake's hash, which chains each session to the one it replaced.
+ *
+ * The server does this after pairing, to promote the connection from the
+ * Sentinel to the long-term PSK without dropping it. */
+static void sendspin_handle_rehandshake(const cJSON *payload) {
+  uint8_t msg[SENDSPIN_NOISE_MSG_MAX];
+  size_t msg_len = 0;
+  if (!sendspin_handshake_data(payload, msg, sizeof(msg), &msg_len)) {
+    sendspin_session_close("malformed noise/handshake");
     return;
   }
 
-  const cJSON *data = cJSON_GetObjectItemCaseSensitive(payload, "data");
-  const char *b64 = cJSON_IsString(data) ? cJSON_GetStringValue(data) : NULL;
+  static sendspin_noise_t next;
+  if (sendspin_noise_start(&next, s_client_priv, s_client_pub, s_noise.rs,
+                           sendspin_noise_handshake_hash(&s_noise),
+                           SENDSPIN_NOISE_HASH_LEN) != ESP_OK) {
+    sendspin_session_close("re-handshake setup failed");
+    return;
+  }
+
+  char psk_json[192];
+  size_t psk_len = 0;
+  uint8_t reply[SENDSPIN_NOISE_MSG2_LEN];
+  size_t reply_len = 0;
+  static const uint8_t empty_object[2] = {'{', '}'};
+  if (sendspin_noise_read_message1(&next, msg, msg_len, (uint8_t *)psk_json,
+                                   sizeof(psk_json) - 1, &psk_len) != ESP_OK) {
+    sendspin_session_close("re-handshake message 1 rejected");
+    return;
+  }
+  psk_json[psk_len] = '\0';
+  const uint8_t *psk = sendspin_select_psk(psk_json, psk_len);
+  if (sendspin_noise_write_message2(&next, psk, empty_object,
+                                    sizeof(empty_object), reply, sizeof(reply),
+                                    &reply_len) != ESP_OK) {
+    sendspin_session_close("re-handshake message 2 failed");
+    return;
+  }
+
+  if (!sendspin_send_message2(reply, reply_len, sendspin_send_json)) {
+    sendspin_session_close("re-handshake reply not sent");
+    return;
+  }
+
+  s_noise = next;
+  sodium_memzero(&next, sizeof(next));
+  /* The server counts pairing activations per Noise session, so its counter
+   * restarts here too. */
+  s_pairing_index = 0;
+  s_state = SENDSPIN_ENCRYPTED;
+  ESP_LOGI(TAG, "re-handshake complete, session rekeyed");
+}
+
+static void sendspin_handle_noise_handshake(const cJSON *payload) {
+  if (s_state != SENDSPIN_HANDSHAKE) {
+    if (sendspin_noise_ready(&s_noise)) {
+      sendspin_handle_rehandshake(payload);
+      return;
+    }
+    /* The specified response to any handshake failure is a silent close. */
+    ESP_LOGW(TAG, "unexpected noise/handshake in state %d", (int)s_state);
+    sendspin_session_close("out-of-order noise/handshake");
+    return;
+  }
+
   uint8_t msg[SENDSPIN_NOISE_MSG_MAX];
   size_t msg_len = 0;
-  if (!b64 ||
-      sodium_base642bin(msg, sizeof(msg), b64, strlen(b64), NULL, &msg_len,
-                        NULL, sodium_base64_VARIANT_URLSAFE_NO_PADDING) != 0) {
+  if (!sendspin_handshake_data(payload, msg, sizeof(msg), &msg_len)) {
     sendspin_session_close("malformed noise/handshake");
     return;
   }
@@ -994,23 +1078,10 @@ static void sendspin_handle_noise_handshake(const cJSON *payload) {
     return;
   }
 
-  char reply_b64[sodium_base64_ENCODED_LEN(
-      SENDSPIN_NOISE_MSG2_LEN, sodium_base64_VARIANT_URLSAFE_NO_PADDING)];
-  sodium_bin2base64(reply_b64, sizeof(reply_b64), reply, reply_len,
-                    sodium_base64_VARIANT_URLSAFE_NO_PADDING);
-
-  cJSON *out = NULL;
-  cJSON *root = sendspin_new_message("noise/handshake", &out);
-  if (!root) {
-    sendspin_session_close("out of memory");
-    return;
-  }
-  cJSON_AddStringToObject(out, "data", reply_b64);
-
   /* Still cleartext: the split has happened but message 2 itself is the last
    * thing on the wire that is not a transport ciphertext. */
   s_state = SENDSPIN_ENCRYPTED;
-  if (!sendspin_send_cleartext_json(root)) {
+  if (!sendspin_send_message2(reply, reply_len, sendspin_send_cleartext_json)) {
     sendspin_session_close("handshake reply not sent");
   }
 }
@@ -1100,7 +1171,6 @@ static void sendspin_pake_reset(void) {
   sodium_memzero(s_pake_sid, sizeof(s_pake_sid));
   s_pake_sid_len = 0;
   s_pake_active = false;
-  s_pairing_busy = false;
 }
 
 static void sendspin_send_pair_abort(const char *reason) {
@@ -1233,8 +1303,6 @@ static void sendspin_begin_pairing(const cJSON *payload) {
   const cJSON *method = cJSON_GetObjectItemCaseSensitive(pairing, "method");
   const char *method_str =
       cJSON_IsString(method) ? cJSON_GetStringValue(method) : "";
-
-  s_pairing_busy = true;
 
   if (strcmp(method_str, "static_pin") == 0) {
     sendspin_begin_pairing_static_pin();
@@ -1435,6 +1503,7 @@ static void sendspin_handle_activate(const cJSON *payload) {
            s_role_controller ? "yes" : "no");
 
   s_state = SENDSPIN_ACTIVATED;
+  s_pairing_busy = pairing;
 
   /* A pairing activation carries no roles, so there is no player state worth
    * reporting and the exchange gets the connection to itself. */

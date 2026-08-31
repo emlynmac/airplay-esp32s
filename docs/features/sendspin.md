@@ -35,13 +35,14 @@ sharing the same output path, DSP and volume control that AirPlay uses.
   and the **Pairing PSK** the specification requires of every client. Either way the two
   ends agree a long-term key and the connection becomes authenticated rather than merely
   encrypted. See [Pairing](#pairing)
+- **In-band re-handshaking**: a server promoting a live connection onto a new key — which is
+  what it does the moment pairing finishes — re-runs the Noise handshake inside the existing
+  session rather than reconnecting
 
 ## What does not
 
 - **The dynamic pairing code.** It needs a display or a spoken prompt the board does not
   have, so only the static code is offered
-- **Re-handshaking.** A second `noise/handshake` mid-session closes the connection instead
-  of rekeying, so a server that would rather promote the channel in band has to reconnect
 - **FLAC and Opus.** The server must be told to send PCM
 - The artwork and visualizer roles
 
@@ -164,13 +165,6 @@ long-term key.
     Sendspin's default port and will not connect. Then **approve** the device when Music
     Assistant asks: until you do, it activates the connection with an empty activity set and
     no audio will flow. Choosing to pair prompts for the eight-digit PIN.
-
-!!! note "The server reconnects after pairing"
-
-    A second `noise/handshake` on a live connection is not supported, so once the long-term
-    PSK is agreed the board closes the socket rather than rekeying in band. The server
-    reconnects a moment later with the new key. Pairing still completes; the only symptom is
-    a brief drop.
 
 !!! note "Sendspin gets its own timeline"
 
