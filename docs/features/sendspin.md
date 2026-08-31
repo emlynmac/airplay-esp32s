@@ -5,12 +5,11 @@ server pushes timestamped audio chunks to every player over a WebSocket, and eac
 schedules them against a shared clock. This firmware can act as a Sendspin **player**,
 sharing the same output path, DSP and volume control that AirPlay uses.
 
-!!! warning "Experimental — PCM only, and unpaired"
+!!! warning "Experimental — PCM only"
 
-    The transport is encrypted, but the board cannot yet *pair*, so it authenticates with
-    the protocol's published Sentinel PSK. That proves nothing about who is on the other
-    end — it only stops a passive listener. FLAC and Opus are not implemented either, so
-    the server must be willing to send raw PCM.
+    FLAC and Opus are not implemented, so the server must be willing to send raw PCM.
+    Everything else about a session is in place: the transport is encrypted, and the
+    board can be paired so that it is authenticated too.
 
 ## What works
 
@@ -32,13 +31,17 @@ sharing the same output path, DSP and volume control that AirPlay uses.
   [web UI](../reference/spiffs.md) shows up in the server's UI
 - The `controller@v1` role: the board's play/pause, next and previous buttons drive the
   server's queue, the way DACP does for AirPlay
+- **Pairing PSK**, the pairing method the specification requires of every client: hand the
+  board's pairing token to a server and the two agree a long-term key, after which the
+  connection is authenticated rather than merely encrypted. See
+  [Pairing](#pairing)
 
 ## What does not
 
-- **Pairing.** The board advertises no pairing method, so it can only take part in an
-  `unpaired_access` session. See [Encryption and pairing](#encryption-and-pairing)
+- **The pairing-code methods.** `static_pairing_code` and `dynamic_pairing_code` need a
+  CPace PAKE round and are optional for a client, so neither is implemented
 - **Re-handshaking.** A second `noise/handshake` mid-session closes the connection instead
-  of rekeying
+  of rekeying, so a server that would rather promote the channel in band has to reconnect
 - **FLAC and Opus.** The server must be told to send PCM
 - The artwork and visualizer roles
 
@@ -68,7 +71,7 @@ pulls the matching block.
 That is the same machinery AirPlay uses — Sendspin simply supplies a different clock and a
 different transport.
 
-## Encryption and pairing
+## Encryption
 
 Sendspin has no cleartext mode. Only three message types ever travel in the open —
 `client/init`, `server/init` and `noise/handshake` — and everything after them is a Noise
@@ -81,8 +84,8 @@ learns the server's from the `server_id` in `server/init`. The prologue is the r
 those two messages, so anything that tampers with them fails the handshake. The server is
 the Noise initiator; the board is the responder.
 
-That leaves the pre-shared key, and this is where "unpaired" comes in. A paired client and
-server share a secret established during pairing. This firmware does not implement pairing,
+That leaves the pre-shared key, and the pre-shared key is what decides whether the session
+is *authenticated*. Before anyone pairs the board it has no shared secret with any server,
 so it uses the **Sentinel PSK** — a fixed value published in the protocol specification and
 known to everybody:
 
@@ -101,6 +104,41 @@ If the server names a PSK the board has never held — usually a stale pairing r
 server side — the board logs a warning and answers with the Sentinel anyway. That is the
 specification's Sentinel Fallback, and the handshake then either succeeds unpaired or fails
 silently, depending on which key the server actually used.
+
+## Pairing
+
+Pairing replaces the Sentinel with a secret both sides hold, so the handshake starts proving
+who is on the other end. The specification defines three methods; only **Pairing PSK** is
+required of a client, and it is the one implemented here. It has no PAKE round, because the
+operator carries the secret across by hand instead.
+
+The board generates a 32-byte **pairing PSK** from the hardware RNG on first boot and keeps
+it in NVS. That key plus the board's public key make up its **pairing token**:
+
+```
+payload = client_key (32 bytes) ‖ pairing_psk (32 bytes)
+token   = "SP:0" + base32(payload), padding stripped, every '2' rewritten as '9'
+```
+
+The result is 107 characters. Read it from the boot log, or from `/api/system/info` as
+`sendspin_pairing_token`:
+
+```bash
+curl -s http://<board>/api/system/info | grep pairing_token
+```
+
+Paste it into the server. In Music Assistant that is the Sendspin provider's pairing field.
+The server then opens a connection keyed with the pairing PSK and activates the `pairing`
+activity; the board checks that this connection really is keyed with the pairing PSK,
+generates a fresh 32-byte **long-term PSK**, sends it in `client/pair-finalize`, and stores
+the record once the server acknowledges. Every later session with that server uses the
+long-term key.
+
+!!! danger "The pairing token is a credential"
+
+    Anyone who can read it can adopt the board. It is not rotated automatically — erasing
+    NVS is what changes it. The board keeps records for up to four servers; a fifth pairing
+    evicts the oldest.
 
 !!! tip "Music Assistant"
 
@@ -151,12 +189,13 @@ On first boot the board generates a Curve25519 key pair and stores the secret in
 public key, Base64url encoded, is the `client_id` the server sees, and it is stable across
 reboots and firmware updates. The same key pair is the board's Noise static key, so
 erasing the `sendspin` NVS namespace gives the board a new identity and invalidates any
-pairing a server has recorded for it.
+pairing a server has recorded for it. The pairing PSK and the pairing records live in the
+same namespace, so erasing it also changes the pairing token.
 
 ## Caveats
 
-- The session is encrypted but **not authenticated** — see
-  [Encryption and pairing](#encryption-and-pairing). Treat an unpaired board the way you
+- Until the board is paired the session is encrypted but **not authenticated** — see
+  [Pairing](#pairing). Treat an unpaired board the way you
   would treat any other device on a network you control
 - The service is advertised on **port 80**, the web server's port, with the endpoint path in
   the TXT record. A server that ignores the SRV port and assumes Sendspin's default will not

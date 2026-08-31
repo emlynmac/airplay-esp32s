@@ -1009,6 +1009,13 @@ static esp_err_t system_info_handler(httpd_req_t *req) {
   cJSON_AddBoolToObject(info, "hf1_supported", false);
   cJSON_AddBoolToObject(info, "hf3_supported", false);
 #endif
+#ifdef CONFIG_SENDSPIN_ENABLE
+  /* The token a server needs to adopt this device. Anyone who can read it can
+   * pair, so it rides on the same authentication as the rest of this API. */
+  cJSON_AddStringToObject(info, "sendspin_pairing_token",
+                          sendspin_pairing_token());
+  cJSON_AddNumberToObject(info, "sendspin_paired", sendspin_paired_count());
+#endif
 
   cJSON_AddItemToObject(json, "info", info);
   cJSON_AddBoolToObject(json, "success", true);

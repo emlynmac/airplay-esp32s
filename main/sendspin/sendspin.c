@@ -20,6 +20,7 @@
 #include "rtsp_events.h"
 #include "sendspin_noise.h"
 #include "sendspin_player.h"
+#include "sendspin_psk.h"
 #include "sendspin_time.h"
 #include "settings.h"
 #include "spiram_task.h"
@@ -137,6 +138,14 @@ static char s_client_id[SENDSPIN_CLIENT_ID_LEN + 1];
 static bool s_mdns_advertised = false;
 static int64_t s_last_time_tx_us = 0;
 
+/* Which credential keyed this connection, and the pairing exchange running
+ * over it. A long-term PSK is only ever accepted from a server we have
+ * finalized a pairing with, so the two are kept together. */
+static sendspin_psk_kind_t s_psk_kind = SENDSPIN_PSK_SENTINEL;
+static char s_server_id[SENDSPIN_CLIENT_ID_LEN + 1];
+static uint8_t s_pending_long_term[SENDSPIN_PSK_LEN];
+static bool s_pair_pending = false;
+
 /* ------------------------------------------------------------------ */
 /*  Identity                                                           */
 /* ------------------------------------------------------------------ */
@@ -175,7 +184,7 @@ static esp_err_t sendspin_load_identity(void) {
   sodium_bin2base64(s_client_id, sizeof(s_client_id), s_client_pub,
                     sizeof(s_client_pub),
                     sodium_base64_VARIANT_URLSAFE_NO_PADDING);
-  return ESP_OK;
+  return sendspin_psk_init(s_client_pub);
 }
 
 /* ------------------------------------------------------------------ */
@@ -424,10 +433,27 @@ static void sendspin_send_hello(void) {
     }
   }
 
-  /* An object keyed by method identifier, empty because no pairing method is
-   * implemented. That is only viable alongside unpaired access: a client that
-   * offers neither is "locked down" and must hang up on server/hello. */
-  cJSON_AddObjectToObject(payload, "supported_pair_methods");
+  /* An object keyed by method identifier. Only Pairing PSK is implemented:
+   * it is the one method the specification requires of a client, and the only
+   * one with no PAKE round -- the operator carries the secret across in the
+   * pairing token instead. `locations` is an informational hint about where
+   * that token can be found. */
+  cJSON *methods = cJSON_AddObjectToObject(payload, "supported_pair_methods");
+  if (methods) {
+    cJSON *psk_method = cJSON_AddObjectToObject(methods, "pairing_psk");
+    if (psk_method) {
+      cJSON *locations = cJSON_AddArrayToObject(psk_method, "locations");
+      if (locations) {
+        /* The token is on the device's own web page, so an operator with
+         * access to it can read it; it is not printed on a label. */
+        cJSON_AddItemToArray(locations, cJSON_CreateString("operator"));
+      }
+    }
+  }
+
+  /* Unpaired access stays enabled so a server may still use the device for
+   * playback before anyone pairs it. A client offering neither is "locked
+   * down" and must hang up on server/hello. */
   cJSON *unpaired = cJSON_AddObjectToObject(payload, "unpaired_access");
   if (unpaired) {
     cJSON_AddBoolToObject(unpaired, "enabled", true);
@@ -561,6 +587,10 @@ static void sendspin_session_close(const char *reason) {
   s_role_metadata = false;
   s_role_controller = false;
   s_ctrl_commands = 0;
+  s_psk_kind = SENDSPIN_PSK_SENTINEL;
+  s_pair_pending = false;
+  s_server_id[0] = '\0';
+  sodium_memzero(s_pending_long_term, sizeof(s_pending_long_term));
   if (s_cmd_queue) {
     xQueueReset(s_cmd_queue);
   }
@@ -840,23 +870,27 @@ static void sendspin_handle_server_init(const cJSON *payload) {
     return;
   }
   ESP_LOGI(TAG, "server_id %s", id_str);
+  snprintf(s_server_id, sizeof(s_server_id), "%s", id_str);
   s_state = SENDSPIN_HANDSHAKE;
 }
 
-/* The message 1 payload names the PSK the server picked. We only ever hold
- * the published Sentinel, so the answer is the same either way; logging which
- * it was is the only way to tell an unpaired session apart from a server that
- * still holds a pairing record we lost. */
-static void sendspin_log_psk_choice(const char *json, size_t len) {
+/* The message 1 payload names the PSK the server picked, by psk_id. Which of
+ * ours it resolves to is what decides whether the session is authenticated,
+ * so the answer is remembered as well as returned: a pairing may only be
+ * finalized over a connection keyed with the pairing PSK. */
+static const uint8_t *sendspin_select_psk(const char *json, size_t len) {
   cJSON *root = cJSON_ParseWithLength(json, len);
   if (!root) {
-    return;
+    return sendspin_noise_sentinel_psk();
   }
   const cJSON *id = cJSON_GetObjectItemCaseSensitive(root, "psk_id");
   const cJSON *category =
       cJSON_GetObjectItemCaseSensitive(root, "psk_category");
   const char *id_str = cJSON_IsString(id) ? cJSON_GetStringValue(id) : "";
-  if (strcmp(id_str, sendspin_noise_sentinel_psk_id()) != 0) {
+
+  sendspin_psk_kind_t kind = SENDSPIN_PSK_SENTINEL;
+  const uint8_t *psk = sendspin_psk_lookup(id_str, &kind);
+  if (!psk) {
     /* A lookup miss. The spec's Sentinel Fallback says to answer with the
      * Sentinel anyway; the server reads that as a credential mismatch and
      * should offer its operator a re-pair. */
@@ -867,8 +901,12 @@ static void sendspin_log_psk_choice(const char *json, size_t len) {
              id_str,
              cJSON_IsString(category) ? cJSON_GetStringValue(category)
                                       : "unspecified");
+    psk = sendspin_noise_sentinel_psk();
+    kind = SENDSPIN_PSK_SENTINEL;
   }
+  s_psk_kind = kind;
   cJSON_Delete(root);
+  return psk;
 }
 
 static void sendspin_handle_noise_handshake(const cJSON *payload) {
@@ -901,14 +939,14 @@ static void sendspin_handle_noise_handshake(const cJSON *payload) {
     return;
   }
   psk_json[psk_len] = '\0';
-  sendspin_log_psk_choice(psk_json, psk_len);
+  const uint8_t *psk = sendspin_select_psk(psk_json, psk_len);
 
   static const uint8_t empty_object[2] = {'{', '}'};
   uint8_t reply[SENDSPIN_NOISE_MSG2_LEN];
   size_t reply_len = 0;
-  if (sendspin_noise_write_message2(&s_noise, sendspin_noise_sentinel_psk(),
-                                    empty_object, sizeof(empty_object), reply,
-                                    sizeof(reply), &reply_len) != ESP_OK) {
+  if (sendspin_noise_write_message2(&s_noise, psk, empty_object,
+                                    sizeof(empty_object), reply, sizeof(reply),
+                                    &reply_len) != ESP_OK) {
     sendspin_session_close("handshake message 2 failed");
     return;
   }
@@ -1010,10 +1048,95 @@ static bool sendspin_role_selected(const cJSON *payload) {
   return false;
 }
 
-/* server/activate declares what the connection is for. An empty activity set
- * is not an error: it is how a server parks a device whose operator has not
- * approved it yet, and the protocol's answer to that is to sit still, keep
- * the clock synchronised and wait. */
+/* ------------------------------------------------------------------ */
+/*  Pairing                                                            */
+/* ------------------------------------------------------------------ */
+
+static void sendspin_send_pair_abort(const char *reason) {
+  ESP_LOGW(TAG, "pairing aborted: %s", reason);
+  s_pair_pending = false;
+  sodium_memzero(s_pending_long_term, sizeof(s_pending_long_term));
+
+  cJSON *payload = NULL;
+  cJSON *root = sendspin_new_message("pair/abort", &payload);
+  if (!root) {
+    return;
+  }
+  cJSON_AddStringToObject(payload, "reason", reason);
+  (void)sendspin_send_json(root);
+}
+
+/* Pairing PSK is the whole of the method: there is no PAKE round, because the
+ * operator has already carried the secret across by hand in the pairing
+ * token. The one thing the client must check is that this connection really
+ * is keyed with the pairing PSK -- otherwise anyone who can reach the device
+ * over an unpaired session could ask to be adopted. */
+static void sendspin_begin_pairing(const cJSON *payload) {
+  const cJSON *pairing = cJSON_GetObjectItemCaseSensitive(payload, "pairing");
+  const cJSON *method = cJSON_GetObjectItemCaseSensitive(pairing, "method");
+  const char *method_str =
+      cJSON_IsString(method) ? cJSON_GetStringValue(method) : "";
+
+  if (strcmp(method_str, "pairing_psk") != 0) {
+    sendspin_send_pair_abort("method_not_supported");
+    return;
+  }
+  if (s_psk_kind != SENDSPIN_PSK_PAIRING) {
+    ESP_LOGW(TAG, "pairing asked for over a session that is not keyed with "
+                  "the pairing PSK");
+    sendspin_send_pair_abort("method_not_supported");
+    return;
+  }
+
+  sendspin_psk_generate(s_pending_long_term);
+
+  cJSON *out = NULL;
+  cJSON *root = sendspin_new_message("client/pair-finalize", &out);
+  if (!root) {
+    sodium_memzero(s_pending_long_term, sizeof(s_pending_long_term));
+    return;
+  }
+
+  /* Unwrapped: wrapping the key under the PAKE's shared secret only applies
+   * to the pairing-code methods, which have one. */
+  char b64[sodium_base64_ENCODED_LEN(SENDSPIN_PSK_LEN,
+                                     sodium_base64_VARIANT_URLSAFE_NO_PADDING)];
+  sodium_bin2base64(b64, sizeof(b64), s_pending_long_term,
+                    sizeof(s_pending_long_term),
+                    sodium_base64_VARIANT_URLSAFE_NO_PADDING);
+  cJSON_AddStringToObject(out, "long_term_psk", b64);
+  sodium_memzero(b64, sizeof(b64));
+
+  if (!sendspin_send_json(root)) {
+    sodium_memzero(s_pending_long_term, sizeof(s_pending_long_term));
+    return;
+  }
+  s_pair_pending = true;
+  ESP_LOGI(TAG, "pairing: offered a long-term PSK to %s", s_server_id);
+}
+
+/* The server acknowledges, and only then is the pairing real on both sides.
+ * It re-handshakes to the new key afterwards -- either in band, or by
+ * reconnecting, which lands on the same record either way. */
+static void sendspin_handle_pair_finalize(void) {
+  if (!s_pair_pending) {
+    ESP_LOGW(TAG, "unsolicited server/pair-finalize");
+    return;
+  }
+  s_pair_pending = false;
+
+  if (sendspin_psk_add_record(s_server_id, s_pending_long_term) == ESP_OK) {
+    ESP_LOGI(TAG, "paired with %s", s_server_id);
+  }
+  sodium_memzero(s_pending_long_term, sizeof(s_pending_long_term));
+}
+
+/* server/activate declares what the connection is for. Roles arrive with the
+ * first activation, and playback is only ever offered once the server's
+ * operator has approved this client.  An empty activity set is not an error:
+ * it is how a server parks a device whose operator has not approved it yet,
+ * and the protocol's answer to that is to sit still, keep the clock
+ * synchronised and wait. */
 static void sendspin_handle_activate(const cJSON *payload) {
   const cJSON *activities =
       cJSON_GetObjectItemCaseSensitive(payload, "activities");
@@ -1021,11 +1144,17 @@ static void sendspin_handle_activate(const cJSON *payload) {
       cJSON_GetObjectItemCaseSensitive(payload, "active_roles");
 
   bool playback = false;
+  bool pairing = false;
   const cJSON *item = NULL;
   cJSON_ArrayForEach(item, activities) {
-    if (cJSON_IsString(item) &&
-        strcmp(cJSON_GetStringValue(item), "playback") == 0) {
+    if (!cJSON_IsString(item)) {
+      continue;
+    }
+    const char *activity = cJSON_GetStringValue(item);
+    if (strcmp(activity, "playback") == 0) {
       playback = true;
+    } else if (strcmp(activity, "pairing") == 0) {
+      pairing = true;
     }
   }
 
@@ -1051,12 +1180,21 @@ static void sendspin_handle_activate(const cJSON *payload) {
     }
   }
   ESP_LOGI(TAG,
-           "activated: playback=%s player@v1=%s metadata@v1=%s "
+           "activated: playback=%s pairing=%s player@v1=%s metadata@v1=%s "
            "controller@v1=%s",
-           playback ? "yes" : "no", s_role_player ? "yes" : "no",
-           s_role_metadata ? "yes" : "no", s_role_controller ? "yes" : "no");
+           playback ? "yes" : "no", pairing ? "yes" : "no",
+           s_role_player ? "yes" : "no", s_role_metadata ? "yes" : "no",
+           s_role_controller ? "yes" : "no");
 
   s_state = SENDSPIN_ACTIVATED;
+
+  /* A pairing activation carries no roles, so there is no player state worth
+   * reporting and the exchange gets the connection to itself. */
+  if (pairing) {
+    sendspin_begin_pairing(payload);
+    return;
+  }
+
   /* The server must not send audio before this first report. */
   sendspin_send_state();
 }
@@ -1155,6 +1293,15 @@ static void sendspin_handle_message(const char *json, size_t len,
     sendspin_handle_server_state(payload);
   } else if (strcmp(type, "server/command") == 0) {
     sendspin_handle_command(payload);
+  } else if (strcmp(type, "server/pair-finalize") == 0) {
+    sendspin_handle_pair_finalize();
+  } else if (strcmp(type, "pair/abort") == 0) {
+    const cJSON *reason = cJSON_GetObjectItemCaseSensitive(payload, "reason");
+    ESP_LOGW(TAG, "server aborted pairing: %s",
+             cJSON_IsString(reason) ? cJSON_GetStringValue(reason)
+                                    : "unspecified");
+    s_pair_pending = false;
+    sodium_memzero(s_pending_long_term, sizeof(s_pending_long_term));
   } else if (strcmp(type, "server/time") == 0) {
     sendspin_handle_server_time(payload, arrival_us);
   } else if (strcmp(type, "stream/start") == 0) {
@@ -1541,6 +1688,11 @@ esp_err_t sendspin_init(sendspin_activity_cb_t callback) {
 
   s_activity_cb = callback;
   ESP_LOGI(TAG, "client_id %s", s_client_id);
+  /* The pairing token is a standing credential -- anyone who reads it can
+   * adopt this device -- but it is only reachable by someone already on the
+   * network with access to the console or the web UI, which is the same
+   * "operator" trust boundary the specification assumes. */
+  ESP_LOGI(TAG, "pairing token %s", sendspin_psk_token());
   return ESP_OK;
 }
 
@@ -1605,4 +1757,12 @@ bool sendspin_send_command(sendspin_command_t cmd) {
 
 bool sendspin_is_playing(void) {
   return s_events_playing;
+}
+
+const char *sendspin_pairing_token(void) {
+  return sendspin_psk_token();
+}
+
+unsigned sendspin_paired_count(void) {
+  return (unsigned)sendspin_psk_record_count();
 }

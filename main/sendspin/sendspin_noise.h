@@ -75,6 +75,10 @@ typedef struct {
 const uint8_t *sendspin_noise_sentinel_psk(void);
 const char *sendspin_noise_sentinel_psk_id(void);
 
+/** psk_id of any PSK: base64url(SHA-256("sendspin-psk-id-v1" || psk)). */
+void sendspin_noise_psk_id(const uint8_t psk[SENDSPIN_NOISE_KEY_LEN],
+                           char out[SENDSPIN_NOISE_PSK_ID_LEN + 1]);
+
 /**
  * Begin a handshake.
  *

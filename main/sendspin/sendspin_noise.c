@@ -201,18 +201,22 @@ static void noise_derive_constants(void) {
   }
   crypto_hash_sha256(s_sentinel_psk, (const uint8_t *)SENTINEL_PSK_LABEL,
                      strlen(SENTINEL_PSK_LABEL));
+  sendspin_noise_psk_id(s_sentinel_psk, s_sentinel_psk_id);
+  s_constants_ready = true;
+}
 
+void sendspin_noise_psk_id(const uint8_t psk[SENDSPIN_NOISE_KEY_LEN],
+                           char out[SENDSPIN_NOISE_PSK_ID_LEN + 1]) {
   uint8_t id[32];
   crypto_hash_sha256_state st;
   crypto_hash_sha256_init(&st);
   crypto_hash_sha256_update(&st, (const uint8_t *)PSK_ID_LABEL,
                             strlen(PSK_ID_LABEL));
-  crypto_hash_sha256_update(&st, s_sentinel_psk, sizeof(s_sentinel_psk));
+  crypto_hash_sha256_update(&st, psk, SENDSPIN_NOISE_KEY_LEN);
   crypto_hash_sha256_final(&st, id);
 
-  sodium_bin2base64(s_sentinel_psk_id, sizeof(s_sentinel_psk_id), id,
-                    sizeof(id), sodium_base64_VARIANT_URLSAFE_NO_PADDING);
-  s_constants_ready = true;
+  sodium_bin2base64(out, SENDSPIN_NOISE_PSK_ID_LEN + 1, id, sizeof(id),
+                    sodium_base64_VARIANT_URLSAFE_NO_PADDING);
 }
 
 const uint8_t *sendspin_noise_sentinel_psk(void) {

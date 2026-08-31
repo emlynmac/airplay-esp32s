@@ -86,3 +86,14 @@ bool sendspin_send_command(sendspin_command_t cmd);
  * toggle in the protocol.
  */
 bool sendspin_is_playing(void);
+
+/**
+ * The version-0 pairing token for this device: "SP:0" followed by 103 base32
+ * characters carrying the client key and the pairing PSK.  Handing it to a
+ * server is what authorises that server to adopt the device, so treat it as a
+ * secret.
+ */
+const char *sendspin_pairing_token(void);
+
+/** How many servers this device is currently paired with. */
+unsigned sendspin_paired_count(void);
