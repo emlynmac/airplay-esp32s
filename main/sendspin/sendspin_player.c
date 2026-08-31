@@ -6,6 +6,8 @@
 #include "esp_heap_caps.h"
 #include "esp_log.h"
 #include "esp_timer.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
 
 #include "audio_engine_v2.h"
 #include "audio_output.h"
@@ -46,6 +48,10 @@ static bool s_engine_ready = false;
 static const sendspin_time_t *s_clock = NULL;
 
 static bool s_streaming = false;
+/* Set while the render hook is inside the engine. stream_end() runs on the
+ * WebSocket task and has to know that the playback task is not, before it
+ * resets the scheduler underneath it. */
+static bool s_rendering = false;
 static uint32_t s_epoch = 0;
 static uint32_t s_sample_rate = 44100;
 static uint8_t s_src_channels = 2;
@@ -360,14 +366,20 @@ void sendspin_player_stream_end(void) {
   if (!s_streaming) {
     return;
   }
-  s_streaming = false;
-  /* Drop the render hook before the engine is quiesced, so the playback task
-   * cannot observe a half-reset scheduler. */
+  /* Drop the render hook and let the playback task drain before the engine is
+   * quiesced, so it cannot observe a half-reset scheduler. */
+  __atomic_store_n(&s_streaming, false, __ATOMIC_SEQ_CST);
   audio_output_set_source(NULL);
+  /* A real stop on the I2S backend joins the playback task outright; the
+   * others have no task to join, so wait out an in-flight render too. */
+  audio_output_stop();
+  for (int i = 0; i < 20 && __atomic_load_n(&s_rendering, __ATOMIC_SEQ_CST);
+       i++) {
+    vTaskDelay(pdMS_TO_TICKS(5));
+  }
   audio_engine_v2_set_playing(&s_engine, false);
   sendspin_player_reset_alignment();
   s_epoch = audio_engine_v2_begin_epoch(&s_engine, esp_timer_get_time());
-  audio_output_stop();
   sendspin_player_close_decoder();
   ESP_LOGI(TAG,
            "stream end: %" PRIu64 " chunks, %" PRIu64 " frames, %" PRIu64
@@ -596,7 +608,15 @@ void sendspin_player_chunk(int64_t timestamp_us, const uint8_t *data,
 /* ------------------------------------------------------------------ */
 
 static size_t sendspin_player_read(int16_t *buffer, size_t samples) {
-  if (!s_engine_ready || !s_streaming || !buffer || samples == 0) {
+  if (!s_engine_ready || !buffer || samples == 0) {
+    return 0;
+  }
+
+  /* Claim before testing s_streaming, which stream_end() clears before it
+   * waits on this flag: whichever store lands first, the other side sees it. */
+  __atomic_store_n(&s_rendering, true, __ATOMIC_SEQ_CST);
+  if (!__atomic_load_n(&s_streaming, __ATOMIC_SEQ_CST)) {
+    __atomic_store_n(&s_rendering, false, __ATOMIC_SEQ_CST);
     return 0;
   }
 
@@ -609,11 +629,14 @@ static size_t sendspin_player_read(int16_t *buffer, size_t samples) {
                                &offset_ns)) {
     /* No usable clock estimate yet. Silence is the honest answer: the
      * scheduler cannot place this block on the server's timeline. */
+    __atomic_store_n(&s_rendering, false, __ATOMIC_SEQ_CST);
     return 0;
   }
 
-  return audio_engine_v2_render(&s_engine, playout_local_ns + offset_ns, buffer,
-                                samples);
+  const size_t rendered = audio_engine_v2_render(
+      &s_engine, playout_local_ns + offset_ns, buffer, samples);
+  __atomic_store_n(&s_rendering, false, __ATOMIC_SEQ_CST);
+  return rendered;
 }
 
 /* ------------------------------------------------------------------ */

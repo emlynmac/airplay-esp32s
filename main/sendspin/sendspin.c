@@ -1237,6 +1237,14 @@ static void sendspin_handle_stream_start(const cJSON *payload) {
   }
 
   if (sendspin_player_stream_start(&format) != ESP_OK) {
+    /* The decoder is closed before the reopen is attempted, so a format
+     * change that fails mid-stream leaves nothing to render. End the stream
+     * before handing the output back, or the renderer stays installed and
+     * fights the AirPlay playback task for it. */
+    if (sendspin_player_is_streaming()) {
+      sendspin_player_stream_end();
+      sendspin_events_connected(false);
+    }
     if (s_activity_cb) {
       s_activity_cb(false);
     }
@@ -2083,6 +2091,34 @@ static void sendspin_task(void *arg) {
 /*  Public API                                                         */
 /* ------------------------------------------------------------------ */
 
+/* Undo a partial sendspin_init(). s_rx doubles as the "initialised" flag for
+ * both the early return above and sendspin_register(), so every failure has
+ * to leave it NULL or a half-built client is advertised on the network. */
+static void sendspin_init_cleanup(void) {
+  free(s_rx);
+  free(s_asm);
+  free(s_pt);
+  free(s_tx_plain);
+  free(s_tx_cipher);
+  s_rx = NULL;
+  s_asm = NULL;
+  s_pt = NULL;
+  s_tx_plain = NULL;
+  s_tx_cipher = NULL;
+  if (s_lock) {
+    vSemaphoreDelete(s_lock);
+    s_lock = NULL;
+  }
+  if (s_tx_lock) {
+    vSemaphoreDelete(s_tx_lock);
+    s_tx_lock = NULL;
+  }
+  if (s_cmd_queue) {
+    vQueueDelete(s_cmd_queue);
+    s_cmd_queue = NULL;
+  }
+}
+
 esp_err_t sendspin_init(sendspin_activity_cb_t callback) {
   if (s_rx) {
     return ESP_OK;
@@ -2097,6 +2133,7 @@ esp_err_t sendspin_init(sendspin_activity_cb_t callback) {
   s_tx_lock = xSemaphoreCreateMutex();
   s_cmd_queue = xQueueCreate(4, sizeof(uint8_t));
   if (!s_lock || !s_tx_lock || !s_cmd_queue) {
+    sendspin_init_cleanup();
     return ESP_ERR_NO_MEM;
   }
 
@@ -2111,26 +2148,14 @@ esp_err_t sendspin_init(sendspin_activity_cb_t callback) {
   s_tx_cipher = heap_caps_malloc(SENDSPIN_TX_PLAIN_MAX + SENDSPIN_NOISE_TAG_LEN,
                                  MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
   if (!s_rx || !s_asm || !s_pt || !s_tx_plain || !s_tx_cipher) {
-    free(s_rx);
-    free(s_asm);
-    free(s_pt);
-    free(s_tx_plain);
-    free(s_tx_cipher);
-    s_rx = NULL;
-    s_asm = NULL;
-    s_pt = NULL;
-    s_tx_plain = NULL;
-    s_tx_cipher = NULL;
-    vSemaphoreDelete(s_lock);
-    s_lock = NULL;
-    vSemaphoreDelete(s_tx_lock);
-    s_tx_lock = NULL;
+    sendspin_init_cleanup();
     return ESP_ERR_NO_MEM;
   }
 
   esp_err_t err = sendspin_load_identity();
   if (err != ESP_OK) {
     ESP_LOGE(TAG, "identity setup failed: %s", esp_err_to_name(err));
+    sendspin_init_cleanup();
     return err;
   }
 
@@ -2138,6 +2163,7 @@ esp_err_t sendspin_init(sendspin_activity_cb_t callback) {
   err = sendspin_player_init(&s_clock);
   if (err != ESP_OK) {
     ESP_LOGE(TAG, "player init failed: %s", esp_err_to_name(err));
+    sendspin_init_cleanup();
     return err;
   }
 

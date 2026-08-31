@@ -54,7 +54,14 @@ esp_err_t playback_control_init(void) {
 }
 
 void playback_control_set_source(playback_source_t source) {
-  s_muted = false;
+  if (s_muted) {
+    // The muting source is on its way out, so clearing the flag alone would
+    // leave the DAC parked at the mute floor for whoever takes the output
+    // next. Restore the level here rather than emitting a playing event.
+    s_muted = false;
+    settings_set_volume(s_pre_mute_db);
+    dac_set_volume(s_pre_mute_db);
+  }
   s_source = source;
   ESP_LOGI(TAG, "Source set to %d", source);
 }

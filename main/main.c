@@ -30,6 +30,7 @@
 
 #ifdef CONFIG_SENDSPIN_ENABLE
 #include "sendspin.h"
+#include "sendspin_player.h"
 #endif
 
 #ifdef CONFIG_DAC_TAS57XX
@@ -180,13 +181,17 @@ static void network_monitor_task(void *pvParameters) {
     if (has_network) {
       ESP_LOGI(TAG, "Network up (eth=%s, wifi=%s)", eth_up ? "yes" : "no",
                wifi_up ? "yes" : "no");
-      bool usb_owns_output = false;
-#ifdef CONFIG_USB_AUDIO_SINK
-      usb_owns_output = usb_audio_sink_is_streaming();
-#endif
       // Starting AirPlay here would put its playback task back on I2S
-      // underneath the USB writer; the sink starts it when the host goes idle.
-      if (!usb_owns_output) {
+      // underneath whoever is already driving it; each owner restarts the
+      // services itself once it goes idle.
+      bool output_owned = false;
+#ifdef CONFIG_USB_AUDIO_SINK
+      output_owned = output_owned || usb_audio_sink_is_streaming();
+#endif
+#ifdef CONFIG_SENDSPIN_ENABLE
+      output_owned = output_owned || sendspin_player_is_streaming();
+#endif
+      if (!output_owned) {
         start_airplay_services();
       }
       if (dns_running) {
