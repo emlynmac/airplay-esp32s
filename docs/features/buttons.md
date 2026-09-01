@@ -39,6 +39,7 @@ device.
 | Volume down | Decrease volume, roughly 3 dB per step, auto-repeats |
 | Next track | Skip to the next track |
 | Previous | Go to the previous track |
+| Rotary encoder | Clockwise raises the volume, anti-clockwise lowers it |
 
 Volume buttons auto-repeat: hold for 500 ms and the action repeats every 200 ms.
 
@@ -66,6 +67,36 @@ Input is interrupt-driven with a 50 ms software debounce, so there is no polling
 Actions are dispatched to whichever source is active: DACP for AirPlay v1, AVRCP
 passthrough for Bluetooth.
 
+### Rotary encoder
+
+A quadrature rotary encoder — an EC11 or similar — can be used for volume instead of, or
+alongside, the volume buttons. Wire its two signal pins to the channel A and channel B
+GPIOs and its common pin to GND.
+
+```mermaid
+flowchart LR
+    A["GPIO — channel A"]
+    B["GPIO — channel B"]
+    ENC["Rotary encoder"]
+    GND["GND"]
+
+    A --- ENC
+    B --- ENC
+    ENC --- GND
+```
+
+The same pull-up rules apply as for buttons, so GPIOs 34–39 need external pull-ups on both
+channels. The encoder is decoded in the GPIO interrupt handler with a quadrature state
+machine, and one detent — four quadrature transitions on a typical encoder — produces one
+volume step.
+
+!!! tip "Turning the wrong way?"
+
+    If clockwise lowers the volume, swap the channel A and channel B GPIOs.
+
+Many encoder modules also have a push switch. It is a plain button, so wire it to any of
+the button GPIOs above — the play/pause pin is the usual choice.
+
 ## Configuration
 
 All button GPIOs default to `-1`, meaning disabled.
@@ -89,6 +120,13 @@ pio run -e <env> -t menuconfig
 | Volume down button GPIO | -1 | GPIO for volume down, auto-repeats |
 | Next track button GPIO | -1 | GPIO for next track |
 | Previous track button GPIO | -1 | GPIO for previous track |
+| Rotary encoder channel A GPIO | -1 | GPIO for encoder channel A |
+| Rotary encoder channel B GPIO | -1 | GPIO for encoder channel B |
+
+!!! note
+
+    Both rotary GPIOs must be set. If either is left at `-1` the encoder is compiled out
+    entirely.
 
 !!! note
 

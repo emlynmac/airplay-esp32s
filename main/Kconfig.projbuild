@@ -562,5 +562,25 @@ menu "Airplay ESP Configuration"
                 When enabled, a single play/pause press is deferred until the
                 double-click window expires. Two presses within that window
                 cycle the audio channel mode instead of play/pause.
+
+        config BTN_ROTARY_A_GPIO
+            int "Rotary encoder channel A GPIO (-1 to disable)"
+            default -1
+            range -1 48
+            help
+                GPIO pin for channel A of a quadrature rotary encoder
+                (active-low, internal pull-up, common pin to GND). Turning the
+                encoder clockwise raises the volume, anti-clockwise lowers it.
+                Both channel A and channel B must be set for the encoder to be
+                enabled. Set to -1 to disable.
+
+        config BTN_ROTARY_B_GPIO
+            int "Rotary encoder channel B GPIO (-1 to disable)"
+            default -1
+            range -1 48
+            help
+                GPIO pin for channel B of a quadrature rotary encoder
+                (active-low, internal pull-up, common pin to GND).
+                Set to -1 to disable.
     endmenu
 endmenu
