@@ -70,12 +70,12 @@ input:focus{outline:none;border-color:#e94560}
 <div style='font-size:12px;opacity:0.7;margin-top:-8px;margin-bottom:6px'>Some software only works with AirPlay v1.<br>Apple devices still work in that mode, but without v2 features, such as multi-speaker sync.<br>Volume / track seek hardware buttons require version 1.</div>
 <div id='airplay-msg'></div>
 <div id='sendspin-group' style='display:none'>
-<div class='form-group' style='margin-top:18px'><label for='sendspin-enable'>Sendspin Player</label>
+<div class='form-group' style='margin-top:18px'><label for='sendspin-enable'>Native SendSpin Client Support</label>
 <select id='sendspin-enable' onchange='saveSendspin()'>
 <option value='0'>Disabled</option>
 <option value='1'>Enabled</option>
 </select></div>
-<div style='font-size:12px;opacity:0.7;margin-top:-8px;margin-bottom:6px'>Experimental. Lets a Sendspin server such as Music Assistant play to this device.<br>Takes effect after a restart, and holds about 400 KB of PSRAM while enabled.<br><span id='sendspin-pin'></span></div>
+<div style='font-size:12px;opacity:0.7;margin-top:-8px;margin-bottom:6px'>Experimental. Lets a SendSpin server such as Music Assistant play to this device.<br>Takes effect after a restart.<br><span id='sendspin-pin'></span></div>
 <div id='sendspin-msg'></div></div>
 <div class='form-group' style='margin-top:18px'><label for='led-brightness'>LED Brightness</label>
 <div class='slider-row'><input type='range' id='led-brightness' min='0' max='255' value='128' oninput='document.getElementById("led-pct").textContent=Math.round(this.value/255*100)+"%"'>

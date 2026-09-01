@@ -1,8 +1,0 @@
-# Sendspin player role, layered on top of a board's own defaults.
-#
-# Experimental. The transport is encrypted (Noise KKpsk2) and the board can
-# pair by static PIN or pairing PSK; PCM and FLAC are decoded everywhere and
-# Opus on the S3 and P4. Enabling it costs the playout timeline (384 KB, or
-# 2 MB on an Opus build) plus 64 KB for the WebSocket buffers, and adds two
-# HTTP server sockets.
-CONFIG_SENDSPIN_ENABLE=y

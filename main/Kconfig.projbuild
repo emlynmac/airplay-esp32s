@@ -566,22 +566,27 @@ menu "Airplay ESP Configuration"
 
     menu "Sendspin"
         config SENDSPIN_ENABLE
-            bool "Enable Sendspin player role (experimental)"
-            default n
+            bool "Build the Sendspin player role (experimental)"
+            default y
             depends on SPIRAM
             select HTTPD_WS_POST_HANDSHAKE_CB_SUPPORT
             help
-                Advertise _sendspin._tcp and accept a Sendspin server on the
-                web server's WebSocket endpoint, presenting the device as a
-                Sendspin "player@v1" client.
+                Build the Sendspin "player@v1" client, which presents the
+                device to a Sendspin server on the web server's WebSocket
+                endpoint and advertises _sendspin._tcp.
 
-                This first milestone is experimental: PCM, FLAC and (where
-                the SoC can keep up) Opus are decoded, and pairing is by
-                static PIN or pairing PSK. It shares the I2S output with
-                AirPlay and Bluetooth, so only one of the three can play at
-                a time.
+                This only decides whether the code is present. It stays
+                switched off until it is turned on per device from the web
+                UI, and nothing is allocated until then, so leaving it on
+                costs about 73 KB of flash and no RAM.
 
-                Needs SPIRAM for its own playout timeline.
+                Experimental: PCM, FLAC and (where the SoC can keep up) Opus
+                are decoded, and pairing is by static PIN or pairing PSK. It
+                shares the I2S output with AirPlay and Bluetooth, so only one
+                of the three can play at a time.
+
+                Turn off on a board whose app partition cannot spare the
+                flash. Needs SPIRAM for its own playout timeline.
 
         config SENDSPIN_OPUS
             bool "Offer Opus as well as FLAC and PCM"

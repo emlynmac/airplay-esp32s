@@ -262,50 +262,15 @@ same arrangement Bluetooth and [USB audio](usb-audio.md) already have:
 - While Bluetooth or the USB host is streaming, the board reports itself **unavailable** to
   the Sendspin server, so it is skipped rather than dropped mid-song
 
-## Building
-
-Sendspin is off by default. Layer `config/sdkconfig.defaults.sendspin` onto a board's own
-defaults, or use the ready-made environment:
-
-```bash
-pio run -e esp32s3-sendspin -t upload
-```
-
-It needs **PSRAM**, so it is unavailable on boards without it.
-
-The `squeezeamp` and `squeezeamp-bt` images ship with it compiled in, so nothing has to be
-rebuilt to try it there — see [Turning it on](#turning-it-on) below. `squeezeamp-4m` is
-excluded: its app partition is only 1.92 MB.
-
-| Option | Default | Purpose |
-| --- | --- | --- |
-| `CONFIG_SENDSPIN_ENABLE` | `n` | Build and advertise the player role |
-| `CONFIG_SENDSPIN_OPUS` | `y` on S3/P4 | Offer Opus as well as FLAC and PCM |
-| `CONFIG_SENDSPIN_TIMELINE_BLOCKS` | `1024` with Opus, else `192` | Playout depth, in 512-frame blocks |
-| `CONFIG_SENDSPIN_RX_BUFFER_SIZE` | `32768` | Largest message accepted from the server |
-| `CONFIG_SENDSPIN_TIME_SYNC_INTERVAL_MS` | `2000` | Steady-state clock sync interval |
-
-The defaults cost roughly **448 KB of PSRAM**: 384 KB for about 2.2 seconds of playout
-timeline, and 64 KB for the receive and reassembly buffers. A compressed stream takes a
-further 64 KB of decoder scratch, allocated when the stream starts and released when it
-ends.
-
-An Opus build is much hungrier, because the timeline has to cover how far ahead the
-server will run: 1024 blocks is **2 MB** of playout timeline. Enabling Opus also adds
-8 KB to the web server task's stack, since libopus keeps its CELT scratch on the stack
-and the decode runs on the task serving the WebSocket.
-
 ## Turning it on
 
-`CONFIG_SENDSPIN_ENABLE` only decides whether the code is *present*. A firmware that has
-it still starts with Sendspin **switched off**, and there is a **Sendspin Player** control
-under Device Settings in the web UI to turn it on. The section is hidden entirely on a
-firmware built without it.
+Sendspin is built into every firmware that has PSRAM, but it starts **switched off**. Use
+the **Native SendSpin Client Support** control under Device Settings in the web UI to turn
+it on. The section is hidden on a firmware built without it.
 
 Like the AirPlay mode setting, it **takes effect on the next restart** — the WebSocket
-endpoint, the mDNS record and the playout timeline are all built once at startup, and the
-timeline is the bulk of that 448 KB. While it is off none of that is allocated, which is
-what makes it safe to compile in on a board where the memory would otherwise be missed.
+endpoint, the mDNS record and the playout timeline are all built once at startup. While it
+is off none of that is allocated, which is what makes it safe to ship on by default.
 
 Over HTTP:
 
@@ -323,6 +288,32 @@ curl -s -X POST http://<device>/api/system/restart
 `/api/system/info` reports `sendspin_supported` (compiled in), `sendspin_enabled` (the
 saved setting) and `sendspin_active` (whether it is actually running this boot). The
 pairing PIN and token are only meaningful once it is active.
+
+## Building
+
+Nothing has to be built to try Sendspin — every shipping image carries it except
+`smartamp`, and `esp32wrover-dev` alongside it. Both pair Bluetooth with a 1.92 MB app
+slot and have only 4–5 % of it free before Sendspin is added, which is too little to
+absorb any later growth. It also needs **PSRAM**, so it is absent from a board configured
+without any.
+
+| Option | Default | Purpose |
+| --- | --- | --- |
+| `CONFIG_SENDSPIN_ENABLE` | `y` where there is PSRAM | Build the player role, ~73 KB of flash |
+| `CONFIG_SENDSPIN_OPUS` | `y` on S3/P4 | Offer Opus as well as FLAC and PCM |
+| `CONFIG_SENDSPIN_TIMELINE_BLOCKS` | `1024` with Opus, else `192` | Playout depth, in 512-frame blocks |
+| `CONFIG_SENDSPIN_RX_BUFFER_SIZE` | `32768` | Largest message accepted from the server |
+| `CONFIG_SENDSPIN_TIME_SYNC_INTERVAL_MS` | `2000` | Steady-state clock sync interval |
+
+Once enabled at runtime, the defaults cost roughly **448 KB of PSRAM**: 384 KB for about
+2.2 seconds of playout timeline, and 64 KB for the receive and reassembly buffers. A
+compressed stream takes a further 64 KB of decoder scratch, allocated when the stream
+starts and released when it ends.
+
+An Opus build is much hungrier, because the timeline has to cover how far ahead the
+server will run: 1024 blocks is **2 MB** of playout timeline. Enabling Opus also adds
+8 KB to the web server task's stack, since libopus keeps its CELT scratch on the stack
+and the decode runs on the task serving the WebSocket.
 
 ## Identity
 

@@ -39,8 +39,3 @@ CONFIG_LED_STATUS_STANDBY_BLINK_SLOW=y
 # entries cap outstanding data at ~6*MSS = 8640 B.
 CONFIG_LWIP_TCP_WND_DEFAULT=15840
 CONFIG_LWIP_TCP_RECVMBOX_SIZE=16
-
-# Sendspin is compiled in but starts disabled: it is opt-in per device from
-# the web UI, and costs nothing until someone turns it on. Opus stays off,
-# because the original ESP32 cannot decode it in realtime.
-CONFIG_SENDSPIN_ENABLE=y
