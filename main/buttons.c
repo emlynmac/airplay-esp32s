@@ -272,27 +272,42 @@ static const int8_t rotary_delta[16] = {0,  -1, 1, 0, 1, 0, 0,  -1,
 static uint8_t s_rotary_state;
 static int8_t s_rotary_accum;
 
-static void IRAM_ATTR rotary_isr_handler(void *arg) {
-  (void)arg;
-  uint8_t state = (uint8_t)((gpio_get_level(CONFIG_BTN_ROTARY_A_GPIO) << 1) |
-                            gpio_get_level(CONFIG_BTN_ROTARY_B_GPIO));
+// Feeds one new (A << 1) | B reading in. Returns +1 for a clockwise detent,
+// -1 for anti-clockwise, 0 while still mid-detent.
+static int IRAM_ATTR rotary_feed(uint8_t state) {
   int8_t delta = rotary_delta[(s_rotary_state << 2) | state];
   s_rotary_state = state;
   if (delta == 0) {
-    return;
+    return 0;
   }
 
   // Signed accumulation, so bouncing back and forth cancels itself out.
   s_rotary_accum += delta;
-  if (s_rotary_accum <= -ROTARY_STEPS_PER_DETENT ||
-      s_rotary_accum >= ROTARY_STEPS_PER_DETENT) {
-    BaseType_t woken = pdFALSE;
-    post_button_action_from_isr(
-        s_rotary_accum > 0 ? BTN_VOLUME_UP : BTN_VOLUME_DOWN, &woken);
+  if (s_rotary_accum >= ROTARY_STEPS_PER_DETENT) {
     s_rotary_accum = 0;
-    if (woken) {
-      portYIELD_FROM_ISR();
-    }
+    return 1;
+  }
+  if (s_rotary_accum <= -ROTARY_STEPS_PER_DETENT) {
+    s_rotary_accum = 0;
+    return -1;
+  }
+  return 0;
+}
+
+static void IRAM_ATTR rotary_isr_handler(void *arg) {
+  (void)arg;
+  uint8_t state = (uint8_t)((gpio_get_level(CONFIG_BTN_ROTARY_A_GPIO) << 1) |
+                            gpio_get_level(CONFIG_BTN_ROTARY_B_GPIO));
+  int step = rotary_feed(state);
+  if (step == 0) {
+    return;
+  }
+
+  BaseType_t woken = pdFALSE;
+  post_button_action_from_isr(step > 0 ? BTN_VOLUME_UP : BTN_VOLUME_DOWN,
+                              &woken);
+  if (woken) {
+    portYIELD_FROM_ISR();
   }
 }
 
