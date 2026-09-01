@@ -262,6 +262,14 @@ same arrangement Bluetooth and [USB audio](usb-audio.md) already have:
 - While Bluetooth or the USB host is streaming, the board reports itself **unavailable** to
   the Sendspin server, so it is skipped rather than dropped mid-song
 
+!!! warning "Music Assistant keeps the output"
+
+    "When it ends" means a `stream/end` message or a closed WebSocket, and there is no idle
+    timeout behind them — a server that stops sending audio without saying so still owns
+    the output. Music Assistant is one of those: it holds its connection open indefinitely,
+    so once it has played to the board, AirPlay and Bluetooth stay suspended. Remove the
+    player in Music Assistant, or restart the board, to get them back.
+
 ## Turning it on
 
 Sendspin is built into every firmware that has PSRAM, but it starts **switched off**. Use
