@@ -311,16 +311,32 @@ static void IRAM_ATTR rotary_isr_handler(void *arg) {
   }
 }
 
-static void configure_rotary(void) {
+// Configured a pin at a time, since the two channels may not agree on whether
+// an internal pull-up is available.
+static void configure_rotary_pin(int gpio) {
+  bool has_internal_pullup = (gpio < 34);
   gpio_config_t io_conf = {
-      .pin_bit_mask = (1ULL << CONFIG_BTN_ROTARY_A_GPIO) |
-                      (1ULL << CONFIG_BTN_ROTARY_B_GPIO),
+      .pin_bit_mask = (1ULL << gpio),
       .mode = GPIO_MODE_INPUT,
-      .pull_up_en = GPIO_PULLUP_ENABLE,
+      .pull_up_en =
+          has_internal_pullup ? GPIO_PULLUP_ENABLE : GPIO_PULLUP_DISABLE,
       .pull_down_en = GPIO_PULLDOWN_DISABLE,
       .intr_type = GPIO_INTR_ANYEDGE,
   };
   gpio_config(&io_conf);
+  gpio_isr_handler_add(gpio, rotary_isr_handler, NULL);
+
+  if (!has_internal_pullup) {
+    ESP_LOGW(TAG,
+             "Rotary encoder on GPIO %d: no internal pull-up, needs "
+             "external",
+             gpio);
+  }
+}
+
+static void configure_rotary(void) {
+  configure_rotary_pin(CONFIG_BTN_ROTARY_A_GPIO);
+  configure_rotary_pin(CONFIG_BTN_ROTARY_B_GPIO);
 
   // Seed the state machine from the resting position, or the first edge
   // decodes against a phantom transition.
@@ -328,15 +344,6 @@ static void configure_rotary(void) {
                              gpio_get_level(CONFIG_BTN_ROTARY_B_GPIO));
   s_rotary_accum = 0;
 
-  gpio_isr_handler_add(CONFIG_BTN_ROTARY_A_GPIO, rotary_isr_handler, NULL);
-  gpio_isr_handler_add(CONFIG_BTN_ROTARY_B_GPIO, rotary_isr_handler, NULL);
-
-#if CONFIG_BTN_ROTARY_A_GPIO >= 34 || CONFIG_BTN_ROTARY_B_GPIO >= 34
-  ESP_LOGW(TAG,
-           "Rotary encoder on GPIO %d/%d: GPIOs 34-39 have no internal "
-           "pull-up, external ones are required",
-           CONFIG_BTN_ROTARY_A_GPIO, CONFIG_BTN_ROTARY_B_GPIO);
-#endif
   ESP_LOGI(TAG, "Rotary encoder on GPIO %d (A) / %d (B)",
            CONFIG_BTN_ROTARY_A_GPIO, CONFIG_BTN_ROTARY_B_GPIO);
 }
