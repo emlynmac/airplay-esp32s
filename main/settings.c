@@ -37,6 +37,7 @@ static const char *TAG = "settings";
 // sender that already agrees with the level we report never corrects it.
 static float g_volume_db = -24.0f; /* default: 20 % */
 static bool g_volume_loaded = false;
+static bool g_volume_dirty = false;
 
 #ifdef CONFIG_BT_A2DP_ENABLE
 static uint8_t g_bt_volume = 25; /* default: 20 % */
@@ -114,11 +115,12 @@ esp_err_t settings_set_volume(float volume_db) {
 
   g_volume_db = volume_db;
   g_volume_loaded = true;
+  g_volume_dirty = true;
   return ESP_OK;
 }
 
 esp_err_t settings_persist_volume(void) {
-  if (!g_volume_loaded) {
+  if (!g_volume_loaded || !g_volume_dirty) {
     return ESP_OK;
   }
 
@@ -138,6 +140,7 @@ esp_err_t settings_persist_volume(void) {
   nvs_close(nvs);
 
   if (err == ESP_OK) {
+    g_volume_dirty = false;
     ESP_LOGI(TAG, "Persisted volume: %.2f dB", g_volume_db);
   } else {
     ESP_LOGE(TAG, "Failed to persist volume: %s", esp_err_to_name(err));

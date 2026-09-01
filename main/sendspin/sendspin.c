@@ -641,6 +641,9 @@ static void sendspin_events_playing(bool playing) {
     return;
   }
   s_events_playing = playing;
+  if (!playing) {
+    settings_persist_volume();
+  }
   rtsp_events_emit(playing ? RTSP_EVENT_PLAYING : RTSP_EVENT_PAUSED, NULL);
 }
 
@@ -658,6 +661,7 @@ static void sendspin_events_connected(bool connected) {
   s_events_playing = false;
   memset(&s_meta, 0, sizeof(s_meta));
   s_meta_pending_valid = false;
+  settings_persist_volume();
   rtsp_events_emit(RTSP_EVENT_DISCONNECTED, NULL);
 }
 

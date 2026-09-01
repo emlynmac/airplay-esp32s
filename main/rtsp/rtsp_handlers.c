@@ -1840,6 +1840,7 @@ static void handle_teardown(int socket, rtsp_conn_t *conn,
   // waiting for the listener task to exit).
   if (has_streams) {
     audio_receiver_set_playing(false);
+    settings_persist_volume();
     rtsp_events_emit(RTSP_EVENT_PAUSED, NULL);
   }
   audio_receiver_stop();
@@ -1929,6 +1930,7 @@ static void handle_setrateanchortime(int socket, rtsp_conn_t *conn,
     conn->stream_paused = true;
     audio_receiver_pause();
     audio_output_flush();
+    settings_persist_volume();
   } else {
     ESP_LOGI(TAG, "SETRATEANCHORTIME: rate=%.1f -> RESUMING (was_paused=%d)",
              rate, conn->stream_paused);

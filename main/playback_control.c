@@ -54,6 +54,8 @@ esp_err_t playback_control_init(void) {
 }
 
 void playback_control_set_source(playback_source_t source) {
+  // Whatever the outgoing source left the level at is worth keeping.
+  settings_persist_volume();
   if (s_muted) {
     // The muting source is on its way out, so clearing the flag alone would
     // leave the DAC parked at the mute floor for whoever takes the output
@@ -301,7 +303,8 @@ void playback_control_set_muted(bool muted) {
 void playback_control_set_volume_percent(int percent) {
   const float db = clamp_volume(dacp_percent_to_db((float)percent));
   apply_level(db);
-  settings_persist_volume();
+  // Not persisted here: a server dragging a slider sends a command per step.
+  // The level is committed at the next pause or when the session ends.
   ESP_LOGI(TAG, "Volume set to %d%% (%.1f dB)%s", percent, db,
            s_muted ? " (muted)" : "");
 }

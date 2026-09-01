@@ -30,7 +30,10 @@ esp_err_t settings_set_volume(float volume_db);
 
 /**
  * Persist the current cached volume to NVS.
- * Call once at session disconnect rather than on every change.
+ *
+ * Call at a pause or at the end of a session, not on every change: a volume
+ * ramp is dozens of distinct levels and each one would be a flash write.
+ * Does nothing if the level has not moved since the last persist.
  */
 esp_err_t settings_persist_volume(void);
 
