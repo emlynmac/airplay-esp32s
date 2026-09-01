@@ -2,7 +2,9 @@
 
 ## Requirements
 
-ESP-IDF **v5.5 or newer**, tested against v5.5.2. Clone with submodules:
+ESP-IDF **v5.5.5 or newer**. Sendspin, which is built into every image by default,
+needs the WebSocket post-handshake callback that landed in v5.5.5; on an older 5.5.x
+release build with `CONFIG_SENDSPIN_ENABLE=n`. Clone with submodules:
 
 ```bash
 git clone --recursive https://github.com/rbouteiller/airplay-esp32

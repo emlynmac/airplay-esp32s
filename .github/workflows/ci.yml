@@ -74,7 +74,7 @@ jobs:
       - name: Build and generate compile_commands.json
         uses: espressif/esp-idf-ci-action@v1
         with:
-          esp_idf_version: v5.5
+          esp_idf_version: v5.5.5
           target: esp32s3
           command: idf.py -DSDKCONFIG_DEFAULTS="config/sdkconfig.defaults;config/sdkconfig.defaults.esp32s3" build
 
@@ -125,7 +125,7 @@ jobs:
       - name: Build ${{ matrix.name }} output backend
         uses: espressif/esp-idf-ci-action@v1
         with:
-          esp_idf_version: v5.5
+          esp_idf_version: v5.5.5
           target: ${{ matrix.target }}
           command: idf.py -DSDKCONFIG_DEFAULTS="${{ matrix.sdkconfig }}" build
 

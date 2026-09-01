@@ -27,6 +27,13 @@
 #include "spiram_task.h"
 #include "wifi.h"
 
+/* The post-handshake callback is the only way to see a real client arrive; it
+ * landed in ESP-IDF v5.5.5. */
+#ifndef CONFIG_HTTPD_WS_POST_HANDSHAKE_CB_SUPPORT
+#error \
+    "Sendspin needs ESP-IDF v5.5.5 or newer -- set CONFIG_SENDSPIN_ENABLE=n to build on an older release"
+#endif
+
 static const char *TAG = "sendspin";
 
 #define SENDSPIN_WS_PATH       "/sendspin"
@@ -2215,6 +2222,9 @@ bool sendspin_is_streaming(void) {
 }
 
 void sendspin_set_output_available(bool available) {
+  if (!s_lock) {
+    return; /* compiled in but never started */
+  }
   /* Called from whichever task noticed the takeover -- the USB writer or the
    * Bluetooth stack -- so it races both the tick and the httpd task. */
   if (!sendspin_lock()) {
@@ -2266,6 +2276,9 @@ unsigned sendspin_paired_count(void) {
 }
 
 esp_err_t sendspin_forget_pairings(void) {
+  if (!s_lock) {
+    return ESP_ERR_INVALID_STATE;
+  }
   if (!sendspin_lock()) {
     return ESP_ERR_TIMEOUT;
   }
@@ -2281,6 +2294,9 @@ esp_err_t sendspin_forget_pairings(void) {
 }
 
 esp_err_t sendspin_reset_identity(void) {
+  if (!s_lock) {
+    return ESP_ERR_INVALID_STATE;
+  }
   if (!sendspin_lock()) {
     return ESP_ERR_TIMEOUT;
   }

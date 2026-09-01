@@ -54,8 +54,6 @@ esp_err_t playback_control_init(void) {
 }
 
 void playback_control_set_source(playback_source_t source) {
-  // Whatever the outgoing source left the level at is worth keeping.
-  settings_persist_volume();
   if (s_muted) {
     // The muting source is on its way out, so clearing the flag alone would
     // leave the DAC parked at the mute floor for whoever takes the output
@@ -64,6 +62,8 @@ void playback_control_set_source(playback_source_t source) {
     settings_set_volume(s_pre_mute_db);
     dac_set_volume(s_pre_mute_db);
   }
+  // After the restore, so a level changed while muted is what gets written.
+  settings_persist_volume();
   s_source = source;
   ESP_LOGI(TAG, "Source set to %d", source);
 }

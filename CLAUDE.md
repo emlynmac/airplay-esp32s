@@ -169,7 +169,7 @@ components/
 
 ## Code Quality
 
-**Requirements**: ESP-IDF >= 5.5 (tested against v5.5.2). Older versions may need workarounds.
+**Requirements**: ESP-IDF >= 5.5.5. Sendspin needs `ws_post_handshake_cb`, which only landed in v5.5.5 — on an older 5.5.x the build dies in `sendspin_register()` unless `CONFIG_SENDSPIN_ENABLE=n`. The CI workflows pin the same version.
 
 **Formatting**: LLVM-style, 2-space indent, 80-char column limit. See `.clang-format`.
 

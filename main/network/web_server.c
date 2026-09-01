@@ -1138,6 +1138,13 @@ static esp_err_t sendspin_unpair_handler(httpd_req_t *req) {
   }
 
   const esp_err_t err = sendspin_forget_pairings();
+  if (err == ESP_ERR_INVALID_STATE) {
+    httpd_resp_set_status(req, "409 Conflict");
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_sendstr(
+        req, "{\"success\":false,\"error\":\"Sendspin is not running\"}");
+    return ESP_OK;
+  }
   if (err != ESP_OK) {
     httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR,
                         esp_err_to_name(err));
@@ -1160,6 +1167,13 @@ static esp_err_t sendspin_unpair_handler(httpd_req_t *req) {
 
 static esp_err_t sendspin_reset_identity_handler(httpd_req_t *req) {
   const esp_err_t err = sendspin_reset_identity();
+  if (err == ESP_ERR_INVALID_STATE) {
+    httpd_resp_set_status(req, "409 Conflict");
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_sendstr(
+        req, "{\"success\":false,\"error\":\"Sendspin is not running\"}");
+    return ESP_OK;
+  }
   if (err != ESP_OK) {
     httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR,
                         esp_err_to_name(err));

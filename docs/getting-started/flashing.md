@@ -7,7 +7,7 @@ another, use the browser installer.
 | --- | --- | --- |
 | **[A — Browser](#option-a-install-from-your-browser)** | You just want a working speaker | Chrome, Edge or Opera |
 | **[B — PlatformIO](#option-b-platformio)** | You want to change build settings, or your board has no prebuilt binary | Python, a clone of the repo |
-| **[C — ESP-IDF](#option-c-esp-idf)** | You already work with ESP-IDF | ESP-IDF v5.5+ |
+| **[C — ESP-IDF](#option-c-esp-idf)** | You already work with ESP-IDF | ESP-IDF v5.5.5+ |
 
 ## Option A — Install from your browser
 
@@ -277,7 +277,7 @@ Replace `esp32s3` with whichever environment matches your hardware — see
 ## Option C — ESP-IDF
 
 ```bash
-# 1. Install ESP-IDF v5.5 or newer:
+# 1. Install ESP-IDF v5.5.5 or newer:
 #    https://docs.espressif.com/projects/esp-idf/en/latest/esp32/get-started/
 
 # 2. Clone the project, including submodules
