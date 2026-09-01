@@ -6,6 +6,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ESP32 AirPlay 2 Receiver — firmware that turns ESP32/ESP32-S2/ESP32-S3/ESP32-C5/ESP32-P4 boards into AirPlay 2 speakers. Supports ALAC and AAC decoding, Bluetooth A2DP (ESP32 only), USB Audio Class in both directions, S/PDIF, W5500 Ethernet (Esparagus Audio Brick), OLED/TFT displays, hardware buttons, and OTA updates. The documentation site also lives in this repo, under `docs/`.
 
+**Every supported board must have PSRAM.** A module without it will not run this firmware — the jitter buffer, the AAC decoder's scratch and the timeline all live in external RAM.
+
 ## Build & Flash
 
 **PlatformIO** (recommended):
@@ -95,6 +97,10 @@ main/
 │   ├── hap_crypto.c        # HAP encryption
 │   └── srp.c               # SRP-6a key exchange
 ├── plist/                  # Apple Property List parsing
+├── sendspin/               # Sendspin player role (Kconfig-gated, experimental)
+│   ├── sendspin.c          # WebSocket endpoint, protocol state machine, mDNS
+│   ├── sendspin_time.c     # Server clock estimator (offset + skew least-squares fit)
+│   └── sendspin_player.c   # Re-blocks chunks into its own audio_engine_v2 timeline
 ├── usb/                    # TinyUSB composite device (UAC + HID transport controls)
 ├── network/                # Network stack
 │   ├── wifi.c              # WiFi AP+STA, captive portal, auto-reconnect
@@ -140,12 +146,16 @@ components/
 
 ## Key Conventions
 
+- **PSRAM is not optional**: `CONFIG_SPIRAM=y` is set once, in the base `config/sdkconfig.defaults`, and no board layer turns it off — the board files only pick the mode and speed (`CONFIG_SPIRAM_MODE_OCT` on the S3/P4, the 80 MHz quad default elsewhere). The `# CONFIG_SPIRAM=y` line in `config/sdkconfig.defaults.esp32s2` is a *comment* and overrides nothing, so the S2 gets PSRAM like everything else. A Kconfig `depends on SPIRAM` is therefore always satisfied and is not a real gate.
 - **CMake/Kconfig**: Board selection is via `CONFIG_` Kconfig options. DAC driver is auto-selected (`CONFIG_DAC_TAS57XX` or `CONFIG_DAC_TAS58XX`). Display, buttons, BT, Ethernet are all Kconfig-gated.
 - **Component structure**: Each component has its own `CMakeLists.txt` with `idf_component_register()`.
 - **Git submodules**: `u8g2` (OLED graphics) and `u8g2-hal-esp-idf` (ESP-IDF HAL for u8g2) are submodules — always clone with `--recursive`.
 - **SPIFFS**: `data/` directory contents are flashed to SPIFFS. `data/www/` = web UI, `data/hf/` = DSP binaries. Only the four `base-hf<n>-<rate>.bin` hybrid-flow bases are tracked; tuned PPC3 dumps are user-supplied and deliberately untracked.
 - **Audio pipeline**: receiver → decode worker → **RTP-addressed timeline** → scheduler → AudioOutput (I2S/SPDIF/USB). Both the buffered (AAC) and realtime (ALAC) paths now run through engine v2; the old sorted PCM pool is gone. The scheduler anchors on the sender's clock (PTP for AirPlay 2, NTP for AirPlay 1), prerolls, then closes a drift servo against the DMA play position.
 - **AirPlay/Bluetooth coexistence**: Mutually exclusive at runtime. BT connection suspends AirPlay; disconnect resumes it. `bt_coex.c` releases the BT stack's DRAM once AirPlay owns the output.
+- **Output source indirection**: the playback task in every backend pulls through `audio_output_read_source()` (`audio_output_common.c`), which defaults to `audio_receiver_read` until something calls `audio_output_set_source()`. That is how Sendspin renders from its own engine without touching the AirPlay path. `audio_output_stop()` has a weak no-op default there too — only the I2S backend has a real stop, because only it has a DMA channel to hand over.
+- **Sendspin**: `CONFIG_SENDSPIN_ENABLE` defaults **on** wherever there is PSRAM, but compiling it in is not the same as running it — `settings_sendspin_enabled()` gates `sendspin_init()`, defaults to off, and only takes effect on a restart, so a board pays none of the ~448 KB until someone turns it on from the web UI (`/api/sendspin/mode`). The symbol survives only as a flash escape hatch: `smartamp` and `esp32wrover-dev` set it `=n` because Bluetooth plus a 1.92 MB app slot leaves 4–5 % free before Sendspin and ~1 % after. It puts a `/sendspin` WebSocket on the existing web server and advertises `_sendspin._tcp` on port 80. **PCM and FLAC everywhere; Opus on the S3/P4 only** (`CONFIG_SENDSPIN_OPUS`) — on the original ESP32 the decoder's state lands in PSRAM and a 20 ms packet takes ~7.7 ms to decode, which starves the httpd task that decodes it. Opus also needs a far deeper timeline (1024 blocks, 2 MB) because the server meters its queue in *bytes*, so the same budget buys ~10x the duration and anything past the window is rejected and later concealed. Pairing (static PIN via CPace, and the pairing PSK) and in-band re-handshaking are in place, so a session can be authenticated rather than merely encrypted; until a server pairs, the Sentinel PSK keeps it unpaired. It owns a *separate* `audio_engine_v2_t` from `audio_receiver.c`, because the receiver's is deliberately never torn down. Chunks must be re-cut into fixed 512-frame blocks: `audio_engine_v2_push_pcm()` rejects more than `frame_samples`, and `audio_timeline_phase_blocked()` requires block-aligned RTP. It arbitrates with AirPlay and BT the same way the USB sink does.
+- **Sendspin has no cleartext mode.** Only `client/init`, `server/init` and `noise/handshake` travel in the open, as WebSocket *text* frames; everything after the split is a Noise transport message in a *binary* frame whose first decrypted byte is the Sendspin message type. `sendspin_noise.c` implements `Noise_KKpsk2_25519_ChaChaPoly_SHA256` on libsodium primitives — the server is the initiator, the board the responder. The prologue is the **raw wire bytes** of the two init messages, never a re-encoding. Without pairing the PSK is the spec's published **Sentinel** value, so a session is encrypted but not authenticated; `unpaired_access.enabled` is what tells the server we will accept that. Two easy-to-miss details: in a PSK-modified pattern every `e` token does `MixHash` **then** `MixKey`, and `MixKey`/`MixKeyAndHash` reset the nonce counter to 0. Nothing at all may leave the client between `client/init` and the first `server/activate`, not even a `client/time`.
 - **USB audio, two directions**: `defaults.usb` (`CONFIG_AUDIO_OUTPUT_USB`) makes the board a USB *source* — it appears as a microphone and AirPlay audio leaves over USB. `defaults.uac` (`CONFIG_USB_AUDIO_SINK`) makes it a USB *speaker* — the host plays into the same I2S DAC, which stops the AirPlay services while it streams. The UAC descriptor advertises a single rate, so `CONFIG_UAC_SAMPLE_RATE` must equal `CONFIG_OUTPUT_SAMPLE_RATE_HZ`.
 - **Eth/WiFi failover**: Ethernet preferred at boot; WiFi fallback if no cable. Hot-swap at runtime.
 - **Task stacks stay in internal RAM** (`main/spiram_task.h`): flash operations disable the cache, so a stack in SPIRAM trips `esp_task_stack_is_sane_cache_disabled()`. Large *local* buffers are the opposite problem — `CONFIG_ESP_MAIN_TASK_STACK_SIZE` is only 3584 bytes, so anything of that order belongs in a `heap_caps_calloc(..., MALLOC_CAP_SPIRAM)` allocation. Overflowing it corrupts whatever was allocated next, which shows up as unrelated driver failures.
@@ -159,7 +169,7 @@ components/
 
 ## Code Quality
 
-**Requirements**: ESP-IDF >= 5.5 (tested against v5.5.2). Older versions may need workarounds.
+**Requirements**: ESP-IDF >= 5.5.5. Sendspin needs `ws_post_handshake_cb`, which only landed in v5.5.5 — on an older 5.5.x the build dies in `sendspin_register()` unless `CONFIG_SENDSPIN_ENABLE=n`. The CI workflows pin the same version.
 
 **Formatting**: LLVM-style, 2-space indent, 80-char column limit. See `.clang-format`.
 

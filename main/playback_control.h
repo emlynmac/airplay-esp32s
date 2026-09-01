@@ -21,6 +21,7 @@ typedef enum {
   PLAYBACK_SOURCE_AIRPLAY,
   PLAYBACK_SOURCE_BLUETOOTH,
   PLAYBACK_SOURCE_USB,
+  PLAYBACK_SOURCE_SENDSPIN,
 } playback_source_t;
 
 /**
@@ -70,6 +71,20 @@ void playback_control_prev(void);
 void playback_control_toggle_mute(void);
 
 /**
+ * Set the mute state outright rather than toggling it.
+ */
+void playback_control_set_muted(bool muted);
+
+/**
+ * Set the volume as a percentage (0..100). Always adjusts the local DAC: the
+ * sources that call this carry an absolute volume of their own, rather than
+ * the relative steps the buttons send.
+ *
+ * Muted stays muted; the level is what unmuting restores.
+ */
+void playback_control_set_volume_percent(int percent);
+
+/**
  * Check if currently muted.
  */
 bool playback_control_is_muted(void);
@@ -79,3 +94,9 @@ bool playback_control_is_muted(void);
  * AirPlay volume in NVS. Returns 0 when muted.
  */
 int playback_control_get_volume_percent(void);
+
+/**
+ * Get the volume as a percentage (0..100) with mute ignored. A source that
+ * reports level and mute as separate fields needs the level on its own.
+ */
+int playback_control_get_level_percent(void);

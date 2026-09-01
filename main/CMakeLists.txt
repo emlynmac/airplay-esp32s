@@ -78,6 +78,16 @@ if(CONFIG_ETH_W5500_ENABLED)
     list(APPEND SRC_FILES "network/ethernet.c")
 endif()
 
+# Sendspin player role (WebSocket + its own playout timeline)
+if(CONFIG_SENDSPIN_ENABLE)
+    list(APPEND SRC_FILES "sendspin/sendspin.c")
+    list(APPEND SRC_FILES "sendspin/sendspin_noise.c")
+    list(APPEND SRC_FILES "sendspin/sendspin_psk.c")
+    list(APPEND SRC_FILES "sendspin/sendspin_cpace.c")
+    list(APPEND SRC_FILES "sendspin/sendspin_time.c")
+    list(APPEND SRC_FILES "sendspin/sendspin_player.c")
+endif()
+
 set( INC_DIRS
     "." 
     "audio" 
@@ -85,6 +95,7 @@ set( INC_DIRS
     "plist" 
     "hap" 
     "network"
+    "sendspin"
     "usb"
 )
 

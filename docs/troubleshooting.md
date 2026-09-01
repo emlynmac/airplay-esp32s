@@ -174,8 +174,9 @@ git submodule update --init --recursive
 
 Clone with `--recursive` to avoid this in the first place.
 
-**Wrong ESP-IDF version.** The project requires **v5.5 or newer** and is tested against
-v5.5.2. Older versions need workarounds.
+**Wrong ESP-IDF version.** The project requires **v5.5.5 or newer**. Sendspin needs the
+WebSocket post-handshake callback added in that release; an older 5.5.x builds only with
+`CONFIG_SENDSPIN_ENABLE=n`.
 
 ### Changes to sdkconfig defaults have no effect
 

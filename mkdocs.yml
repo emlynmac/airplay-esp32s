@@ -116,6 +116,7 @@ nav:
   - Features:
       - Bluetooth A2DP: features/bluetooth.md
       - USB audio (UAC): features/usb-audio.md
+      - Sendspin (experimental): features/sendspin.md
       - Ethernet (W5500): features/ethernet.md
       - OLED display: features/oled-display.md
       - ST7789 TFT display: features/tft-display.md

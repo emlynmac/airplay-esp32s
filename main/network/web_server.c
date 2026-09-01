@@ -28,6 +28,10 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 
+#ifdef CONFIG_SENDSPIN_ENABLE
+#include "sendspin.h"
+#endif
+
 #ifdef CONFIG_DAC_TAS58XX
 #include "dac_tas58xx.h"
 #endif
@@ -1005,6 +1009,23 @@ static esp_err_t system_info_handler(httpd_req_t *req) {
   cJSON_AddBoolToObject(info, "hf1_supported", false);
   cJSON_AddBoolToObject(info, "hf3_supported", false);
 #endif
+#ifdef CONFIG_SENDSPIN_ENABLE
+  cJSON_AddBoolToObject(info, "sendspin_supported", true);
+  cJSON_AddBoolToObject(info, "sendspin_enabled",
+                        settings_sendspin_enabled_configured());
+  cJSON_AddBoolToObject(info, "sendspin_active", settings_sendspin_enabled());
+  /* The two secrets a server needs to adopt this device: the PIN an operator
+   * types into a pairing prompt, and the token a server enrols itself with.
+   * Anyone who can read either can pair, so they ride on the same
+   * authentication as the rest of this API.  Both read empty while Sendspin
+   * is switched off, because no identity has been derived. */
+  cJSON_AddStringToObject(info, "sendspin_pairing_token",
+                          sendspin_pairing_token());
+  cJSON_AddStringToObject(info, "sendspin_pairing_pin", sendspin_pairing_pin());
+  cJSON_AddNumberToObject(info, "sendspin_paired", sendspin_paired_count());
+#else
+  cJSON_AddBoolToObject(info, "sendspin_supported", false);
+#endif
 
   cJSON_AddItemToObject(json, "info", info);
   cJSON_AddBoolToObject(json, "success", true);
@@ -1034,6 +1055,147 @@ static esp_err_t system_restart_handler(httpd_req_t *req) {
 
   return ESP_OK;
 }
+
+#ifdef CONFIG_SENDSPIN_ENABLE
+static esp_err_t sendspin_mode_get_handler(httpd_req_t *req) {
+  cJSON *json = cJSON_CreateObject();
+  cJSON_AddBoolToObject(json, "enabled",
+                        settings_sendspin_enabled_configured());
+  cJSON_AddBoolToObject(json, "restart_required",
+                        settings_sendspin_enabled_configured() !=
+                            settings_sendspin_enabled());
+  cJSON_AddBoolToObject(json, "success", true);
+  char *json_str = cJSON_Print(json);
+  httpd_resp_set_type(req, "application/json");
+  httpd_resp_send(req, json_str, HTTPD_RESP_USE_STRLEN);
+  free(json_str);
+  cJSON_Delete(json);
+  return ESP_OK;
+}
+
+static esp_err_t sendspin_mode_post_handler(httpd_req_t *req) {
+  char *content = recv_body(req, 128);
+  if (!content) {
+    httpd_resp_send_500(req);
+    return ESP_FAIL;
+  }
+
+  cJSON *json = cJSON_Parse(content);
+  free(content);
+  if (!json) {
+    httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Invalid JSON");
+    return ESP_FAIL;
+  }
+
+  cJSON *response = cJSON_CreateObject();
+  cJSON *val = cJSON_GetObjectItem(json, "enabled");
+  if (!val || !cJSON_IsBool(val)) {
+    cJSON_AddBoolToObject(response, "success", false);
+    cJSON_AddStringToObject(response, "error", "Expected {\"enabled\": bool}");
+  } else {
+    const bool enabled = cJSON_IsTrue(val);
+    esp_err_t err = settings_set_sendspin_enabled(enabled);
+    cJSON_AddBoolToObject(response, "success", err == ESP_OK);
+    if (err != ESP_OK) {
+      cJSON_AddStringToObject(response, "error", esp_err_to_name(err));
+    } else {
+      cJSON_AddBoolToObject(response, "restart_required",
+                            enabled != settings_sendspin_enabled());
+    }
+  }
+
+  char *json_str = cJSON_Print(response);
+  httpd_resp_set_type(req, "application/json");
+  httpd_resp_send(req, json_str, HTTPD_RESP_USE_STRLEN);
+  free(json_str);
+  cJSON_Delete(json);
+  cJSON_Delete(response);
+  return ESP_OK;
+}
+
+static esp_err_t sendspin_unpair_handler(httpd_req_t *req) {
+  bool force = false;
+  char qbuf[64];
+  if (httpd_req_get_url_query_str(req, qbuf, sizeof(qbuf)) == ESP_OK) {
+    char val[8];
+    if (httpd_query_key_value(qbuf, "force", val, sizeof(val)) == ESP_OK) {
+      force = strcmp(val, "1") == 0 || strcmp(val, "true") == 0;
+    }
+  }
+
+  /* Forgetting only this side leaves the server offering a PSK the board can
+   * no longer resolve, and that handshake fails silently at both ends.  While
+   * a server is connected it can be unpaired from its own UI, which prunes
+   * both records, so send the operator there rather than into the deadlock. */
+  if (!force && sendspin_paired_count() > 0 && sendspin_server_connected()) {
+    httpd_resp_set_status(req, "409 Conflict");
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_sendstr(
+        req,
+        "{\"success\":false,\"error\":\"a server is connected; unpair from the "
+        "server so both sides forget, or repeat with ?force=1\"}");
+    return ESP_OK;
+  }
+
+  const esp_err_t err = sendspin_forget_pairings();
+  if (err == ESP_ERR_INVALID_STATE) {
+    httpd_resp_set_status(req, "409 Conflict");
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_sendstr(
+        req, "{\"success\":false,\"error\":\"Sendspin is not running\"}");
+    return ESP_OK;
+  }
+  if (err != ESP_OK) {
+    httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR,
+                        esp_err_to_name(err));
+    return ESP_FAIL;
+  }
+
+  cJSON *json = cJSON_CreateObject();
+  cJSON_AddBoolToObject(json, "success", true);
+  cJSON_AddNumberToObject(json, "sendspin_paired", sendspin_paired_count());
+
+  char *json_str = cJSON_Print(json);
+  httpd_resp_set_type(req, "application/json");
+  httpd_resp_send(req, json_str, HTTPD_RESP_USE_STRLEN);
+  free(json_str);
+  cJSON_Delete(json);
+
+  ESP_LOGI(TAG, "Sendspin pairings cleared via web interface");
+  return ESP_OK;
+}
+
+static esp_err_t sendspin_reset_identity_handler(httpd_req_t *req) {
+  const esp_err_t err = sendspin_reset_identity();
+  if (err == ESP_ERR_INVALID_STATE) {
+    httpd_resp_set_status(req, "409 Conflict");
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_sendstr(
+        req, "{\"success\":false,\"error\":\"Sendspin is not running\"}");
+    return ESP_OK;
+  }
+  if (err != ESP_OK) {
+    httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR,
+                        esp_err_to_name(err));
+    return ESP_FAIL;
+  }
+
+  cJSON *json = cJSON_CreateObject();
+  cJSON_AddBoolToObject(json, "success", true);
+  cJSON_AddStringToObject(json, "sendspin_pairing_token",
+                          sendspin_pairing_token());
+  cJSON_AddNumberToObject(json, "sendspin_paired", sendspin_paired_count());
+
+  char *json_str = cJSON_Print(json);
+  httpd_resp_set_type(req, "application/json");
+  httpd_resp_send(req, json_str, HTTPD_RESP_USE_STRLEN);
+  free(json_str);
+  cJSON_Delete(json);
+
+  ESP_LOGI(TAG, "Sendspin identity reset via web interface");
+  return ESP_OK;
+}
+#endif
 
 /* ================================================================== */
 /*  SPIFFS File Management API                                         */
@@ -2140,6 +2302,13 @@ esp_err_t web_server_start(uint16_t port) {
   // unchecked, so an undercount silently drops whatever registers last, which
   // is log_stream's /ws/logs. Keep these in step with the handlers below.
   config.max_uri_handlers = 38; // 32 here + /ws/logs, plus 5 spare
+#ifdef CONFIG_SENDSPIN_ENABLE
+  config.max_uri_handlers += 5; // /sendspin + mode get/post + unpair + reset
+  // The Sendspin server holds its WebSocket open for as long as the speaker
+  // exists, so it permanently occupies a slot that the web UI would otherwise
+  // reuse.  Without this, opening the config page evicts the audio session.
+  config.max_open_sockets += 2;
+#endif
 #ifdef DAC_HAS_SUB_OFFSET
   config.max_uri_handlers += 2; // sub level get/post
 #endif
@@ -2154,7 +2323,13 @@ esp_err_t web_server_start(uint16_t port) {
   config.max_uri_handlers += 11; // tuning page + HF1/HF3 get/post/commit/revert
 #endif
   config.max_resp_headers = 8;
+#ifdef CONFIG_SENDSPIN_OPUS
+  /* libopus keeps its CELT scratch on the stack: measured peak is 11.7 KB at
+   * 48 kHz stereo, on top of what serving a request already needs. */
+  config.stack_size = 16384;
+#else
   config.stack_size = 8192;
+#endif
 
   esp_err_t err = httpd_start(&s_server, &config);
   if (err != ESP_OK) {
@@ -2307,6 +2482,29 @@ esp_err_t web_server_start(uint16_t port) {
                                     .handler = system_restart_handler};
   httpd_register_uri_handler(s_server, &system_restart_uri);
 
+#ifdef CONFIG_SENDSPIN_ENABLE
+  httpd_uri_t sendspin_mode_get_uri = {.uri = "/api/sendspin/mode",
+                                       .method = HTTP_GET,
+                                       .handler = sendspin_mode_get_handler};
+  httpd_register_uri_handler(s_server, &sendspin_mode_get_uri);
+
+  httpd_uri_t sendspin_mode_post_uri = {.uri = "/api/sendspin/mode",
+                                        .method = HTTP_POST,
+                                        .handler = sendspin_mode_post_handler};
+  httpd_register_uri_handler(s_server, &sendspin_mode_post_uri);
+
+  httpd_uri_t sendspin_unpair_uri = {.uri = "/api/sendspin/unpair",
+                                     .method = HTTP_POST,
+                                     .handler = sendspin_unpair_handler};
+  httpd_register_uri_handler(s_server, &sendspin_unpair_uri);
+
+  httpd_uri_t sendspin_reset_identity_uri = {
+      .uri = "/api/sendspin/reset-identity",
+      .method = HTTP_POST,
+      .handler = sendspin_reset_identity_handler};
+  httpd_register_uri_handler(s_server, &sendspin_reset_identity_uri);
+#endif
+
   // File management API
   httpd_uri_t fs_upload_uri = {.uri = "/api/fs/upload",
                                .method = HTTP_POST,
@@ -2430,6 +2628,11 @@ esp_err_t web_server_start(uint16_t port) {
 #endif
 
   log_stream_register(s_server);
+#ifdef CONFIG_SENDSPIN_ENABLE
+  // Returns ESP_ERR_INVALID_STATE when sendspin_init() was skipped, which is
+  // the disabled case rather than a failure.
+  sendspin_register(s_server);
+#endif
 
   ESP_LOGI(TAG, "Web server started on port %d with captive portal support",
            port);

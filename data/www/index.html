@@ -69,6 +69,15 @@ input:focus{outline:none;border-color:#e94560}
 </select></div>
 <div style='font-size:12px;opacity:0.7;margin-top:-8px;margin-bottom:6px'>Some software only works with AirPlay v1.<br>Apple devices still work in that mode, but without v2 features, such as multi-speaker sync.<br>Volume / track seek hardware buttons require version 1.</div>
 <div id='airplay-msg'></div>
+<div id='sendspin-group' style='display:none'>
+<div class='form-group' style='margin-top:18px'><label for='sendspin-enable'>Native SendSpin Client Support</label>
+<select id='sendspin-enable' onchange='saveSendspin()'>
+<option value='0'>Disabled</option>
+<option value='1'>Enabled</option>
+</select></div>
+<div style='font-size:12px;opacity:0.7;margin-top:-8px;margin-bottom:6px'>Experimental. Lets a SendSpin server such as Music Assistant play to this device.<br>Takes effect after a restart.<br><span id='sendspin-pin'></span></div>
+<div style='font-size:12px;line-height:1.45;margin-bottom:6px;padding:8px 10px;border-radius:6px;background:rgba(92,26,26,0.5);border-left:3px solid #e94560'><strong>Known issue:</strong> a SendSpin stream takes the audio output away from AirPlay and Bluetooth, and only gives it back when the server ends the stream or closes its connection. Music Assistant does neither, so it keeps this device to itself once it has played to it. Remove the player in Music Assistant, or restart this device, to get AirPlay and Bluetooth back.</div>
+<div id='sendspin-msg'></div></div>
 <div class='form-group' style='margin-top:18px'><label for='led-brightness'>LED Brightness</label>
 <div class='slider-row'><input type='range' id='led-brightness' min='0' max='255' value='128' oninput='document.getElementById("led-pct").textContent=Math.round(this.value/255*100)+"%"'>
 <span id='led-pct'>50%</span></div></div>
@@ -164,6 +173,8 @@ var dualDevices=1;
 var dualPbtl=true;
 var dualLoaded=false;
 var airplayV1=false;
+var sendspinEnabled=false;
+var sendspinLoaded=false;
 var chanLocked=false;
 var chanDsp=false;
 /* When the DSP crosses the two outputs over into one speaker there is no
@@ -226,6 +237,20 @@ async function saveAirplayMode(){
     if(d.success){airplayV1=v1;msg('airplay-msg',d.restart_required?'Saved! Restart to apply.':'Saved!','ok');}
     else{sel.value=airplayV1?'1':'0';msg('airplay-msg',d.error,'err');}}
   catch(e){sel.value=airplayV1?'1':'0';msg('airplay-msg','Error','err');console.error('saveAirplayMode failed',e);}}
+async function loadSendspin(){
+  try{var r=await fetch('/api/sendspin/mode');if(!r.ok)return;var d=await r.json();
+    if(d.success){sendspinEnabled=!!d.enabled;
+      document.getElementById('sendspin-enable').value=d.enabled?'1':'0';
+      if(d.restart_required){msg('sendspin-msg','Restart to apply.','err');}}}
+  catch(e){console.warn('Could not load Sendspin setting',e);}}
+async function saveSendspin(){
+  var sel=document.getElementById('sendspin-enable');
+  var en=sel.value==='1';
+  try{var r=await fetch('/api/sendspin/mode',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({enabled:en})});
+    var d=await r.json();
+    if(d.success){sendspinEnabled=en;msg('sendspin-msg',d.restart_required?'Saved! Restart to apply.':'Saved!','ok');}
+    else{sel.value=sendspinEnabled?'1':'0';msg('sendspin-msg',d.error,'err');}}
+  catch(e){sel.value=sendspinEnabled?'1':'0';msg('sendspin-msg','Error','err');console.error('saveSendspin failed',e);}}
 async function saveName(){
   var n=document.getElementById('dev-name').value.trim();if(!n){msg('name-msg','Enter a name','err');return;}
   try{var r=await fetch('/api/device/name',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name:n})});
@@ -265,6 +290,10 @@ async function loadInfo(){
       /* Only a TAS58xx build registers /api/audio/dual; asking anyway logs a
          warning on the device for every page load. */
       if(i.dual_supported&&!dualLoaded){dualLoaded=true;loadDual();}
+      /* Only a Sendspin build registers /api/sendspin/mode. */
+      if(i.sendspin_supported){document.getElementById('sendspin-group').style.display='';
+        if(!sendspinLoaded){sendspinLoaded=true;loadSendspin();}
+        document.getElementById('sendspin-pin').textContent=i.sendspin_active?('Pairing PIN '+i.sendspin_pairing_pin+', '+i.sendspin_paired+' server(s) paired.'):'';}
       document.getElementById('dev-name').placeholder=i.device_name||'';}}catch(e){}}
 window.onload=function(){
   document.getElementById('fw-file').onchange=function(e){var f=e.target.files[0];

@@ -16,20 +16,15 @@ rtsp_conn_t *rtsp_conn_create(void) {
 
   // Load saved volume or use default
   float saved_volume;
-  if (settings_get_volume(&saved_volume) == ESP_OK) {
-    conn->volume_db = saved_volume;
-    // Apply volume curve
-    if (saved_volume <= -30.0f) {
-      conn->volume_q15 = 0;
-    } else if (saved_volume >= 0.0f) {
-      conn->volume_q15 = 32768;
-    } else {
-      float normalized = (saved_volume + 30.0f) / 30.0f;
-      conn->volume_q15 = (int32_t)(normalized * normalized * 32768.0f);
-    }
+  (void)settings_get_volume(&saved_volume);
+  conn->volume_db = saved_volume;
+  // Apply volume curve
+  if (saved_volume <= -30.0f) {
+    conn->volume_q15 = 0;
+  } else if (saved_volume >= 0.0f) {
+    conn->volume_q15 = 32768;
   } else {
-    conn->volume_db = -15.0f; // Half volume (midpoint of -30..0 dB range)
-    float normalized = (conn->volume_db + 30.0f) / 30.0f;
+    float normalized = (saved_volume + 30.0f) / 30.0f;
     conn->volume_q15 = (int32_t)(normalized * normalized * 32768.0f);
   }
 

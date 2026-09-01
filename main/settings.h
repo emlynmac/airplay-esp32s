@@ -16,9 +16,9 @@
 esp_err_t settings_init(void);
 
 /**
- * Get saved volume in dB
+ * Get saved volume in dB, falling back to the built-in default
  * @param volume_db Output: volume in dB (0 = max, -30 = mute)
- * @return ESP_OK if found, ESP_ERR_NOT_FOUND if no saved value
+ * @return ESP_OK unless volume_db is NULL
  */
 esp_err_t settings_get_volume(float *volume_db);
 
@@ -30,7 +30,10 @@ esp_err_t settings_set_volume(float volume_db);
 
 /**
  * Persist the current cached volume to NVS.
- * Call once at session disconnect rather than on every change.
+ *
+ * Call at a pause or at the end of a session, not on every change: a volume
+ * ramp is dozens of distinct levels and each one would be a flash write.
+ * Does nothing if the level has not moved since the last persist.
  */
 esp_err_t settings_persist_volume(void);
 
@@ -145,6 +148,31 @@ bool settings_airplay_v1_configured(void);
  * @param v1 true for classic AirPlay 1 (RAOP), false for AirPlay 2
  */
 esp_err_t settings_set_airplay_v1(bool v1);
+
+#ifdef CONFIG_SENDSPIN_ENABLE
+// ---- Sendspin ----
+
+/**
+ * Whether the Sendspin player role was started this boot.
+ *
+ * Fixed at settings_init() for the same reason as settings_airplay_v1(): the
+ * WebSocket endpoint, the mDNS record and the playout timeline are all built
+ * once at startup, and the timeline is most of a megabyte that a disabled
+ * board should not be paying for. Defaults to off.
+ */
+bool settings_sendspin_enabled(void);
+
+/**
+ * The Sendspin setting held in storage, which takes effect on the next boot.
+ * Differs from settings_sendspin_enabled() only after a change.
+ */
+bool settings_sendspin_enabled_configured(void);
+
+/**
+ * Save whether to run the Sendspin player role. Takes effect on restart.
+ */
+esp_err_t settings_set_sendspin_enabled(bool enabled);
+#endif
 
 // ---- LED settings ----
 

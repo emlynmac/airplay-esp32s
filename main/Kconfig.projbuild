@@ -583,4 +583,86 @@ menu "Airplay ESP Configuration"
                 (active-low, internal pull-up, common pin to GND).
                 Set to -1 to disable.
     endmenu
+
+    menu "Sendspin"
+        config SENDSPIN_ENABLE
+            bool "Build the Sendspin player role (experimental)"
+            default y
+            depends on SPIRAM
+            select HTTPD_WS_POST_HANDSHAKE_CB_SUPPORT
+            help
+                Build the Sendspin "player@v1" client, which presents the
+                device to a Sendspin server on the web server's WebSocket
+                endpoint and advertises _sendspin._tcp.
+
+                This only decides whether the code is present. It stays
+                switched off until it is turned on per device from the web
+                UI, and nothing is allocated until then, so leaving it on
+                costs about 73 KB of flash and no RAM.
+
+                Experimental: PCM, FLAC and (where the SoC can keep up) Opus
+                are decoded, and pairing is by static PIN or pairing PSK. It
+                shares the I2S output with AirPlay and Bluetooth, so only one
+                of the three can play at a time.
+
+                Turn off on a board whose app partition cannot spare the
+                flash. Needs SPIRAM for its own playout timeline.
+
+        config SENDSPIN_OPUS
+            bool "Offer Opus as well as FLAC and PCM"
+            depends on SENDSPIN_ENABLE
+            default y if IDF_TARGET_ESP32S3 || IDF_TARGET_ESP32P4
+            default n
+            help
+                Advertise Opus at 48 kHz, which is the only rate the
+                reference encoder allows.
+
+                Off by default on the original ESP32, where it does not
+                work: the decoder's ~26 KB of state lands in PSRAM, so a
+                20 ms stereo packet takes ~7.7 ms to decode with peaks past
+                realtime. That starves the task decoding it and the audio
+                breaks up. FLAC already halves the bandwidth there.
+
+                Costs 8 KB more stack on the web server task, because
+                libopus keeps its CELT scratch on the stack.
+
+        config SENDSPIN_TIMELINE_BLOCKS
+            int "Playout timeline depth (blocks of 512 frames)"
+            default 1024 if SENDSPIN_OPUS
+            default 192
+            range 32 2048
+            depends on SENDSPIN_ENABLE
+            help
+                Each block holds 512 stereo frames (~11.6 ms at 44.1 kHz) and
+                costs 2 KB of PSRAM. 192 blocks is ~2.2 s of audio for
+                384 KB, which is well past what a LAN sender needs for PCM
+                or FLAC.
+
+                An Opus build needs far more, because the server meters what
+                it may queue in bytes: the same budget buys roughly ten times
+                the duration once Opus is on the wire. Anything arriving
+                beyond the end of the window is rejected, and comes back
+                later as a hole to conceal.
+
+        config SENDSPIN_RX_BUFFER_SIZE
+            int "WebSocket receive buffer (bytes)"
+            default 32768
+            range 8192 131072
+            depends on SENDSPIN_ENABLE
+            help
+                Largest binary message accepted from the server, allocated
+                once in PSRAM. A 150 ms chunk of 44.1 kHz 16-bit stereo PCM is
+                about 26 KB, which is the protocol's worst case for this
+                milestone.
+
+        config SENDSPIN_TIME_SYNC_INTERVAL_MS
+            int "Clock sync interval (ms)"
+            default 2000
+            range 200 30000
+            depends on SENDSPIN_ENABLE
+            help
+                Steady-state interval between client/time requests. The
+                initial burst runs much faster than this so the filter
+                converges before the client reports itself available.
+    endmenu
 endmenu
