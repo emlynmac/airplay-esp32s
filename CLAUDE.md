@@ -6,6 +6,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ESP32 AirPlay 2 Receiver — firmware that turns ESP32/ESP32-S2/ESP32-S3/ESP32-C5/ESP32-P4 boards into AirPlay 2 speakers. Supports ALAC and AAC decoding, Bluetooth A2DP (ESP32 only), USB Audio Class in both directions, S/PDIF, W5500 Ethernet (Esparagus Audio Brick), OLED/TFT displays, hardware buttons, and OTA updates. The documentation site also lives in this repo, under `docs/`.
 
+**Every supported board must have PSRAM.** A module without it will not run this firmware — the jitter buffer, the AAC decoder's scratch and the timeline all live in external RAM.
+
 ## Build & Flash
 
 **PlatformIO** (recommended):
@@ -144,6 +146,7 @@ components/
 
 ## Key Conventions
 
+- **PSRAM is not optional**: `CONFIG_SPIRAM=y` is set once, in the base `config/sdkconfig.defaults`, and no board layer turns it off — the board files only pick the mode and speed (`CONFIG_SPIRAM_MODE_OCT` on the S3/P4, the 80 MHz quad default elsewhere). The `# CONFIG_SPIRAM=y` line in `config/sdkconfig.defaults.esp32s2` is a *comment* and overrides nothing, so the S2 gets PSRAM like everything else. A Kconfig `depends on SPIRAM` is therefore always satisfied and is not a real gate.
 - **CMake/Kconfig**: Board selection is via `CONFIG_` Kconfig options. DAC driver is auto-selected (`CONFIG_DAC_TAS57XX` or `CONFIG_DAC_TAS58XX`). Display, buttons, BT, Ethernet are all Kconfig-gated.
 - **Component structure**: Each component has its own `CMakeLists.txt` with `idf_component_register()`.
 - **Git submodules**: `u8g2` (OLED graphics) and `u8g2-hal-esp-idf` (ESP-IDF HAL for u8g2) are submodules — always clone with `--recursive`.
