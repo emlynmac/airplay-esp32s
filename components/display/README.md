@@ -108,7 +108,10 @@ The ST7789 driver loads a full-screen background image from SPIFFS at startup
 progress bar) are drawn on top of it. If no file is present, the screen
 defaults to solid black — all widgets still render correctly.
 
-### Replacing the Background
+### Adding a Background
+
+None ships with the firmware: a background costs 106 KB of SPIFFS, which does
+not fit alongside the web UI in a 4 MB layout, and `data/bg/` is gitignored.
 
 1. Design your image and export as a PNG (any size — it will be resized)
 2. Run the conversion script from the project root:

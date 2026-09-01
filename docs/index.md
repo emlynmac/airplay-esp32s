@@ -92,8 +92,8 @@ plain dev boards paired with an external I2S DAC, and several integrated
 amplifier boards:
 
 - [SqueezeAMP](boards/squeezeamp.md) — ESP32 + TAS5756 DAC and Class-D amplifier
-- [Esparagus Audio Brick](boards/esparagus-audio-brick.md) — ESP32 or ESP32-S3 + TAS5825M DAC/amp, on-chip DSP, Ethernet
-- [Esparagus Audio Brick rev D](boards/esparagus-audio-brick-dual-dac.md) — ESP32-S3 + two TAS5825M, active crossover, USB audio
+- [Esparagus Audio Brick](boards/esparagus-audio-brick.md) — ESP32 or ESP32-S3 + TAS58xx DAC/amp, on-chip DSP, Ethernet
+- [Esparagus Audio Brick Dual](boards/esparagus-audio-brick-dual-dac.md) — ESP32-S3 + two amplifiers, active crossover, USB audio
 - [ESP32-S3 + PCM5102A](boards/esp32s3-pcm5102a.md) — the cheapest route, no soldering required
 
 ESP32-based boards additionally support **Bluetooth A2DP**, so anything that can pair with

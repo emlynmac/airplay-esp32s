@@ -29,12 +29,24 @@ jobs:
           - name: esparagus-audio-brick-bt
             target: esp32
             sdkconfig: "config/sdkconfig.defaults;config/sdkconfig.defaults.esparagus-audio-brick;config/sdkconfig.defaults.bt"
-          - name: smartamp
+          - name: esparagus-audio-brick-s3
+            target: esp32s3
+            sdkconfig: "config/sdkconfig.defaults;config/sdkconfig.defaults.esparagus-audio-brick-s3"
+          - name: esparagus-audio-brick-dual-dac
+            target: esp32s3
+            sdkconfig: "config/sdkconfig.defaults;config/sdkconfig.defaults.esparagus-audio-brick-dual-dac"
+          - name: esparagus-audio-brick-dual-uac
+            target: esp32s3
+            sdkconfig: "config/sdkconfig.defaults;config/sdkconfig.defaults.esparagus-audio-brick-dual-dac;config/sdkconfig.defaults.uac"
+          - name: esparagus-louder-bt
             target: esp32
-            sdkconfig: "config/sdkconfig.defaults;config/sdkconfig.defaults.bt;config/sdkconfig.defaults.smartamp"
+            sdkconfig: "config/sdkconfig.defaults;config/sdkconfig.defaults.esparagus-louder;config/sdkconfig.defaults.bt"
           - name: esparagus-louder-s3
             target: esp32s3
             sdkconfig: "config/sdkconfig.defaults;config/sdkconfig.defaults.esparagus-louder-s3"
+          - name: smartamp
+            target: esp32
+            sdkconfig: "config/sdkconfig.defaults;config/sdkconfig.defaults.bt;config/sdkconfig.defaults.smartamp"
     steps:
       - uses: actions/checkout@v6
         with:

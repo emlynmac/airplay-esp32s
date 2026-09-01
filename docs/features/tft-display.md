@@ -64,7 +64,9 @@ At startup the driver loads a full-screen background from `/spiffs/bg/background
 PSRAM and draws all widgets on top of it. With no file present the screen falls back to
 solid black and everything still renders correctly.
 
-To replace it:
+No background ships with the firmware — one costs 106 KB of SPIFFS, which does not fit
+alongside the web UI on a 4 MB board, and most supported boards have no display at all.
+To add one:
 
 1. Design your image and export a PNG. Any size works — it gets resized.
 2. Convert it from the project root:

@@ -97,9 +97,9 @@ column is `config/sdkconfig.defaults.esparagus-audio-brick`, the S3 column
     GPIOs 35–39, which are input-only and have no internal pull-up. The board provides
     external pull-ups. The S3 revision has no such restriction on the pins it uses.
 
-Rev D is an S3 board with a third pinout: it has two amplifiers and no FAULTZ line back
-to the MCU, spending GPIO 18 and 17 on the two DAC enables instead. See
-[Esparagus Audio Brick rev D](esparagus-audio-brick-dual-dac.md).
+The Audio Brick Dual is an S3 board with a third pinout: it has two amplifiers and no
+FAULTZ line back to the MCU, spending GPIO 18 and 17 on the two DAC enables instead. See
+[Esparagus Audio Brick Dual](esparagus-audio-brick-dual-dac.md).
 
 The build selects the TAS58xx driver automatically (`CONFIG_DAC_TAS58XX`). The driver
 auto-detects the amplifier at startup: 0x4C–0x4F for a TAS5825M, 0x2C–0x2F for a
@@ -289,26 +289,30 @@ page expects them.
 
 ## Variants
 
-| Environment | Chip | Bluetooth | Notes |
-| --- | --- | :-: | --- |
-| `esparagus-audio-brick` | ESP32 | — | AirPlay + Ethernet |
-| `esparagus-audio-brick-bt` | ESP32 | yes | Prebuilt binary published |
-| `esparagus-audio-brick-s3` | ESP32-S3 | — | S3 pinout, PSRAM, no Bluetooth Classic on this chip |
-| `esparagus-audio-brick-dual-dac` | ESP32-S3 | — | [Rev D](esparagus-audio-brick-dual-dac.md), two TAS5825M: stereo at 0x4C, second at 0x4D |
-| `esparagus-audio-brick-dual-uac` | ESP32-S3 | — | [Rev D](esparagus-audio-brick-dual-dac.md) as a USB audio device |
+| Environment | Chip | Bluetooth | Prebuilt | Notes |
+| --- | --- | :-: | :-: | --- |
+| `esparagus-audio-brick` | ESP32 | — | — | AirPlay + Ethernet |
+| `esparagus-audio-brick-bt` | ESP32 | yes | yes | Adds Bluetooth A2DP |
+| `esparagus-audio-brick-s3` | ESP32-S3 | — | yes | S3 pinout, PSRAM, no Bluetooth Classic on this chip |
+| `esparagus-audio-brick-dual-dac` | ESP32-S3 | — | yes | [Dual](esparagus-audio-brick-dual-dac.md), two amplifiers: stereo at 0x4C, second at 0x4D |
+| `esparagus-audio-brick-dual-uac` | ESP32-S3 | — | yes | [Dual](esparagus-audio-brick-dual-dac.md) as a USB audio device |
+
+The ones marked prebuilt are in the
+[browser installer](../getting-started/flashing.md). On the ESP32 the published binary is
+the Bluetooth one, so build `esparagus-audio-brick` yourself if you want that RAM back.
 
 Bluetooth Classic exists only on the original ESP32, so the `-bt` build has no S3
-equivalent; an S3 brick reaches the network over Ethernet or WiFi. Rev D has two
+equivalent; an S3 brick reaches the network over Ethernet or WiFi. The Dual has two
 amplifiers and a pinout of its own, and gets [its own page](esparagus-audio-brick-dual-dac.md).
 
 ### Esparagus Louder
 
-The Esparagus Louder is the same TAS5825M design with additional gain.
+The Esparagus Louder is the same amplifier design on a board of its own.
 
 | Environment | Chip | Bluetooth | Prebuilt |
 | --- | --- | :-: | :-: |
 | `esparagus-louder` | ESP32 | — | — |
-| `esparagus-louder-bt` | ESP32 | yes | — |
+| `esparagus-louder-bt` | ESP32 | yes | yes |
 | `esparagus-louder-s3` | ESP32-S3 | — | yes |
 
 ```bash
