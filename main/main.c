@@ -10,6 +10,7 @@
 #include "mdns_airplay.h"
 #include "nvs_flash.h"
 #include "playback_control.h"
+#include "playback_events.h"
 #include "ptp_clock.h"
 #include "rtsp_server.h"
 #include "settings.h"
@@ -21,7 +22,6 @@
 #ifdef CONFIG_BT_A2DP_ENABLE
 #include "a2dp_sink.h"
 #include "bt_coex.h"
-#include "rtsp_events.h"
 #endif
 
 #ifdef CONFIG_USB_AUDIO_SINK
@@ -278,30 +278,31 @@ static void on_bt_state_changed(bool connected) {
   }
 }
 
-static void on_airplay_client_event(rtsp_event_t event,
-                                    const rtsp_event_data_t *data,
+static void on_airplay_client_event(playback_source_t source,
+                                    playback_event_t event,
+                                    const playback_event_data_t *data,
                                     void *user_data) {
   (void)data;
   (void)user_data;
-  if (bt_a2dp_sink_is_connected()) {
+  if (source != PLAYBACK_SOURCE_AIRPLAY || bt_a2dp_sink_is_connected()) {
     return;
   }
   switch (event) {
-  case RTSP_EVENT_CLIENT_CONNECTED:
+  case PLAYBACK_EVENT_CONNECTED:
     ESP_LOGI(TAG, "AirPlay client connected — disabling BT");
     bt_a2dp_sink_set_discoverable(false);
     bt_coex_post(BT_COEX_EVT_AIRPLAY_CONNECTED);
     break;
-  case RTSP_EVENT_PLAYING:
+  case PLAYBACK_EVENT_PLAYING:
     bt_coex_post(BT_COEX_EVT_AIRPLAY_PLAYING);
     break;
-  case RTSP_EVENT_PAUSED:
+  case PLAYBACK_EVENT_PAUSED:
     // Session still active — BT stays suspended and hidden so the phone
     // reconnects to AirPlay rather than falling back to BT.
     ESP_LOGI(TAG, "AirPlay paused — keeping BT suspended and hidden");
     bt_coex_post(BT_COEX_EVT_AIRPLAY_PAUSED);
     break;
-  case RTSP_EVENT_DISCONNECTED:
+  case PLAYBACK_EVENT_DISCONNECTED:
     ESP_LOGI(TAG, "AirPlay client disconnected — BT resumes after idle delay");
     bt_a2dp_sink_set_discoverable(true);
     bt_coex_post(BT_COEX_EVT_AIRPLAY_DISCONNECTED);
@@ -470,7 +471,7 @@ void app_main(void) {
       if (bt_coex_start() != ESP_OK) {
         ESP_LOGE(TAG, "BT coexistence task start failed");
       }
-      rtsp_events_register(on_airplay_client_event, NULL);
+      playback_events_register(on_airplay_client_event, NULL);
     }
   }
   log_dram("bluetooth");

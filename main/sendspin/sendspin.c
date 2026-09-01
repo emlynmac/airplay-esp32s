@@ -17,7 +17,7 @@
 
 #include "ethernet.h"
 #include "playback_control.h"
-#include "rtsp_events.h"
+#include "playback_events.h"
 #include "sendspin_cpace.h"
 #include "sendspin_noise.h"
 #include "sendspin_player.h"
@@ -630,10 +630,10 @@ static void sendspin_send_time_request(void) {
  * into a powered-down amplifier. */
 
 typedef struct {
-  rtsp_metadata_t meta; /* position_secs is filled in at emit time */
-  int64_t timestamp_us; /* server clock the progress was measured at */
-  int64_t progress_ms;  /* track position at timestamp_us */
-  int32_t speed;        /* playback_speed; 1000 is normal, 0 is paused */
+  playback_metadata_t meta; /* position_secs is filled in at emit time */
+  int64_t timestamp_us;     /* server clock the progress was measured at */
+  int64_t progress_ms;      /* track position at timestamp_us */
+  int32_t speed;            /* playback_speed; 1000 is normal, 0 is paused */
   bool has_progress;
 } sendspin_meta_t;
 
@@ -651,7 +651,9 @@ static void sendspin_events_playing(bool playing) {
   if (!playing) {
     settings_persist_volume();
   }
-  rtsp_events_emit(playing ? RTSP_EVENT_PLAYING : RTSP_EVENT_PAUSED, NULL);
+  playback_events_emit(PLAYBACK_SOURCE_SENDSPIN,
+                       playing ? PLAYBACK_EVENT_PLAYING : PLAYBACK_EVENT_PAUSED,
+                       NULL);
 }
 
 static void sendspin_events_connected(bool connected) {
@@ -662,14 +664,16 @@ static void sendspin_events_connected(bool connected) {
   if (connected) {
     /* Listeners read this as "a new source has the output": the display drops
      * whatever it was showing and the amplifier comes up into standby. */
-    rtsp_events_emit(RTSP_EVENT_CLIENT_CONNECTED, NULL);
+    playback_events_emit(PLAYBACK_SOURCE_SENDSPIN, PLAYBACK_EVENT_CONNECTED,
+                         NULL);
     return;
   }
   s_events_playing = false;
   memset(&s_meta, 0, sizeof(s_meta));
   s_meta_pending_valid = false;
   settings_persist_volume();
-  rtsp_events_emit(RTSP_EVENT_DISCONNECTED, NULL);
+  playback_events_emit(PLAYBACK_SOURCE_SENDSPIN, PLAYBACK_EVENT_DISCONNECTED,
+                       NULL);
 }
 
 /* ------------------------------------------------------------------ */
@@ -795,9 +799,10 @@ static void sendspin_meta_apply(const sendspin_meta_t *next) {
 
   sendspin_events_connected(true);
 
-  rtsp_event_data_t data = {.metadata = s_meta.meta};
+  playback_event_data_t data = {.metadata = s_meta.meta};
   data.metadata.position_secs = sendspin_meta_position_secs();
-  rtsp_events_emit(RTSP_EVENT_METADATA, &data);
+  playback_events_emit(PLAYBACK_SOURCE_SENDSPIN, PLAYBACK_EVENT_METADATA,
+                       &data);
 
   if (next->has_progress) {
     sendspin_events_playing(next->speed != 0);

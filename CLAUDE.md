@@ -48,13 +48,13 @@ idf.py -p /dev/ttyUSB0 monitor
 | `hifi-esparagus-bt` | Same + Bluetooth | |
 | `hifi-esp32-s3` | ESP32-S3 + PCM5100 DAC | Ethernet + OLED |
 | `hifi-esparagus-s3` | ESP32-S3 + PCM5100 DAC | OLED only, no Ethernet |
-| `loud-esp32` | ESP32 + MAX98357A I2S amp | No I2C; enable pin gated by RTSP play/pause, not just boot-released |
+| `loud-esp32` | ESP32 + MAX98357A I2S amp | No I2C; enable pin gated by playback play/pause, not just boot-released |
 | `loud-esp32-bt` | Same + Bluetooth | |
 | `loud-esp32-s3` | ESP32-S3 + dual MAX98357A | |
 | `loud-esparagus` | ESP32 + dual MAX98357A | No Ethernet/display |
 | `loud-esparagus-bt` | Same + Bluetooth | |
 | `esparagus-echo` | ESP32-S3 + dual MAX98357A | Ethernet, no display |
-| `amped-esp32` | ESP32 + PCM5100 DAC + TPA3110/TPA3128 amp | No I2C; UNMUTE pin gated by RTSP play/pause |
+| `amped-esp32` | ESP32 + PCM5100 DAC + TPA3110/TPA3128 amp | No I2C; UNMUTE pin gated by playback play/pause |
 | `amped-esp32-bt` | Same + Bluetooth | |
 | `amped-esp32-s3` | ESP32-S3 + PCM5100 + TPA3110/TPA3128 | |
 | `amped-esparagus` | ESP32 + PCM5100 + TPA3110/TPA3128 | Rev M only; rotary encoder (volume + play/pause); no display — hardware TFT (ILI9342) isn't a supported driver |
@@ -109,7 +109,6 @@ main/
 │   ├── rtsp_server.c       # RTSP connection handler
 │   ├── rtsp_conn.c         # Connection management
 │   ├── rtsp_handlers.c     # RTSP method handlers (OPTIONS, SETUP, PLAY, etc.)
-│   ├── rtsp_events.c       # RTSP event handling (including BT passthrough)
 │   ├── rtsp_crypto.c       # RTSP-level encryption
 │   ├── rtsp_fairplay.c     # Apple FairPlay integration
 │   └── rtsp_rsa.c          # RSA crypto
@@ -137,6 +136,7 @@ main/
 │   └── log_stream.c        # Remote log streaming
 ├── dacp_client.c           # DACP (Digital Audio Control Protocol) — button/remote commands
 ├── playback_control.c      # Unified playback control abstraction
+├── playback_events.c       # Per-source playback state, fanned out as an aggregate
 ├── bt_coex.c               # Frees the Bluetooth stack's DRAM when AirPlay takes over
 ├── spiram_task.h           # Task-creation wrappers (stacks must stay in internal RAM)
 ├── buttons.c               # Hardware button input with debounce + auto-repeat
@@ -173,7 +173,7 @@ components/
 
 - **PSRAM is not optional**: `CONFIG_SPIRAM=y` is set once, in the base `config/sdkconfig.defaults`, and no board layer turns it off — the board files only pick the mode and speed (`CONFIG_SPIRAM_MODE_OCT` on the S3/P4, the 80 MHz quad default elsewhere). The `# CONFIG_SPIRAM=y` line in `config/sdkconfig.defaults.esp32s2` is a *comment* and overrides nothing, so the S2 gets PSRAM like everything else. A Kconfig `depends on SPIRAM` is therefore always satisfied and is not a real gate.
 - **CMake/Kconfig**: Board selection is via `CONFIG_` Kconfig options. DAC driver is auto-selected (`CONFIG_DAC_TAS57XX` or `CONFIG_DAC_TAS58XX`). Display, buttons, BT, Ethernet are all Kconfig-gated.
-- **A board without an I2C DAC can still register one.** `dac_ops_t` (`components/dac/include/dac.h`) doesn't require I2C — `loud-esp32/board.c` registers a driver whose `set_power_mode` just drives `CONFIG_DAC_ENABLE_GPIO` (the amp's single active-high enable/unmute pin — SD_MODE on the MAX98357A boards, UNMUTE on the PCM5100+TPA3110/TPA3128 Amped boards) from RTSP play/pause/disconnect events, the same events Esparagus Audio Brick uses to drive TAS58xx over I2C. This is a different pin from `CONFIG_DAC_PDN_GPIO`, which boards with an I2C DAC drive high once at boot and never touch again — `DAC_ENABLE_GPIO` is toggled on every playback state change because it's the *only* control surface the amp has.
+- **A board without an I2C DAC can still register one.** `dac_ops_t` (`components/dac/include/dac.h`) doesn't require I2C — `loud-esp32/board.c` registers a driver whose `set_power_mode` just drives `CONFIG_DAC_ENABLE_GPIO` (the amp's single active-high enable/unmute pin — SD_MODE on the MAX98357A boards, UNMUTE on the PCM5100+TPA3110/TPA3128 Amped boards) from aggregate `playback_events` play/pause/disconnect, the same events Esparagus Audio Brick uses to drive TAS58xx over I2C. This is a different pin from `CONFIG_DAC_PDN_GPIO`, which boards with an I2C DAC drive high once at boot and never touch again — `DAC_ENABLE_GPIO` is toggled on every playback state change because it's the *only* control surface the amp has.
 - **Component structure**: Each component has its own `CMakeLists.txt` with `idf_component_register()`.
 - **Git submodules**: `u8g2` (OLED graphics) and `u8g2-hal-esp-idf` (ESP-IDF HAL for u8g2) are submodules — always clone with `--recursive`.
 - **SPIFFS**: `data/` directory contents are flashed to SPIFFS. `data/www/` = web UI, `data/hf/` = DSP binaries. Only the four `base-hf<n>-<rate>.bin` hybrid-flow bases are tracked; tuned PPC3 dumps are user-supplied and deliberately untracked.

@@ -23,7 +23,7 @@
 
 #include "ntp_clock.h"
 #include "ptp_clock.h"
-#include "rtsp_events.h"
+#include "playback_events.h"
 #include "settings.h"
 #include "dacp_client.h"
 
@@ -287,7 +287,8 @@ cleanup:
   if (has_dacp_remote) {
     if (!slot->should_stop) {
       s_resume_requested = false;
-      rtsp_events_emit(RTSP_EVENT_PAUSED, NULL);
+      playback_events_emit(PLAYBACK_SOURCE_AIRPLAY, PLAYBACK_EVENT_PAUSED,
+                           NULL);
 
       // Phase 1: let mDNS settle (3 s), but exit early on resume or reconnect
       for (int i = 0; i < 6 && !slot->should_stop; i++) {
@@ -341,17 +342,20 @@ cleanup:
       } else {
         ESP_LOGI(TAG, "Grace period expired — full disconnect");
         dacp_clear_session();
-        rtsp_events_emit(RTSP_EVENT_DISCONNECTED, NULL);
+        playback_events_emit(PLAYBACK_SOURCE_AIRPLAY,
+                             PLAYBACK_EVENT_DISCONNECTED, NULL);
       }
     } else {
       // Forcefully stopped (server shutdown or replaced by new client)
       dacp_clear_session();
-      rtsp_events_emit(RTSP_EVENT_DISCONNECTED, NULL);
+      playback_events_emit(PLAYBACK_SOURCE_AIRPLAY, PLAYBACK_EVENT_DISCONNECTED,
+                           NULL);
     }
   } else {
     // v2 / unknown — no grace period, clear immediately.
     dacp_clear_session();
-    rtsp_events_emit(RTSP_EVENT_DISCONNECTED, NULL);
+    playback_events_emit(PLAYBACK_SOURCE_AIRPLAY, PLAYBACK_EVENT_DISCONNECTED,
+                         NULL);
   }
 
   // When being replaced by a new client (is_old), skip global state changes —
