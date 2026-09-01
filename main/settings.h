@@ -146,6 +146,31 @@ bool settings_airplay_v1_configured(void);
  */
 esp_err_t settings_set_airplay_v1(bool v1);
 
+#ifdef CONFIG_SENDSPIN_ENABLE
+// ---- Sendspin ----
+
+/**
+ * Whether the Sendspin player role was started this boot.
+ *
+ * Fixed at settings_init() for the same reason as settings_airplay_v1(): the
+ * WebSocket endpoint, the mDNS record and the playout timeline are all built
+ * once at startup, and the timeline is most of a megabyte that a disabled
+ * board should not be paying for. Defaults to off.
+ */
+bool settings_sendspin_enabled(void);
+
+/**
+ * The Sendspin setting held in storage, which takes effect on the next boot.
+ * Differs from settings_sendspin_enabled() only after a change.
+ */
+bool settings_sendspin_enabled_configured(void);
+
+/**
+ * Save whether to run the Sendspin player role. Takes effect on restart.
+ */
+esp_err_t settings_set_sendspin_enabled(bool enabled);
+#endif
+
 // ---- LED settings ----
 
 /**

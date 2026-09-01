@@ -273,6 +273,10 @@ pio run -e esp32s3-sendspin -t upload
 
 It needs **PSRAM**, so it is unavailable on boards without it.
 
+The `squeezeamp` and `squeezeamp-bt` images ship with it compiled in, so nothing has to be
+rebuilt to try it there — see [Turning it on](#turning-it-on) below. `squeezeamp-4m` is
+excluded: its app partition is only 1.92 MB.
+
 | Option | Default | Purpose |
 | --- | --- | --- |
 | `CONFIG_SENDSPIN_ENABLE` | `n` | Build and advertise the player role |
@@ -290,6 +294,35 @@ An Opus build is much hungrier, because the timeline has to cover how far ahead 
 server will run: 1024 blocks is **2 MB** of playout timeline. Enabling Opus also adds
 8 KB to the web server task's stack, since libopus keeps its CELT scratch on the stack
 and the decode runs on the task serving the WebSocket.
+
+## Turning it on
+
+`CONFIG_SENDSPIN_ENABLE` only decides whether the code is *present*. A firmware that has
+it still starts with Sendspin **switched off**, and there is a **Sendspin Player** control
+under Device Settings in the web UI to turn it on. The section is hidden entirely on a
+firmware built without it.
+
+Like the AirPlay mode setting, it **takes effect on the next restart** — the WebSocket
+endpoint, the mDNS record and the playout timeline are all built once at startup, and the
+timeline is the bulk of that 448 KB. While it is off none of that is allocated, which is
+what makes it safe to compile in on a board where the memory would otherwise be missed.
+
+Over HTTP:
+
+```bash
+curl -s http://<device>/api/sendspin/mode
+# {"enabled": false, "restart_required": false, "success": true}
+
+curl -s -X POST http://<device>/api/sendspin/mode \
+  -H 'Content-Type: application/json' -d '{"enabled": true}'
+# {"success": true, "restart_required": true}
+
+curl -s -X POST http://<device>/api/system/restart
+```
+
+`/api/system/info` reports `sendspin_supported` (compiled in), `sendspin_enabled` (the
+saved setting) and `sendspin_active` (whether it is actually running this boot). The
+pairing PIN and token are only meaningful once it is active.
 
 ## Identity
 

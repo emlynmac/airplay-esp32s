@@ -26,6 +26,7 @@ static const char *TAG = "settings";
 #define NVS_KEY_SECOND_PBTL    "amp2_pbtl"
 #define NVS_KEY_AIRPLAY_V1     "ap_v1"
 #define NVS_KEY_CH_TRIM        "ch_trim"
+#define NVS_KEY_SENDSPIN       "ss_en"
 
 #define MAX_WIFI_SSID_LEN     32
 #define MAX_WIFI_PASSWORD_LEN 64
@@ -44,6 +45,11 @@ static bool g_bt_volume_loaded = false;
 
 static bool g_airplay_v1;
 static bool g_airplay_v1_configured;
+
+#ifdef CONFIG_SENDSPIN_ENABLE
+static bool g_sendspin_enabled;
+static bool g_sendspin_enabled_configured;
+#endif
 
 esp_err_t settings_init(void) {
   // Load volume on init
@@ -65,10 +71,22 @@ esp_err_t settings_init(void) {
                g_airplay_v1 ? "v1 (classic RAOP)" : "v2");
     }
 
+#ifdef CONFIG_SENDSPIN_ENABLE
+    uint8_t sendspin;
+    if (nvs_get_u8(nvs, NVS_KEY_SENDSPIN, &sendspin) == ESP_OK) {
+      g_sendspin_enabled = sendspin != 0;
+      ESP_LOGI(TAG, "Loaded Sendspin: %s",
+               g_sendspin_enabled ? "enabled" : "disabled");
+    }
+#endif
+
     nvs_close(nvs);
   }
 
   g_airplay_v1_configured = g_airplay_v1;
+#ifdef CONFIG_SENDSPIN_ENABLE
+  g_sendspin_enabled_configured = g_sendspin_enabled;
+#endif
 
   return ESP_OK;
 }
@@ -758,3 +776,42 @@ esp_err_t settings_set_airplay_v1(bool v1) {
   }
   return err;
 }
+
+#ifdef CONFIG_SENDSPIN_ENABLE
+/* ================================================================== */
+/*  Sendspin                                                          */
+/* ================================================================== */
+
+bool settings_sendspin_enabled(void) {
+  return g_sendspin_enabled;
+}
+
+bool settings_sendspin_enabled_configured(void) {
+  return g_sendspin_enabled_configured;
+}
+
+esp_err_t settings_set_sendspin_enabled(bool enabled) {
+  nvs_handle_t nvs;
+  esp_err_t err = nvs_open(NVS_NAMESPACE, NVS_READWRITE, &nvs);
+  if (err != ESP_OK) {
+    ESP_LOGE(TAG, "Failed to open NVS: %s", esp_err_to_name(err));
+    return err;
+  }
+
+  err = nvs_set_u8(nvs, NVS_KEY_SENDSPIN, enabled ? 1 : 0);
+  if (err == ESP_OK) {
+    err = nvs_commit(nvs);
+  }
+  nvs_close(nvs);
+
+  if (err == ESP_OK) {
+    // Not applied to g_sendspin_enabled: the endpoint, the mDNS record and
+    // the timeline are all built at startup.
+    g_sendspin_enabled_configured = enabled;
+    ESP_LOGI(TAG, "Saved Sendspin: %s", enabled ? "enabled" : "disabled");
+  } else {
+    ESP_LOGE(TAG, "Failed to save Sendspin: %s", esp_err_to_name(err));
+  }
+  return err;
+}
+#endif

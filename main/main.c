@@ -438,11 +438,15 @@ void app_main(void) {
   // Start services that work on any interface
 #ifdef CONFIG_SENDSPIN_ENABLE
   // Before the web server: it registers the /sendspin endpoint as it starts.
-  esp_err_t sendspin_err = sendspin_init(on_sendspin_activity);
-  if (sendspin_err != ESP_OK) {
-    ESP_LOGE(TAG, "Sendspin init failed: %s", esp_err_to_name(sendspin_err));
+  if (settings_sendspin_enabled()) {
+    esp_err_t sendspin_err = sendspin_init(on_sendspin_activity);
+    if (sendspin_err != ESP_OK) {
+      ESP_LOGE(TAG, "Sendspin init failed: %s", esp_err_to_name(sendspin_err));
+    }
+    log_dram("sendspin");
+  } else {
+    ESP_LOGI(TAG, "Sendspin disabled in settings");
   }
-  log_dram("sendspin");
 #endif
   web_server_start(80);
   task_create_spiram(network_monitor_task, "net_mon", 4096, NULL, 5, NULL,
