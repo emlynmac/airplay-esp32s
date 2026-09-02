@@ -27,6 +27,26 @@ static const char *TAG = "audio_recv";
 
 static audio_receiver_state_t receiver = {0};
 
+// Set when an AirPlay session holds the audio path. Reported on the edges only:
+// SETUP can restate the format mid-session, and the arbitration downstream ends
+// a Sendspin stream, which is not something to repeat per track.
+static audio_receiver_activity_cb_t s_activity_cb = NULL;
+static bool s_session_active = false;
+
+void audio_receiver_set_activity_callback(audio_receiver_activity_cb_t cb) {
+  s_activity_cb = cb;
+}
+
+static void set_session_active(bool active) {
+  if (s_session_active == active) {
+    return;
+  }
+  s_session_active = active;
+  if (s_activity_cb) {
+    s_activity_cb(active);
+  }
+}
+
 static void audio_receiver_reset_stats(void) {
   memset(&receiver.stats, 0, sizeof(receiver.stats));
 }
@@ -298,6 +318,7 @@ void audio_receiver_set_format(const audio_format_t *format) {
     audio_engine_v2_set_format(&receiver.engine_v2, format);
   }
   audio_output_set_source_rate(format->sample_rate);
+  set_session_active(true);
 }
 
 void audio_receiver_set_encryption(const audio_encrypt_t *encrypt) {
@@ -683,6 +704,11 @@ void audio_receiver_set_client_control(uint32_t client_ip,
 }
 
 void audio_receiver_stop(void) {
+  // Ahead of the RTSP grace period, which can hold an idle session open for
+  // minutes: the audio path is free now, so anything waiting for it can have
+  // it now.
+  set_session_active(false);
+
   if (receiver.realtime_stream && receiver.realtime_stream->ops &&
       receiver.realtime_stream->ops->stop) {
     receiver.realtime_stream->ops->stop(receiver.realtime_stream);

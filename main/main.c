@@ -119,8 +119,7 @@ static void start_airplay_services(void) {
   ESP_LOGI(TAG, "AirPlay ready");
   log_dram("airplay");
 }
-#if defined(CONFIG_BT_A2DP_ENABLE) || defined(CONFIG_USB_AUDIO_SINK) || \
-    defined(CONFIG_SENDSPIN_ENABLE)
+#if defined(CONFIG_BT_A2DP_ENABLE) || defined(CONFIG_USB_AUDIO_SINK)
 static void stop_airplay_services(void) {
   if (!s_airplay_started) {
     return;
@@ -188,9 +187,6 @@ static void network_monitor_task(void *pvParameters) {
 #ifdef CONFIG_USB_AUDIO_SINK
       output_owned = output_owned || usb_audio_sink_is_streaming();
 #endif
-#ifdef CONFIG_SENDSPIN_ENABLE
-      output_owned = output_owned || sendspin_player_is_streaming();
-#endif
       if (!output_owned) {
         start_airplay_services();
       }
@@ -239,22 +235,44 @@ static void on_usb_audio_state_changed(bool streaming) {
 #endif
 
 #ifdef CONFIG_SENDSPIN_ENABLE
-// Sendspin drives the same I2S channel as AirPlay through its own scheduler,
-// so ownership swaps whole: AirPlay's RTSP server and playback task go down
-// for the duration of a Sendspin stream.  Called from the WebSocket handler
-// when the server starts or ends a stream.
+// Sendspin drives the same I2S channel as AirPlay through its own scheduler, so
+// ownership swaps whole rather than mixing: the two run off different clocks --
+// Apple's PTP domain and the Sendspin server's -- and one DMA ring cannot
+// honour both.  AirPlay's services stay up throughout so a phone can always
+// take the speaker back; see on_airplay_audio_active().  Called from the
+// WebSocket handler when the server starts or ends a stream.
 static void on_sendspin_activity(bool active) {
   if (active) {
-    ESP_LOGI(TAG, "Sendspin stream — disabling AirPlay");
-    stop_airplay_services();
+    ESP_LOGI(TAG, "Sendspin stream started");
     playback_control_set_source(PLAYBACK_SOURCE_SENDSPIN);
-  } else {
-    ESP_LOGI(TAG, "Sendspin idle — re-enabling AirPlay");
-    playback_control_set_source(PLAYBACK_SOURCE_NONE);
-    if (ethernet_is_connected() || wifi_is_connected()) {
-      start_airplay_services();
-    }
+    return;
   }
+
+  ESP_LOGI(TAG, "Sendspin stream ended");
+  playback_control_set_source(playback_events_active_source());
+  if (s_airplay_started) {
+    // The stream end stopped the playback task; AirPlay still wants it.
+    audio_output_start();
+  } else if (ethernet_is_connected() || wifi_is_connected()) {
+    start_airplay_services();
+  }
+}
+
+// AirPlay wins any contest for the output.  Telling Sendspin the output is
+// gone ends the stream through the protocol, so the server knows to stop
+// sending rather than being left to infer it from a dropped socket.
+static void on_airplay_audio_active(bool active) {
+  if (!active) {
+    ESP_LOGI(TAG, "AirPlay session ended — output released to Sendspin");
+    sendspin_set_output_available(true);
+    return;
+  }
+
+  ESP_LOGI(TAG, "AirPlay session — taking the output from Sendspin");
+  sendspin_set_output_available(false);
+  // sendspin_player_stream_end() stops the playback task on its way out.
+  audio_output_start();
+  playback_control_set_source(PLAYBACK_SOURCE_AIRPLAY);
 }
 #endif
 
@@ -443,6 +461,8 @@ void app_main(void) {
     esp_err_t sendspin_err = sendspin_init(on_sendspin_activity);
     if (sendspin_err != ESP_OK) {
       ESP_LOGE(TAG, "Sendspin init failed: %s", esp_err_to_name(sendspin_err));
+    } else {
+      audio_receiver_set_activity_callback(on_airplay_audio_active);
     }
     log_dram("sendspin");
   } else {

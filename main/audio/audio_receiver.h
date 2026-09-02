@@ -65,6 +65,13 @@ typedef struct {
 esp_err_t audio_receiver_init(void);
 
 /**
+ * Called when an AirPlay session takes the audio path and again when it lets
+ * go, so the arbitration in main.c can stand the other inputs down.
+ */
+typedef void (*audio_receiver_activity_cb_t)(bool active);
+void audio_receiver_set_activity_callback(audio_receiver_activity_cb_t cb);
+
+/**
  * Set audio format from ANNOUNCE SDP
  */
 void audio_receiver_set_format(const audio_format_t *format);

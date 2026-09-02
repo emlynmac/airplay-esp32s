@@ -119,6 +119,8 @@ static QueueHandle_t s_cmd_queue = NULL;
  * output, and whether the clock estimate is good enough to place audio. The
  * protocol only has one flag, so it is the AND of the two. */
 static bool s_output_available = true;
+/* Set when the takeover paused the server, so the release can undo it. */
+static bool s_resume_on_release = false;
 static bool s_reported_available = false;
 static bool s_state_dirty = false;
 
@@ -699,6 +701,7 @@ static void sendspin_session_close(const char *reason) {
   s_role_metadata = false;
   s_role_controller = false;
   s_ctrl_commands = 0;
+  s_resume_on_release = false;
   s_psk_kind = SENDSPIN_PSK_SENTINEL;
   s_pair_pending = false;
   s_server_id[0] = '\0';
@@ -2244,10 +2247,22 @@ void sendspin_set_output_available(bool available) {
   ESP_LOGI(TAG, "output %s", available ? "released to Sendspin" : "taken over");
 
   if (!available && sendspin_player_is_streaming()) {
+    /* A player that simply reports available:false leaves the server's queue
+     * stopped, and a stopped queue does not restart itself when the player
+     * comes back. Pausing it first leaves something to resume. */
+    if (s_role_controller && (s_ctrl_commands & (1U << SENDSPIN_CMD_PAUSE))) {
+      sendspin_send_controller_command(SENDSPIN_CMD_PAUSE);
+      s_resume_on_release = true;
+    }
     /* Stop before reporting: the server tears the stream down on
      * available:false anyway, and leaving the renderer attached would race
      * whoever is taking the output. */
     sendspin_player_stream_end();
+  } else if (available && s_resume_on_release) {
+    s_resume_on_release = false;
+    /* Queued rather than sent here: the tick drains commands after the state
+     * report, so the server sees the player available again before the play. */
+    (void)sendspin_send_command(SENDSPIN_CMD_PLAY);
   }
   s_state_dirty = true;
   sendspin_unlock();
