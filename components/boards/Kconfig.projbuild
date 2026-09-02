@@ -75,6 +75,22 @@ menu "Board Configuration"
             bool "Louder-ESP32-S3 (ESP32-S3, TAS5805M)"
             depends on IDF_TARGET_ESP32S3
 
+        config BOARD_HIFI_ESP32
+            bool "HiFi-ESP32 (ESP32, PCM5100)"
+            depends on IDF_TARGET_ESP32
+
+        config BOARD_HIFI_ESPARAGUS
+            bool "HiFi-Esparagus (ESP32, PCM5100)"
+            depends on IDF_TARGET_ESP32
+
+        config BOARD_HIFI_ESP32_S3
+            bool "HiFi-ESP32-S3 (ESP32-S3, PCM5100)"
+            depends on IDF_TARGET_ESP32S3
+
+        config BOARD_HIFI_ESPARAGUS_S3
+            bool "HiFi-Esparagus-S3 (ESP32-S3, PCM5100)"
+            depends on IDF_TARGET_ESP32S3
+
     endchoice
 
     config BOARD_TARGET_PATH
@@ -96,6 +112,10 @@ menu "Board Configuration"
         default "esparagus-audio-brick" if BOARD_ESPARAGUS_LOUDER_S3
         default "esparagus-audio-brick" if BOARD_LOUDER_ESP32
         default "esparagus-audio-brick" if BOARD_LOUDER_ESP32_S3
+        default "hifi-esp32" if BOARD_HIFI_ESP32
+        default "esp32-generic" if BOARD_HIFI_ESPARAGUS
+        default "hifi-esp32" if BOARD_HIFI_ESP32_S3
+        default "hifi-esp32" if BOARD_HIFI_ESPARAGUS_S3
 
     config BOARD_SQUEEZEAMP_COMMON
         bool

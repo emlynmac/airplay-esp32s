@@ -42,6 +42,12 @@ idf.py -p /dev/ttyUSB0 monitor
 | `squeezeamp-bt` | Same + Bluetooth A2DP | |
 | `squeezeamp-4m` | SqueezeAMP with 4MB flash | |
 | `smartamp` | ESP32 + Bluetooth | 4MB |
+| `hifi-esp32` | ESP32 + PCM5100 DAC | Plain I2S DAC, no I2C/mute pin; Ethernet + OLED |
+| `hifi-esp32-bt` | Same + Bluetooth | |
+| `hifi-esparagus` | ESP32 + PCM5100 DAC | Plain I2S DAC, no I2C/mute pin, no Ethernet/display |
+| `hifi-esparagus-bt` | Same + Bluetooth | |
+| `hifi-esp32-s3` | ESP32-S3 + PCM5100 DAC | Ethernet + OLED |
+| `hifi-esparagus-s3` | ESP32-S3 + PCM5100 DAC | OLED only, no Ethernet |
 | `esparagus-audio-brick` | ESP32 + TAS5825M/TAS5805M DAC/amp | Ethernet is on in every brick build |
 | `esparagus-audio-brick-bt` | Same + Bluetooth | |
 | `esparagus-audio-brick-s3` | ESP32-S3 + TAS5825M/TAS5805M | Different pinout from the ESP32 revision |
@@ -144,6 +150,7 @@ components/
 │   ├── waveshare-esp32p4/  # Waveshare ESP32-P4 board init
 │   ├── waveshare-esp32s3/  # Waveshare ESP32-S3 board init
 │   ├── squeezeamp/         # SqueezeAMP (ESP32 + TAS5756)
+│   ├── hifi-esp32/         # HiFi-ESP32(-S3) / HiFi-Esparagus(-S3) (PCM5100)
 │   └── esparagus-audio-brick/ # Esparagus Audio Brick (ESP32/S3 + TAS58xx + W5500)
 ├── spiffs_storage/         # SPIFFS filesystem mount (stores web pages + DSP configs)
 ├── audio-resampler/        # sinc-based audio resampler (44.1→48kHz)
