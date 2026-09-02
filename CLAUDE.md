@@ -47,9 +47,15 @@ idf.py -p /dev/ttyUSB0 monitor
 | `esparagus-audio-brick-s3` | ESP32-S3 + TAS5825M/TAS5805M | Different pinout from the ESP32 revision |
 | `esparagus-audio-brick-dual-dac` | ESP32-S3 + 2x TAS58xx ("Audio Brick Dual", rev D hardware) | Stereo @0x4C + PBTL mono sub @0x4D |
 | `esparagus-audio-brick-dual-uac` | Same + USB speaker | |
+| `louder-esp32-plus` | ESP32 + TAS5825M DAC/amp | |
+| `louder-esp32-plus-bt` | Same + Bluetooth | |
+| `louder-esp32-s3-plus` | ESP32-S3 + TAS5825M | |
 | `esparagus-louder` | ESP32 + TAS5825M/TAS5805M | |
 | `esparagus-louder-bt` | Louder + Bluetooth | |
 | `esparagus-louder-s3` | ESP32-S3 + Louder | |
+| `louder-esp32` | ESP32 + TAS5805M DAC/amp | |
+| `louder-esp32-bt` | Same + Bluetooth | |
+| `louder-esp32-s3` | ESP32-S3 + TAS5805M | |
 
 Bluetooth Classic only exists on the original ESP32, so the S3 revision of a board never has a `-bt` environment.
 

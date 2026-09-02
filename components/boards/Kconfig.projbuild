@@ -43,6 +43,14 @@ menu "Board Configuration"
             bool "Esparagus Audio Brick Dual DAC (ESP32-S3, 2x TAS5825M)"
             depends on IDF_TARGET_ESP32S3
 
+        config BOARD_LOUDER_ESP32_PLUS
+            bool "Louder-ESP32-Plus (ESP32, TAS5825M)"
+            depends on IDF_TARGET_ESP32
+
+        config BOARD_LOUDER_ESP32_S3_PLUS
+            bool "Louder-ESP32-S3-Plus (ESP32-S3, TAS5825M)"
+            depends on IDF_TARGET_ESP32S3
+
         config BOARD_WAVESHARE_ESP32P4
             bool "Waveshare ESP32-P4 Module Dev Kit"
             depends on IDF_TARGET_ESP32P4
@@ -59,6 +67,14 @@ menu "Board Configuration"
             bool "Louder Esparagus S3 / Louder-ESP32-S3 (ESP32-S3, TAS58xx)"
             depends on IDF_TARGET_ESP32S3
 
+        config BOARD_LOUDER_ESP32
+            bool "Louder-ESP32 (ESP32, TAS5805M)"
+            depends on IDF_TARGET_ESP32
+
+        config BOARD_LOUDER_ESP32_S3
+            bool "Louder-ESP32-S3 (ESP32-S3, TAS5805M)"
+            depends on IDF_TARGET_ESP32S3
+
     endchoice
 
     config BOARD_TARGET_PATH
@@ -72,10 +88,14 @@ menu "Board Configuration"
         default "esparagus-audio-brick" if BOARD_ESPARAGUS_AUDIO_BRICK
         default "esparagus-audio-brick" if BOARD_ESPARAGUS_AUDIO_BRICK_S3
         default "esparagus-audio-brick" if BOARD_ESPARAGUS_AUDIO_BRICK_DUAL_DAC
+        default "esparagus-audio-brick" if BOARD_LOUDER_ESP32_PLUS
+        default "esparagus-audio-brick" if BOARD_LOUDER_ESP32_S3_PLUS
         default "waveshare-esp32p4" if BOARD_WAVESHARE_ESP32P4
         default "waveshare-esp32s3" if BOARD_WAVESHARE_ESP32S3_TOUCH_LCD_154
         default "esparagus-audio-brick" if BOARD_ESPARAGUS_LOUDER
         default "esparagus-audio-brick" if BOARD_ESPARAGUS_LOUDER_S3
+        default "esparagus-audio-brick" if BOARD_LOUDER_ESP32
+        default "esparagus-audio-brick" if BOARD_LOUDER_ESP32_S3
 
     config BOARD_SQUEEZEAMP_COMMON
         bool
