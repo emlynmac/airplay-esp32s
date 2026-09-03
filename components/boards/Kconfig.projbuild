@@ -107,6 +107,18 @@ menu "Board Configuration"
             bool "Esparagus-Echo (ESP32-S3, dual MAX98357A)"
             depends on IDF_TARGET_ESP32S3
 
+        config BOARD_AMPED_ESP32
+            bool "Amped-ESP32 (ESP32, PCM5100 + TPA3110/TPA3128)"
+            depends on IDF_TARGET_ESP32
+
+        config BOARD_AMPED_ESP32_S3
+            bool "Amped-ESP32-S3 (ESP32-S3, PCM5100 + TPA3110/TPA3128)"
+            depends on IDF_TARGET_ESP32S3
+
+        config BOARD_AMPED_ESPARAGUS
+            bool "Amped-Esparagus rev M (ESP32, PCM5100 + TPA3110/TPA3128)"
+            depends on IDF_TARGET_ESP32
+
     endchoice
 
     config BOARD_TARGET_PATH
@@ -136,6 +148,9 @@ menu "Board Configuration"
         default "loud-esp32" if BOARD_LOUD_ESP32_S3
         default "loud-esp32" if BOARD_LOUD_ESPARAGUS
         default "loud-esp32" if BOARD_ESPARAGUS_ECHO
+        default "loud-esp32" if BOARD_AMPED_ESP32
+        default "loud-esp32" if BOARD_AMPED_ESP32_S3
+        default "loud-esp32" if BOARD_AMPED_ESPARAGUS
 
     config BOARD_SQUEEZEAMP_COMMON
         bool

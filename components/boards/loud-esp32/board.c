@@ -1,13 +1,16 @@
 /**
  * @file board.c
- * @brief Board implementation for Loud-ESP32 / Loud-ESP32-S3
+ * @brief Board implementation for the CONFIG_DAC_ENABLE_GPIO family:
+ *        Loud-ESP32(-S3), Loud-Esparagus, Esparagus-Echo (MAX98357A) and
+ *        Amped-ESP32(-S3) (PCM5100 + TPA3110/TPA3128).
  *
- * The MAX98357A has no I2C control — it's a plain I2S Class-D amp with a
- * single active-high SD_MODE enable pin. This registers a minimal DAC
- * driver whose only job is toggling that pin from RTSP playback events
- * (mirroring how Esparagus Audio Brick drives TAS58xx power modes), plus
- * the same shared-SPI-bus bring-up as the other Ethernet+display boards
- * in this family.
+ * None of these amps have I2C control — each is a plain I2S input with a
+ * single active-high enable/unmute pin (SD_MODE on the MAX98357A, UNMUTE
+ * on the TPA3110/TPA3128). This registers a minimal DAC driver whose only
+ * job is toggling that one pin from RTSP playback events (mirroring how
+ * Esparagus Audio Brick drives TAS58xx power modes over I2C), plus the
+ * same shared-SPI-bus bring-up as the other Ethernet+display boards in
+ * this family.
  */
 
 #include "iot_board.h"

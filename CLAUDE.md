@@ -54,6 +54,11 @@ idf.py -p /dev/ttyUSB0 monitor
 | `loud-esparagus` | ESP32 + dual MAX98357A | No Ethernet/display |
 | `loud-esparagus-bt` | Same + Bluetooth | |
 | `esparagus-echo` | ESP32-S3 + dual MAX98357A | Ethernet, no display |
+| `amped-esp32` | ESP32 + PCM5100 DAC + TPA3110/TPA3128 amp | No I2C; UNMUTE pin gated by RTSP play/pause |
+| `amped-esp32-bt` | Same + Bluetooth | |
+| `amped-esp32-s3` | ESP32-S3 + PCM5100 + TPA3110/TPA3128 | |
+| `amped-esparagus` | ESP32 + PCM5100 + TPA3110/TPA3128 | Rev M only; rotary encoder (volume + play/pause); no display — hardware TFT (ILI9342) isn't a supported driver |
+| `amped-esparagus-bt` | Same + Bluetooth | |
 | `esparagus-audio-brick` | ESP32 + TAS5825M/TAS5805M DAC/amp | Ethernet is on in every brick build |
 | `esparagus-audio-brick-bt` | Same + Bluetooth | |
 | `esparagus-audio-brick-s3` | ESP32-S3 + TAS5825M/TAS5805M | Different pinout from the ESP32 revision |
@@ -157,7 +162,7 @@ components/
 │   ├── waveshare-esp32s3/  # Waveshare ESP32-S3 board init
 │   ├── squeezeamp/         # SqueezeAMP (ESP32 + TAS5756)
 │   ├── hifi-esp32/         # HiFi-ESP32(-S3) / HiFi-Esparagus(-S3) (PCM5100)
-│   ├── loud-esp32/         # Loud-ESP32(-S3), Loud-Esparagus, Esparagus-Echo (MAX98357A, RTSP-gated enable pin)
+│   ├── loud-esp32/         # Loud-ESP32(-S3), Loud-Esparagus, Esparagus-Echo, Amped-ESP32(-S3), Amped-Esparagus (RTSP-gated amp enable pin)
 │   └── esparagus-audio-brick/ # Esparagus Audio Brick (ESP32/S3 + TAS58xx + W5500)
 ├── spiffs_storage/         # SPIFFS filesystem mount (stores web pages + DSP configs)
 ├── audio-resampler/        # sinc-based audio resampler (44.1→48kHz)
@@ -168,7 +173,7 @@ components/
 
 - **PSRAM is not optional**: `CONFIG_SPIRAM=y` is set once, in the base `config/sdkconfig.defaults`, and no board layer turns it off — the board files only pick the mode and speed (`CONFIG_SPIRAM_MODE_OCT` on the S3/P4, the 80 MHz quad default elsewhere). The `# CONFIG_SPIRAM=y` line in `config/sdkconfig.defaults.esp32s2` is a *comment* and overrides nothing, so the S2 gets PSRAM like everything else. A Kconfig `depends on SPIRAM` is therefore always satisfied and is not a real gate.
 - **CMake/Kconfig**: Board selection is via `CONFIG_` Kconfig options. DAC driver is auto-selected (`CONFIG_DAC_TAS57XX` or `CONFIG_DAC_TAS58XX`). Display, buttons, BT, Ethernet are all Kconfig-gated.
-- **A board without an I2C DAC can still register one.** `dac_ops_t` (`components/dac/include/dac.h`) doesn't require I2C — `loud-esp32/board.c` registers a driver whose `set_power_mode` just drives `CONFIG_DAC_ENABLE_GPIO` (the MAX98357A's active-high SD_MODE pin) from RTSP play/pause/disconnect events, the same events Esparagus Audio Brick uses to drive TAS58xx over I2C. This is a different pin from `CONFIG_DAC_PDN_GPIO`, which boards with an I2C DAC drive high once at boot and never touch again — `DAC_ENABLE_GPIO` is toggled on every playback state change because it's the *only* control surface the amp has.
+- **A board without an I2C DAC can still register one.** `dac_ops_t` (`components/dac/include/dac.h`) doesn't require I2C — `loud-esp32/board.c` registers a driver whose `set_power_mode` just drives `CONFIG_DAC_ENABLE_GPIO` (the amp's single active-high enable/unmute pin — SD_MODE on the MAX98357A boards, UNMUTE on the PCM5100+TPA3110/TPA3128 Amped boards) from RTSP play/pause/disconnect events, the same events Esparagus Audio Brick uses to drive TAS58xx over I2C. This is a different pin from `CONFIG_DAC_PDN_GPIO`, which boards with an I2C DAC drive high once at boot and never touch again — `DAC_ENABLE_GPIO` is toggled on every playback state change because it's the *only* control surface the amp has.
 - **Component structure**: Each component has its own `CMakeLists.txt` with `idf_component_register()`.
 - **Git submodules**: `u8g2` (OLED graphics) and `u8g2-hal-esp-idf` (ESP-IDF HAL for u8g2) are submodules — always clone with `--recursive`.
 - **SPIFFS**: `data/` directory contents are flashed to SPIFFS. `data/www/` = web UI, `data/hf/` = DSP binaries. Only the four `base-hf<n>-<rate>.bin` hybrid-flow bases are tracked; tuned PPC3 dumps are user-supplied and deliberately untracked.
