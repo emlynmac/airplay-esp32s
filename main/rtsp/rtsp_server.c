@@ -274,9 +274,13 @@ cleanup:
 
   // Immediate: stop audio and NTP
   audio_receiver_stop();
-  // The socket is gone, so the claim on the audio path goes with it. The DACP
-  // grace period below only decides when to report a disconnect.
-  audio_receiver_end_session();
+  if (!slot->is_old) {
+    // The socket is gone, so the claim on the audio path goes with it. The DACP
+    // grace period below only decides when to report a disconnect. A replaced
+    // connection releases nothing: is_old is set before the replacement is
+    // accepted, so its SETUP already owns the claim.
+    audio_receiver_end_session();
+  }
   audio_output_flush();
   ntp_clock_stop();
 

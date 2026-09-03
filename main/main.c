@@ -262,6 +262,19 @@ static void on_sendspin_activity(bool active) {
 // sending rather than being left to infer it from a dropped socket.
 static void on_airplay_audio_active(bool active) {
   if (!active) {
+#ifdef CONFIG_BT_A2DP_ENABLE
+    if (bt_a2dp_sink_is_connected()) {
+      // Bluetooth took the output and stopping the RTSP server is what ended
+      // the AirPlay session, so this release is an echo of that takeover, not
+      // the speaker going free.
+      return;
+    }
+#endif
+#ifdef CONFIG_USB_AUDIO_SINK
+    if (usb_audio_sink_is_streaming()) {
+      return;
+    }
+#endif
     ESP_LOGI(TAG, "AirPlay session ended — output released to Sendspin");
     sendspin_set_output_available(true);
     return;
@@ -299,18 +312,22 @@ static void on_bt_state_changed(bool connected) {
   }
 }
 
-static void on_airplay_client_event(playback_source_t source,
-                                    playback_event_t event,
-                                    const playback_event_data_t *data,
-                                    void *user_data) {
+// Bluetooth hides itself while anything else owns the output, so this reacts to
+// the aggregate rather than to AirPlay alone: with Sendspin in the picture the
+// edge that matters is often raised by it, and filtering on the source would
+// leave the radio suspended and the device undiscoverable after it stopped.
+static void on_playback_event(playback_source_t source, playback_event_t event,
+                              const playback_event_data_t *data,
+                              void *user_data) {
+  (void)source;
   (void)data;
   (void)user_data;
-  if (source != PLAYBACK_SOURCE_AIRPLAY || bt_a2dp_sink_is_connected()) {
+  if (bt_a2dp_sink_is_connected()) {
     return;
   }
   switch (event) {
   case PLAYBACK_EVENT_CONNECTED:
-    ESP_LOGI(TAG, "AirPlay client connected — disabling BT");
+    ESP_LOGI(TAG, "Network audio session started — disabling BT");
     bt_a2dp_sink_set_discoverable(false);
     bt_coex_post(BT_COEX_EVT_AIRPLAY_CONNECTED);
     break;
@@ -320,11 +337,11 @@ static void on_airplay_client_event(playback_source_t source,
   case PLAYBACK_EVENT_PAUSED:
     // Session still active — BT stays suspended and hidden so the phone
     // reconnects to AirPlay rather than falling back to BT.
-    ESP_LOGI(TAG, "AirPlay paused — keeping BT suspended and hidden");
+    ESP_LOGI(TAG, "Network audio paused — keeping BT suspended and hidden");
     bt_coex_post(BT_COEX_EVT_AIRPLAY_PAUSED);
     break;
   case PLAYBACK_EVENT_DISCONNECTED:
-    ESP_LOGI(TAG, "AirPlay client disconnected — BT resumes after idle delay");
+    ESP_LOGI(TAG, "Network audio ended — BT resumes after idle delay");
     bt_a2dp_sink_set_discoverable(true);
     bt_coex_post(BT_COEX_EVT_AIRPLAY_DISCONNECTED);
     break;
@@ -494,7 +511,7 @@ void app_main(void) {
       if (bt_coex_start() != ESP_OK) {
         ESP_LOGE(TAG, "BT coexistence task start failed");
       }
-      playback_events_register(on_airplay_client_event, NULL);
+      playback_events_register(on_playback_event, NULL);
     }
   }
   log_dram("bluetooth");
