@@ -791,11 +791,13 @@ static void sendspin_meta_apply(const sendspin_meta_t *next) {
   /* A server with an idle queue activates the role and immediately sends an
    * empty state. Taking that as a source would wake the amplifier and light
    * the display for as long as the server stayed connected, which for Music
-   * Assistant is for ever. */
+   * Assistant is for ever. The same goes for metadata that keeps arriving
+   * after something else took the output: the owner gets the display. */
   const bool has_content = next->meta.title[0] != '\0' ||
                            next->meta.artist[0] != '\0' ||
                            next->meta.album[0] != '\0' || next->has_progress;
-  if (!has_content && !sendspin_player_is_streaming()) {
+  if (!s_output_available ||
+      (!has_content && !sendspin_player_is_streaming())) {
     sendspin_events_connected(false);
     return;
   }
@@ -1761,10 +1763,16 @@ static void sendspin_handle_message(const char *json, size_t len,
       sendspin_player_stream_clear();
     }
   } else if (strcmp(type, "stream/end") == 0) {
-    if (sendspin_role_selected(payload) && sendspin_player_is_streaming()) {
-      sendspin_player_stream_end();
+    if (sendspin_role_selected(payload)) {
+      /* The stream may already be stopped -- something else took the output
+       * and ended it -- but the event state still has to be cleared, and only
+       * a stream we were actually rendering hands the output back. */
+      const bool was_streaming = sendspin_player_is_streaming();
+      if (was_streaming) {
+        sendspin_player_stream_end();
+      }
       sendspin_events_connected(false);
-      if (s_activity_cb) {
+      if (was_streaming && s_activity_cb) {
         s_activity_cb(false);
       }
     }
@@ -2246,6 +2254,7 @@ void sendspin_set_output_available(bool available) {
   s_output_available = available;
   ESP_LOGI(TAG, "output %s", available ? "released to Sendspin" : "taken over");
 
+  bool end_stream = false;
   if (!available && sendspin_player_is_streaming()) {
     /* A player that simply reports available:false leaves the server's queue
      * stopped, and a stopped queue does not restart itself when the player
@@ -2254,10 +2263,12 @@ void sendspin_set_output_available(bool available) {
       sendspin_send_controller_command(SENDSPIN_CMD_PAUSE);
       s_resume_on_release = true;
     }
-    /* Stop before reporting: the server tears the stream down on
-     * available:false anyway, and leaving the renderer attached would race
-     * whoever is taking the output. */
-    sendspin_player_stream_end();
+    /* Sendspin no longer holds the output, so it no longer holds the display
+     * or the amplifier either. Without this the source stays PLAYING for ever
+     * -- the server's own stream/end is gated on the player still running --
+     * and the aggregate never reaches DISCONNECTED again. */
+    sendspin_events_connected(false);
+    end_stream = true;
   } else if (available && s_resume_on_release) {
     s_resume_on_release = false;
     /* Queued rather than sent here: the tick drains commands after the state
@@ -2266,6 +2277,14 @@ void sendspin_set_output_available(bool available) {
   }
   s_state_dirty = true;
   sendspin_unlock();
+
+  /* Outside the lock: the stream end joins the playback task, which can take
+   * longer than SENDSPIN_LOCK_WAIT_MS, and a caller that timed out on the lock
+   * tears the session down. The renderer is still detached before this returns,
+   * which is what whoever is taking the output is waiting for. */
+  if (end_stream) {
+    sendspin_player_stream_end();
+  }
 }
 
 bool sendspin_send_command(sendspin_command_t cmd) {

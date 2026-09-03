@@ -1859,6 +1859,10 @@ static void handle_teardown(int socket, rtsp_conn_t *conn,
   if (!has_streams) {
     // Full teardown — server cleanup will emit PLAYBACK_EVENT_DISCONNECTED
     // when the TCP connection closes.
+    // Release the audio path now rather than behind the grace period below:
+    // the session is over, so anything else waiting for the speaker can have
+    // it. A stream-level teardown is a pause and deliberately keeps the claim.
+    audio_receiver_end_session();
     // For v1 sessions, keep the DACP session alive across teardown so the
     // grace period can probe mDNS to differentiate pause from real
     // disconnect. v2 sessions clear immediately.

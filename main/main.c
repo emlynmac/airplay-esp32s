@@ -30,7 +30,6 @@
 
 #ifdef CONFIG_SENDSPIN_ENABLE
 #include "sendspin.h"
-#include "sendspin_player.h"
 #endif
 
 #ifdef CONFIG_DAC_TAS57XX
@@ -269,6 +268,10 @@ static void on_airplay_audio_active(bool active) {
   }
 
   ESP_LOGI(TAG, "AirPlay session — taking the output from Sendspin");
+  // Register AirPlay as a source before Sendspin drops its own, so the
+  // aggregate never falls to nothing in between: that would emit DISCONNECTED
+  // and power-cycle the amplifier on every takeover.
+  playback_events_emit(PLAYBACK_SOURCE_AIRPLAY, PLAYBACK_EVENT_CONNECTED, NULL);
   sendspin_set_output_available(false);
   // sendspin_player_stream_end() stops the playback task on its way out.
   audio_output_start();
