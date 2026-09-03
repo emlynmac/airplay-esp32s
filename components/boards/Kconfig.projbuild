@@ -91,6 +91,22 @@ menu "Board Configuration"
             bool "HiFi-Esparagus-S3 (ESP32-S3, PCM5100)"
             depends on IDF_TARGET_ESP32S3
 
+        config BOARD_LOUD_ESP32
+            bool "Loud-ESP32 (ESP32, MAX98357A)"
+            depends on IDF_TARGET_ESP32
+
+        config BOARD_LOUD_ESP32_S3
+            bool "Loud-ESP32-S3 (ESP32-S3, dual MAX98357A)"
+            depends on IDF_TARGET_ESP32S3
+
+        config BOARD_LOUD_ESPARAGUS
+            bool "Loud-Esparagus (ESP32, dual MAX98357A)"
+            depends on IDF_TARGET_ESP32
+
+        config BOARD_ESPARAGUS_ECHO
+            bool "Esparagus-Echo (ESP32-S3, dual MAX98357A)"
+            depends on IDF_TARGET_ESP32S3
+
     endchoice
 
     config BOARD_TARGET_PATH
@@ -116,6 +132,10 @@ menu "Board Configuration"
         default "esp32-generic" if BOARD_HIFI_ESPARAGUS
         default "hifi-esp32" if BOARD_HIFI_ESP32_S3
         default "hifi-esp32" if BOARD_HIFI_ESPARAGUS_S3
+        default "loud-esp32" if BOARD_LOUD_ESP32
+        default "loud-esp32" if BOARD_LOUD_ESP32_S3
+        default "loud-esp32" if BOARD_LOUD_ESPARAGUS
+        default "loud-esp32" if BOARD_ESPARAGUS_ECHO
 
     config BOARD_SQUEEZEAMP_COMMON
         bool
@@ -221,6 +241,16 @@ menu "Board Configuration"
                 help
                     Same as DAC_PDN_GPIO but for the second DAC on dual-DAC
                     boards. Set to -1 if there is no second DAC.
+
+            config DAC_ENABLE_GPIO
+                int "DAC/amp enable GPIO"
+                default -1
+                help
+                    Active-high enable pin of a DAC/amp with no I2C control
+                    (e.g. the MAX98357A's SD_MODE pin). Unlike DAC_PDN_GPIO,
+                    which is driven high once at boot, this pin is toggled
+                    dynamically from RTSP playback events: high while
+                    playing, low otherwise. Set to -1 if not used.
 
             config JACK_GPIO
                 int "Headphone Jack Detection GPIO"
