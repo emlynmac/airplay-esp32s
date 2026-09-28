@@ -73,6 +73,16 @@ static const char *TAG = "ptp_clock";
 // window.  Below this threshold the drift is negligible (<0.25 ms at 5 s).
 #define PTP_LONG_PAUSE_THRESHOLD_MS 30000
 
+// A sample newer than this means the master is still sending, so the next
+// session can carry on with the lock rather than spend ~0.75 s re-acquiring it.
+#define SESSION_KEEP_MS 2000
+// This many rejected samples in a row (~2 s of SYNCs) means the master's
+// clock has genuinely moved, not jitter: start the filter over rather than
+// reject every sample from then on.
+#define OUTLIER_RUN_RESET 16
+// sample_clock_id when samples from more than one master have been mixed.
+#define PTP_CLOCK_ID_MIXED UINT64_MAX
+
 // PTP state
 static struct {
   bool running;
@@ -115,6 +125,10 @@ static struct {
 
   // Master clock filter (0 = accept any master)
   uint64_t expected_clock_id;
+  // Master behind the samples since the last reset (0 = none yet,
+  // PTP_CLOCK_ID_MIXED = more than one).
+  uint64_t sample_clock_id;
+  uint32_t consecutive_outliers;
 } ptp = {0};
 
 // Parse 8-byte clockIdentity (big-endian) from PTP sourcePortIdentity
@@ -158,9 +172,14 @@ static inline int64_t get_local_time_ns(void) {
 // dampening negative jitter (smaller offset = longer delay) slowly, the
 // filter converges to the offset corresponding to the minimum network
 // delay — the best available approximation of the true clock offset.
-static void update_offset(int64_t new_offset_ns) {
+static void update_offset(int64_t new_offset_ns, uint64_t src_clock_id) {
   uint32_t now_ms = xTaskGetTickCount() * portTICK_PERIOD_MS;
   ptp.last_sync_ms = now_ms;
+  if (ptp.sample_count == 0) {
+    ptp.sample_clock_id = src_clock_id;
+  } else if (src_clock_id != ptp.sample_clock_id) {
+    ptp.sample_clock_id = PTP_CLOCK_ID_MIXED;
+  }
   ptp.sample_count++;
   // Record the raw sample before any smoothing or outlier rejection, so the
   // divergence between measured and filtered offset stays observable.
@@ -180,8 +199,19 @@ static void update_offset(int64_t new_offset_ns) {
     }
     if (diff > OUTLIER_THRESHOLD_NS) {
       ptp.outlier_count++;
+      if (++ptp.consecutive_outliers >= OUTLIER_RUN_RESET) {
+        ESP_LOGW(TAG, "offset moved by %lld ms and stayed there, re-locking",
+                 (long long)(diff / 1000000));
+        ptp.locked = false;
+        ptp.lock_start_ms = 0;
+        ptp.lock_candidate_start_ms = 0;
+        ptp.sample_count = 0;
+        ptp.previous_offset_time_ms = 0;
+        ptp.consecutive_outliers = 0;
+      }
       return;
     }
+    ptp.consecutive_outliers = 0;
 
     int64_t jitter = new_offset_ns - ptp.previous_offset;
     uint32_t mastership_time_ms = now_ms - ptp.mastership_start_ms;
@@ -274,7 +304,7 @@ static void process_sync(const uint8_t *data, size_t len, uint16_t seq) {
       ptp_time_ns = (uint64_t)((int64_t)ptp_time_ns + correction_field);
     }
     int64_t offset = (int64_t)ptp_time_ns - ptp.last_sync_local_ns;
-    update_offset(offset);
+    update_offset(offset, parse_ptp_clock_id(data));
     ptp.awaiting_followup = false;
   }
 }
@@ -312,7 +342,7 @@ static void process_followup(const uint8_t *data, size_t len, uint16_t seq) {
 
     // offset = PTP_time - local_time_at_sync_receipt
     int64_t offset = (int64_t)ptp_time_ns - ptp.last_sync_local_ns;
-    update_offset(offset);
+    update_offset(offset, parse_ptp_clock_id(data));
   }
 }
 
@@ -566,6 +596,29 @@ void ptp_clock_clear(void) {
   // Drop the master filter so the next session can lock to whatever master
   // its anchor packet names (which may differ from the previous session).
   ptp.expected_clock_id = 0;
+  ptp.sample_clock_id = 0;
+  ptp.consecutive_outliers = 0;
+}
+
+// True when the samples still describe the master: it sent one recently and
+// that one was accepted.  An iPhone's PTP clock stops while it sleeps, so after
+// a pause the first samples can land seconds away from the filtered offset --
+// a lock carried across that would place the next anchor that far out.
+static bool samples_current(void) {
+  uint32_t now_ms = xTaskGetTickCount() * portTICK_PERIOD_MS;
+  return ptp.sample_count > 0 && ptp.consecutive_outliers == 0 &&
+         ptp.last_sync_ms != 0 && (now_ms - ptp.last_sync_ms) < SESSION_KEEP_MS;
+}
+
+void ptp_clock_end_session(void) {
+  if (!samples_current()) {
+    ptp_clock_clear();
+    return;
+  }
+  // The master is still sending, so the samples are current. Only drop the
+  // filter, so the next session may name a different master; naming this
+  // one again keeps the lock (see ptp_clock_set_master_clock_id()).
+  ptp.expected_clock_id = 0;
 }
 
 void ptp_clock_notify_resume(uint32_t pause_duration_ms) {
@@ -618,9 +671,18 @@ void ptp_clock_set_master_clock_id(uint64_t clock_id) {
     return;
   }
 
-  ESP_LOGI(TAG, "PTP master clock_id %s: %016llx", clock_id ? "set" : "cleared",
-           (unsigned long long)clock_id);
+  // A session naming the master every current sample came from -- the next
+  // track from the same phone -- keeps the lock.  Re-acquiring it takes
+  // ~0.75 s, and a start waiting on it joins the track that far in.
+  bool keep =
+      clock_id != 0 && ptp.sample_clock_id == clock_id && samples_current();
+  ESP_LOGI(TAG, "PTP master clock_id %s: %016llx%s",
+           clock_id ? "set" : "cleared", (unsigned long long)clock_id,
+           keep ? " (already measuring it, lock kept)" : "");
   ptp.expected_clock_id = clock_id;
+  if (keep) {
+    return;
+  }
 
   // Drop accumulated samples / lock state — they may have come from a
   // different (wrong) master.
@@ -632,6 +694,8 @@ void ptp_clock_set_master_clock_id(uint64_t clock_id) {
   ptp.previous_offset = 0;
   ptp.previous_offset_time_ms = 0;
   ptp.awaiting_followup = false;
+  ptp.sample_clock_id = 0;
+  ptp.consecutive_outliers = 0;
 }
 
 uint64_t ptp_clock_get_master_clock_id(void) {
