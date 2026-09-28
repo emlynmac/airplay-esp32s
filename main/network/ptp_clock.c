@@ -76,8 +76,8 @@ static const char *TAG = "ptp_clock";
 // A sample newer than this means the master is still sending, so the next
 // session can carry on with the lock rather than spend ~0.75 s re-acquiring it.
 #define SESSION_KEEP_MS 2000
-// This many rejected samples in a row (~2 s of SYNCs) means the master's
-// clock has genuinely moved, not jitter: start the filter over rather than
+// This many samples in a row far below the estimate (~2 s of SYNCs) means the
+// master's clock has genuinely moved back, not jitter: follow it rather than
 // reject every sample from then on.
 #define OUTLIER_RUN_RESET 16
 // sample_clock_id when samples from more than one master have been mixed.
@@ -129,6 +129,7 @@ static struct {
   // PTP_CLOCK_ID_MIXED = more than one).
   uint64_t sample_clock_id;
   uint32_t consecutive_outliers;
+  int64_t outlier_run_best_ns; // highest offset in the current run
 } ptp = {0};
 
 // Parse 8-byte clockIdentity (big-endian) from PTP sourcePortIdentity
@@ -192,46 +193,59 @@ static void update_offset(int64_t new_offset_ns, uint64_t src_clock_id) {
     smoothed_offset = new_offset_ns;
     ptp.mastership_start_ms = now_ms;
   } else {
-    // Reject obvious outliers (more than 50ms from current estimate)
     int64_t diff = new_offset_ns - ptp.filtered_offset_ns;
-    if (diff < 0) {
-      diff = -diff;
-    }
     if (diff > OUTLIER_THRESHOLD_NS) {
+      // Far above the estimate: this SYNC got through faster than the ones it
+      // was built on.  Queuing only ever delays a SYNC, so those were held up
+      // (or the master's clock stepped forward) -- take this one as it is.
+      // Rejecting it instead left a filter seeded by one delayed sample
+      // refusing every good one after it.
+      ptp.consecutive_outliers = 0;
+      smoothed_offset = new_offset_ns;
+    } else if (diff < -OUTLIER_THRESHOLD_NS) {
       ptp.outlier_count++;
-      if (++ptp.consecutive_outliers >= OUTLIER_RUN_RESET) {
-        ESP_LOGW(TAG, "offset moved by %lld ms and stayed there, re-locking",
-                 (long long)(diff / 1000000));
-        ptp.locked = false;
-        ptp.lock_start_ms = 0;
-        ptp.lock_candidate_start_ms = 0;
-        ptp.sample_count = 0;
-        ptp.previous_offset_time_ms = 0;
-        ptp.consecutive_outliers = 0;
+      if (ptp.consecutive_outliers == 0 ||
+          new_offset_ns > ptp.outlier_run_best_ns) {
+        ptp.outlier_run_best_ns = new_offset_ns;
       }
-      return;
-    }
-    ptp.consecutive_outliers = 0;
-
-    int64_t jitter = new_offset_ns - ptp.previous_offset;
-    uint32_t mastership_time_ms = now_ms - ptp.mastership_start_ms;
-
-    if (jitter >= 0) {
-      // Positive jitter: offset increased → shorter network delay → more
-      // accurate.  Accept quickly, especially during startup.
-      if (mastership_time_ms < STARTUP_DURATION_MS) {
-        smoothed_offset = ptp.previous_offset + jitter / SMOOTH_POS_STARTUP_DIV;
-      } else {
-        smoothed_offset = ptp.previous_offset + jitter / SMOOTH_POS_STEADY_DIV;
+      if (++ptp.consecutive_outliers < OUTLIER_RUN_RESET) {
+        return; // a burst of delayed SYNCs, most likely
       }
+      // Too many in a row for delay: the master's clock went back (an
+      // iPhone's stops while it sleeps).  Step to the least delayed sample of
+      // the run and keep the lock -- a playing stream follows one step, but
+      // an unlocked clock reads as an offset of 0 until it re-locks.
+      ESP_LOGI(TAG, "offset fell by %lld ms and stayed there, following it",
+               (long long)((ptp.filtered_offset_ns - ptp.outlier_run_best_ns) /
+                           1000000));
+      smoothed_offset = ptp.outlier_run_best_ns;
+      ptp.consecutive_outliers = 0;
+      ptp.mastership_start_ms = now_ms; // track upwards quickly again
     } else {
-      // Negative jitter: offset decreased → longer network delay → less
-      // reliable.  Clamp and apply only a tiny fraction.
-      int64_t clamped_jitter = jitter;
-      if (clamped_jitter < SMOOTH_NEG_CLAMP_NS) {
-        clamped_jitter = SMOOTH_NEG_CLAMP_NS;
+      ptp.consecutive_outliers = 0;
+
+      int64_t jitter = new_offset_ns - ptp.previous_offset;
+      uint32_t mastership_time_ms = now_ms - ptp.mastership_start_ms;
+
+      if (jitter >= 0) {
+        // Positive jitter: offset increased → shorter network delay → more
+        // accurate.  Accept quickly, especially during startup.
+        if (mastership_time_ms < STARTUP_DURATION_MS) {
+          smoothed_offset =
+              ptp.previous_offset + jitter / SMOOTH_POS_STARTUP_DIV;
+        } else {
+          smoothed_offset =
+              ptp.previous_offset + jitter / SMOOTH_POS_STEADY_DIV;
+        }
+      } else {
+        // Negative jitter: offset decreased → longer network delay → less
+        // reliable.  Clamp and apply only a tiny fraction.
+        int64_t clamped_jitter = jitter;
+        if (clamped_jitter < SMOOTH_NEG_CLAMP_NS) {
+          clamped_jitter = SMOOTH_NEG_CLAMP_NS;
+        }
+        smoothed_offset = ptp.previous_offset + clamped_jitter / SMOOTH_NEG_DIV;
       }
-      smoothed_offset = ptp.previous_offset + clamped_jitter / SMOOTH_NEG_DIV;
     }
   }
 
