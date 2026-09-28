@@ -84,6 +84,14 @@ static void settle(uint64_t master, int64_t offset_ns, int count) {
   }
 }
 
+/* A congested network: every SYNC 70-400 ms late.  On the board, runs of 2 s
+ * or more whose least delayed SYNC was 52-206 ms late came several times an
+ * hour of playback, and single SYNCs up to ~700 ms late. */
+static int congested_ms(int i) {
+  static const int pattern[] = {70, 180, 95, 260, 120, 310, 85, 220, 150, 400};
+  return pattern[i % 10];
+}
+
 static int64_t error_ms(int64_t offset_ns) {
   return (ptp_clock_get_offset_ns() - offset_ns) / MS;
 }
@@ -130,6 +138,58 @@ static void test_backward_step_followed(void) {
   settle(MASTER_A, TRUE_OFFSET, 40);
   int64_t stepped = TRUE_OFFSET - 4445 * MS;
   for (int i = 0; i < OUTLIER_RUN_RESET + 8; i++) {
+    sync_from(MASTER_A, stepped, jitter_ms(i));
+    CHECK(ptp_clock_is_locked(), "unlocked on sample %d after the step", i);
+  }
+  CHECK(llabs(error_ms(stepped)) <= 30, "offset %lld ms off after the step",
+        (long long)error_ms(stepped));
+}
+
+/* The same step measured through congestion.  The SYNC that ends the run can
+ * sit hundreds of ms below the least delayed one the filter steps to, and
+ * that used to cost the lock at the very moment it was followed. */
+static void test_step_through_congestion(void) {
+  printf("step through congestion\n");
+  reset();
+  settle(MASTER_A, TRUE_OFFSET, 40);
+  int64_t stepped = TRUE_OFFSET - 4445 * MS;
+  for (int i = 0; i < OUTLIER_RUN_RESET + 8; i++) {
+    sync_from(MASTER_A, stepped, congested_ms(i));
+    CHECK(ptp_clock_is_locked(), "unlocked on sample %d after the step", i);
+  }
+  settle(MASTER_A, stepped, 8);
+  CHECK(llabs(error_ms(stepped)) <= 30, "offset %lld ms off after the step",
+        (long long)error_ms(stepped));
+}
+
+/* Congestion is not the master's clock moving.  Following it dropped the
+ * estimate by the least delay of the run, and on the board threw the playout
+ * error out by up to tens of ms for 10-20 s. */
+static void test_congestion_not_followed(void) {
+  printf("congestion\n");
+  reset();
+  settle(MASTER_A, TRUE_OFFSET, 40);
+  int64_t before = ptp_clock_get_offset_ns();
+  for (int i = 0; i < 80; i++) {
+    sync_from(MASTER_A, TRUE_OFFSET, congested_ms(i));
+    CHECK(ptp_clock_is_locked(), "unlocked on congested sample %d", i);
+  }
+  CHECK(llabs(ptp_clock_get_offset_ns() - before) < MS,
+        "offset moved %lld ms in 10 s of congestion",
+        (long long)((ptp_clock_get_offset_ns() - before) / MS));
+  settle(MASTER_A, TRUE_OFFSET, 8);
+  CHECK(llabs(error_ms(TRUE_OFFSET)) <= 30, "offset %lld ms off after it",
+        (long long)error_ms(TRUE_OFFSET));
+}
+
+/* A fall no larger than congestion can cause is followed once it has lasted
+ * long enough that congestion would have cleared. */
+static void test_small_step_followed_later(void) {
+  printf("small step\n");
+  reset();
+  settle(MASTER_A, TRUE_OFFSET, 40);
+  int64_t stepped = TRUE_OFFSET - 300 * MS;
+  for (int i = 0; i < OUTLIER_RUN_RESET_SMALL + 8; i++) {
     sync_from(MASTER_A, stepped, jitter_ms(i));
     CHECK(ptp_clock_is_locked(), "unlocked on sample %d after the step", i);
   }
@@ -194,6 +254,9 @@ int main(void) {
   test_delayed_first_sample();
   test_delay_burst_ignored();
   test_backward_step_followed();
+  test_step_through_congestion();
+  test_congestion_not_followed();
+  test_small_step_followed_later();
   test_forward_step_followed();
   test_session_handover();
   if (failures) {

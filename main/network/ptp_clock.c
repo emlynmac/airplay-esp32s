@@ -76,10 +76,17 @@ static const char *TAG = "ptp_clock";
 // A sample newer than this means the master is still sending, so the next
 // session can carry on with the lock rather than spend ~0.75 s re-acquiring it.
 #define SESSION_KEEP_MS 2000
-// This many samples in a row far below the estimate (~2 s of SYNCs) means the
-// master's clock has genuinely moved back, not jitter: follow it rather than
-// reject every sample from then on.
-#define OUTLIER_RUN_RESET 16
+// A run of samples far below the estimate is either congestion holding SYNCs
+// up or the master's clock moving back: an iPhone's stops while it sleeps, so
+// its offset falls by the time it slept, 0.5 s to minutes on the board.
+// Congestion there held every SYNC 52-206 ms late for 2 s and more, several
+// times an hour of playback, and each follow threw the playout error out by
+// up to tens of ms for 10-20 s.  So a fall larger than congestion causes is
+// followed after ~2 s of SYNCs, and a smaller one only once it has lasted
+// ~20 s, far longer than congestion did.
+#define OUTLIER_RUN_RESET       16
+#define OUTLIER_RUN_RESET_SMALL 160
+#define SMALL_STEP_NS           500000000LL // 500 ms
 // sample_clock_id when samples from more than one master have been mixed.
 #define PTP_CLOCK_ID_MIXED UINT64_MAX
 
@@ -208,7 +215,10 @@ static void update_offset(int64_t new_offset_ns, uint64_t src_clock_id) {
           new_offset_ns > ptp.outlier_run_best_ns) {
         ptp.outlier_run_best_ns = new_offset_ns;
       }
-      if (++ptp.consecutive_outliers < OUTLIER_RUN_RESET) {
+      const int64_t fall = ptp.filtered_offset_ns - ptp.outlier_run_best_ns;
+      const uint32_t run_needed =
+          fall < SMALL_STEP_NS ? OUTLIER_RUN_RESET_SMALL : OUTLIER_RUN_RESET;
+      if (++ptp.consecutive_outliers < run_needed) {
         return; // a burst of delayed SYNCs, most likely
       }
       // Too many in a row for delay: the master's clock went back (an
@@ -216,8 +226,7 @@ static void update_offset(int64_t new_offset_ns, uint64_t src_clock_id) {
       // the run and keep the lock -- a playing stream follows one step, but
       // an unlocked clock reads as an offset of 0 until it re-locks.
       ESP_LOGI(TAG, "offset fell by %lld ms and stayed there, following it",
-               (long long)((ptp.filtered_offset_ns - ptp.outlier_run_best_ns) /
-                           1000000));
+               (long long)(fall / 1000000));
       smoothed_offset = ptp.outlier_run_best_ns;
       ptp.consecutive_outliers = 0;
       ptp.mastership_start_ms = now_ms; // track upwards quickly again
@@ -281,13 +290,12 @@ static void update_offset(int64_t new_offset_ns, uint64_t src_clock_id) {
         }
       }
     } else {
+      // A held lock is never dropped on one sample.  Every path above keeps
+      // the sample within OUTLIER_THRESHOLD_NS of the estimate except a
+      // followed run, whose last sample can sit hundreds of ms below the one
+      // it steps to, and a playing stream reads an unlocked clock as an
+      // offset of 0.  Silence (ptp_clock_is_locked()) or a reset drops it.
       ptp.lock_candidate_start_ms = 0;
-      if (ptp.locked && dev > LOCK_THRESHOLD_NS * 4) {
-        ptp.locked = false;
-        ptp.lock_start_ms = 0;
-        ESP_LOGW(TAG, "LOST LOCK: dev=%lldns (threshold=%lldns)",
-                 (long long)dev, (long long)(LOCK_THRESHOLD_NS * 4));
-      }
     }
   }
 }
