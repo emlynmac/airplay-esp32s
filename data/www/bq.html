@@ -229,9 +229,9 @@ that instead of correcting the band the driver does cover.</p>
 <button class='btn btn-secondary' onclick='exportEq()'
         title='Save the filters, routing and levels of every output'>Export to file</button>
 <button class='btn btn-secondary' onclick="$('eq-file').click()"
-        title='Load a saved tuning, then Apply to hear it'>Import from file&hellip;</button>
+        title='Load a saved tuning, or REW filter settings, then Apply to hear it'>Import from file&hellip;</button>
 </span>
-<input type='file' id='eq-file' accept='.json,application/json' hidden
+<input type='file' id='eq-file' accept='.json,.txt,application/json,text/plain' hidden
        onchange='importEq(this)'>
 </div>
 </div>
@@ -2383,6 +2383,143 @@ function eqStage(r,name){
   show($('msg'),'Loaded '+esc(name)+'. Apply to hear it, then Commit to keep'+
        ' it.'+(notes.length?' '+notes.join(' '):''),'info');
 }
+/* ---- REW filter settings ----
+   The text REW saves from the EQ window ("Filter Settings file"), which is
+   also what Equalizer APO reads:
+     Filter  1: ON  PK       Fc   11796 Hz  Gain -10.00 dB  Q    1.6
+   REW gives a peaking filter's Q as the equaliser it was fitted for defines
+   it. Most use RBJ's, bandwidth = Fc/Q; the ones listed here use
+   bandwidth = sqrt(gain)*Fc/Q, gain being linear and taken as a boost.
+   Both name the same filters as eqBq() with a different Q, which is why a
+   peaking filter can be matched exactly rather than approximately. */
+var REW_SQRT_Q=['dcx2496','crown','d&b','dspeaker','umc-200','twk-88','hypex',
+                'jrultr','rephase','rockford'];
+function rewNum(s){
+  var m=/^([0-9]*\.?[0-9]+)(k?)$/i.exec(s);
+  return m?parseFloat(m[1])*(m[2]?1000:1):NaN;
+}
+/* Our q for a peaking filter that RBJ's cookbook builds with Q at rate sr.
+   The two share every pole but the bandwidth's: eqBq() widens a cut by its
+   gain and never prewarps, so q takes both back. */
+function rewPeakQ(Q,gain,freq,sr){
+  var t0=2*P*freq/sr;
+  return Q*Math.pow(10,Math.abs(gain)/40)*t0/Math.sin(t0);
+}
+function rewRead(text,sr){
+  var lines=String(text).split(/\r?\n/),out=[],notes=[],eq='',pre=null;
+  var sqrtQ=false,i,m;
+  for(i=0;i<lines.length;i++){
+    var ln=lines[i].trim();
+    if((m=/^equali[sz]er:\s*(.*)$/i.exec(ln))){
+      eq=m[1].trim();
+      var low=eq.toLowerCase();
+      sqrtQ=REW_SQRT_Q.some(function(k){return low.indexOf(k)>=0;});
+      continue;
+    }
+    if((m=/^preamp:\s*(-?[0-9]*\.?[0-9]+)\s*db/i.exec(ln))){
+      pre=(pre||0)+parseFloat(m[1]);
+      continue;
+    }
+    m=/^filter\s*(\d+)\s*:\s*(on|off)\b\s*(.*)$/i.exec(ln);
+    if(!m)continue;
+    var n=m[1],rest=m[3].replace(/\s+/g,' ').trim();
+    if(m[2].toUpperCase()==='OFF'||!rest||/^none\b/i.test(rest))continue;
+    var at=rest.search(/\bFc\b/i);
+    var type=(at<0?rest:rest.slice(0,at)).trim().toUpperCase();
+    var p={},tok=(at<0?'':rest.slice(at)).split(' '),k;
+    for(k=0;k<tok.length;k++){
+      var key=tok[k].toLowerCase();
+      if(key==='fc'&&k+1<tok.length)p.fc=rewNum(tok[++k]);
+      else if(key==='gain'&&k+1<tok.length)p.gain=parseFloat(tok[++k]);
+      else if(key==='q'&&k+1<tok.length)p.q=rewNum(tok[++k]);
+      else if(key==='bw'&&tok[k+1]&&tok[k+1].toLowerCase()==='oct'&&
+              k+2<tok.length){p.oct=rewNum(tok[k+2]);k+=2;}
+      else if(key==='bw'||key.indexOf('bw/')===0)
+        return {err:'filter '+n+' gives a bandwidth REW only uses for '+
+                'Behringer units. Fit it for the Generic equaliser instead.'};
+    }
+    var where='filter '+n,b=blankBq();
+    if(!(p.fc>0))return {err:where+' has no frequency.'};
+    if(p.fc>sr*0.49){
+      notes.push('Filter '+n+' at '+p.fc+' Hz is past what '+sr+' Hz can '+
+                 'carry, so it sits at '+Math.floor(sr*0.49)+' Hz.');
+      p.fc=Math.floor(sr*0.49);
+    }
+    b.freq=p.fc;
+    if(type==='PK'||type==='PEQ'||type==='MODAL'){
+      if(!isFinite(p.gain))return {err:where+' has no gain.'};
+      if(p.oct>0){
+        var x=Math.pow(2,p.oct);
+        p.q=Math.sqrt(x)/(x-1);
+      }
+      if(!(p.q>0))return {err:where+' has no Q.'};
+      if(p.gain<G_MIN||p.gain>G_MAX){
+        notes.push('Filter '+n+' asks for '+p.gain+' dB; a section stops at '+
+                   (p.gain<0?G_MIN:'+'+G_MAX)+' dB.');
+        p.gain=clamp(p.gain,G_MIN,G_MAX);
+      }
+      /* A sqrt-gain Q is RBJ's divided by the square root of the gain. */
+      var Q=sqrtQ&&!p.oct?p.q/Math.pow(10,Math.abs(p.gain)/40):p.q;
+      var q=rewPeakQ(Q,p.gain,p.fc,sr);
+      if(q>Q_MAX||q<Q_MIN){
+        notes.push('Filter '+n+' needs Q '+q.toPrecision(3)+' here to '+
+                   'match REW, past the '+(q>Q_MAX?Q_MAX:Q_MIN)+' a section '+
+                   'can take, so it is '+(q>Q_MAX?'wider':'narrower')+
+                   ' than REW fitted.');
+        q=clamp(q,Q_MIN,Q_MAX);
+      }
+      b.type=T_PEAK_Q;b.gain=p.gain;b.q=Number(q.toPrecision(5));
+    }else if(/^(LP|HP)(Q|1)?$/.test(type)){
+      b.type=type.charAt(0)==='L'?T_LP:T_HP;
+      if(/1$/.test(type))b.sub=S_BW1;
+      else if(p.q>0){
+        b.sub=S_VARQ;b.q=clamp(p.q,Q_MIN,Q_MAX);
+      }else if(/Q$/.test(type))return {err:where+' has no Q.'};
+      else b.sub=S_BW2;
+    }else{
+      return {err:where+' is &ldquo;'+esc(rest.slice(0,at<0?rest.length:at)
+              .trim())+'&rdquo;, which this page cannot match. Peaking, low '+
+              'pass and high pass filters load; set it by hand.'};
+    }
+    out.push(b);
+  }
+  if(!out.length)
+    return {err:'it holds no filters that are switched on.'};
+  if(out.length>SLOTS)
+    return {err:'it has '+out.length+' filters, but an output has '+SLOTS+
+            ' slots.'};
+  if(/configurable/i.test(eq))
+    notes.push('REW does not record which Q a Configurable PEQ uses; RBJ\'s '+
+               'was assumed.');
+  return {eq:eq,filters:out,preamp:pre,notes:notes};
+}
+/* Into the output on screen, or both while they are ganged, replacing its
+   chain: REW's filters are a whole correction, fitted on their own. */
+function rewStage(r,name){
+  var am=data.amps[amp],gang=isGanged(am),c,i;
+  var notes=r.notes.slice();
+  storeRows();
+  for(c=0;c<2;c++){
+    if(!gang&&c!==ch)continue;
+    for(i=0;i<SLOTS;i++)
+      am.channels[c][i]=i<r.filters.length
+        ?JSON.parse(JSON.stringify(r.filters[i])):blankBq();
+  }
+  if(r.preamp!==null){
+    var g=clamp(r.preamp,data.gain_min,data.gain_max);
+    if(g!==r.preamp)
+      notes.push('Its preamp of '+r.preamp+' dB is set as '+g+' dB, the '+
+                 'nearest level the output takes.');
+    for(c=0;c<2;c++)if(gang||c===ch)am.gains[c]=g;
+  }
+  drawGains();loadRows();setDirty(true);plot();
+  show($('msg'),'Loaded '+r.filters.length+' filter'+
+       (r.filters.length>1?'s':'')+' from '+esc(name)+
+       (r.eq?' ('+esc(r.eq)+')':'')+' into '+
+       (gang?esc(chainLabel(am)):outLabel(ch))+', converted for '+fs()+
+       ' Hz. Apply to hear it, then Commit to keep it.'+
+       (notes.length?' '+notes.join(' '):''),'info');
+}
 function importEq(input){
   var file=input.files&&input.files[0];
   /* Cleared so that picking the same file again still fires onchange. */
@@ -2393,9 +2530,15 @@ function importEq(input){
     show($('msg'),'Could not read '+esc(file.name)+'.','err');
   };
   rd.onload=function(){
-    var r;
-    try{r=eqRead(JSON.parse(String(rd.result)));}
-    catch(e){r={err:'it is not an EQ file.'};}
+    var text=String(rd.result),j,r;
+    try{j=JSON.parse(text);}catch(e){j=undefined;}
+    if(j===undefined&&/^\s*filter\s*\d+\s*:/im.test(text)){
+      r=rewRead(text,fs());
+      if(!r.err){rewStage(r,file.name);return;}
+    }else{
+      r=j===undefined?{err:'it is neither an EQ file nor REW filter '+
+                           'settings.'}:eqRead(j);
+    }
     if(r.err){
       show($('msg'),'Could not import '+esc(file.name)+': '+r.err,'err');
       return;

@@ -250,6 +250,29 @@ matches no filter shape: it stays as raw coefficients, which depend on the rate,
 page says so. A file with more amplifiers than the board fills the ones it has. A
 TAS5805M, having no routing to choose, saves none and keeps its own when a file has one.
 
+### Loading filters from REW
+
+**Import from file…** also reads the filter settings text file that REW saves from its EQ window, the one
+headed "Filter Settings file" whose lines read
+`Filter  1: ON  PK  Fc 1990 Hz  Gain -8.00 dB  Q 1.5`, and the same lines as Equalizer
+APO takes them. The filters replace the chain of the output on screen, or of both
+outputs while they are ganged, and are staged like any other edit. A `Preamp:` line sets
+that output's level.
+
+REW states each peaking filter's Q the way the equaliser it was fitted for defines it,
+and the page converts it into this firmware's own. The two describe the same family of
+filter, so the conversion is exact rather than a close fit: what plays is what REW
+showed. Most equalisers, including Generic and ADA PEQ, use RBJ's definition; those REW
+documents as using the sqrt(gain) one, such as rePhase and Hypex, are recognised by
+name. Low and high pass filters, with or without a Q, carry over as Butterworth or
+variable-Q sections.
+
+The conversion is made for the rate the page shows, and a peaking filter near the top
+of the band can need a narrower section than the part can make: past Q 20 it is held
+there, and the page names the filter. Shelves and REW's other filter types are refused
+rather than guessed, because REW does not publish how it defines them; set those by
+hand.
+
 ## Full PPC3 tuning
 
 !!! info "TAS5825M only"
