@@ -79,6 +79,9 @@ input:disabled,select:disabled{opacity:0.25}
 .bar .state{font-size:12px;color:#aaa}
 .dot{display:inline-block;width:8px;height:8px;border-radius:50%;background:#4a4;margin-right:6px}
 .dot.dirty{background:#e94560}
+/* A file holds the whole tuning rather than one chain, so these sit with
+   commit and revert, at the far end of the bar. */
+.bar .files{margin-left:auto;display:flex;gap:10px;flex-wrap:wrap}
 </style></head><body>
 <div class='wrap'>
 <div class='header'><h1>Biquad EQ</h1><p id='sub'>Loading&hellip;</p></div>
@@ -222,6 +225,14 @@ that instead of correcting the band the driver does cover.</p>
 <button class='btn btn-primary' onclick='commit()'>Commit to flash</button>
 <button class='btn btn-secondary' onclick='revert()'>Revert</button>
 <span class='state' id='state'><span class='dot'></span>In sync with flash</span>
+<span class='files'>
+<button class='btn btn-secondary' onclick='exportEq()'
+        title='Save the filters, routing and levels of every output'>Export to file</button>
+<button class='btn btn-secondary' onclick="$('eq-file').click()"
+        title='Load a saved tuning, then Apply to hear it'>Import from file&hellip;</button>
+</span>
+<input type='file' id='eq-file' accept='.json,application/json' hidden
+       onchange='importEq(this)'>
 </div>
 </div>
 
@@ -1328,6 +1339,7 @@ function post(body,okText){
     .then(function(r){
       if(!r.ok)return r.text().then(function(t){throw new Error(t||r.status);});
       return r.json().catch(function(){return {};}).then(function(j){
+        noteLive(body);
         if(j.preamp_db!==undefined){data.preamp_db=j.preamp_db;showPreamp();}
         if(okText)show($('msg'),okText,'ok');
         return true;
@@ -1343,11 +1355,36 @@ function postSeq(bodies,i,all){
     return postSeq(bodies,i+1,all&&ok);
   });
 }
+/* Routing and levels go to the device the moment they are touched, so its
+   copy only differs from the page's once an import has staged them. This is
+   what it last confirmed, so Apply can send just the difference. */
+var live=null;
+function snapLive(){
+  live=data.amps.map(function(am){
+    return {mix:am.mix,gains:am.gains.slice()};
+  });
+}
+function noteLive(b){
+  if(!live||!live[b.dev])return;
+  if(b.mix!==undefined)live[b.dev].mix=b.mix;
+  if(b.gain!==undefined)live[b.dev].gains[b.out]=b.gain;
+}
+function liveBodies(){
+  var out=[],a,c,am;
+  for(a=0;live&&a<data.amps.length;a++){
+    am=data.amps[a];
+    if(am.mix!==live[a].mix)out.push({dev:a,mix:am.mix});
+    for(c=0;c<2;c++)
+      if(am.gains[c]!==live[a].gains[c])
+        out.push({dev:a,out:c,gain:am.gains[c]});
+  }
+  return out;
+}
 /* Every amplifier, not just the visible tab — a crossover split across two of
    them must never go live by halves. */
 function apply(){
   storeRows();
-  var bodies=[],a,am;
+  var bodies=liveBodies(),a,am;
   for(a=0;a<data.amps.length;a++){
     am=data.amps[a];
     if(isGanged(am)){
@@ -2101,9 +2138,277 @@ function revert(){
   }).catch(function(e){show($('msg'),'Revert failed: '+e.message,'err');});
 }
 
+/* ---- files ----
+   A tuning taken off the board, to keep or to load onto another one: every
+   output's filters, with the ganging, routing and levels they were tuned
+   with. Mutes and the master volume are left out, being the state of the
+   room rather than of the tuning. Types and alignments travel as names, not
+   the firmware's numbers, and each filter carries only the fields its type
+   uses, so a file can be read and edited by hand. */
+var EQ_FORMAT='airplay-esp32-eq',EQ_VERSION=1;
+var TYPE_KEYS=['bypass','peaking_q','peaking_bw','bass_shelf','treble_shelf',
+               'low_pass','high_pass','band_pass','notch','phase_shift',
+               'custom'];
+var SUB_KEYS=['butterworth_1','butterworth_2','bessel_2','linkwitz_riley_2',
+              'variable_q_2','chebyshev_2'];
+var MIX_KEYS=['stereo','mono','left','right'];
+var devName='';
+function esc(s){
+  return String(s).replace(/[&<>"']/g,function(c){
+    return '&#'+c.charCodeAt(0)+';';
+  });
+}
+/* Values come back from the part as float32, so 0.45 arrives as
+   0.449999988079071. Six figures is finer than any row can be set. */
+function sig(v){return Number(Number(v).toPrecision(6));}
+function bqOut(b){
+  var o={type:TYPE_KEYS[b.type]};
+  if(HAS_SUB[b.type])o.alignment=SUB_KEYS[b.sub];
+  if(HAS_FREQ[b.type])o.freq=sig(b.freq);
+  if(usesQ(b.type,b.sub))o.q=sig(b.q);
+  if(HAS_BW[b.type])o.bw=sig(b.bw);
+  if(HAS_GAIN[b.type])o.gain=sig(b.gain);
+  if(usesRipple(b.type,b.sub))o.ripple=sig(b.ripple);
+  if(b.invert)o.invert=true;
+  if(b.type===T_CUSTOM)o.coeff=b.coeff.slice(0,5);
+  return o;
+}
+/* Trailing bypassed slots say nothing, so a chain is written up to its last
+   section that does something, and padded back out with bypass when read. */
+function chainOut(c){
+  var n=SLOTS,out=[],i;
+  while(n>0&&c[n-1].type===T_BYPASS&&!c[n-1].invert)n--;
+  for(i=0;i<n;i++)out.push(bqOut(c[i]));
+  return out;
+}
+/* A ganged amplifier runs one chain on both outputs, so it is written once. */
+function eqFile(){
+  storeRows();
+  var f={format:EQ_FORMAT,version:EQ_VERSION},a,am,g,o;
+  if(devName)f.device=devName;
+  f.saved=new Date().toISOString();
+  f.rate=data.rate;
+  f.amps=[];
+  for(a=0;a<data.amps.length;a++){
+    am=data.amps[a];g=isGanged(am);
+    /* An amplifier that cannot route has no routing to save, and a board
+       loading the file keeps its own. */
+    o={ganged:g};
+    if(!am.mix_fixed)o.mix=MIX_KEYS[am.mix];
+    o.trim_db=[sig(am.gains[0]),sig(am.gains[1])];
+    o.outputs=g?[chainOut(am.channels[0])]
+               :[chainOut(am.channels[0]),chainOut(am.channels[1])];
+    f.amps.push(o);
+  }
+  return f;
+}
+/* JSON with one filter to a line, so a chain reads top to bottom like the
+   rows on this page: anything holding only plain values stays inline. */
+function plainJson(v){return v===null||typeof v!=='object';}
+function flatJson(v){
+  return Object.keys(v).every(function(k){
+    return plainJson(v[k])||(Array.isArray(v[k])&&v[k].every(plainJson));
+  });
+}
+function eqText(v,ind){
+  if(plainJson(v))return JSON.stringify(v);
+  var arr=Array.isArray(v),flat=flatJson(v),pad=ind+'  ';
+  var parts=(arr?v:Object.keys(v)).map(function(x){
+    var s=arr?eqText(x,pad):JSON.stringify(x)+': '+eqText(v[x],pad);
+    return flat?s:pad+s;
+  });
+  if(flat)return (arr?'[':'{')+parts.join(', ')+(arr?']':'}');
+  return (arr?'[\n':'{\n')+parts.join(',\n')+'\n'+ind+(arr?']':'}');
+}
+function slug(s){
+  return String(s).toLowerCase().replace(/[^a-z0-9]+/g,'-')
+                  .replace(/^-+|-+$/g,'');
+}
+function exportEq(){
+  if(!data)return;
+  var d=new Date();
+  function two(n){return (n<10?'0':'')+n;}
+  var name='eq-'+(slug(devName)||'speaker')+'-'+d.getFullYear()+
+           two(d.getMonth()+1)+two(d.getDate())+'-'+two(d.getHours())+
+           two(d.getMinutes())+'.json';
+  var url=URL.createObjectURL(new Blob([eqText(eqFile(),'')+'\n'],
+                                       {type:'application/json'}));
+  var a=document.createElement('a');
+  a.href=url;a.download=name;
+  document.body.appendChild(a);a.click();a.remove();
+  /* Some browsers are still reading the blob when click() returns. */
+  setTimeout(function(){URL.revokeObjectURL(url);},10000);
+  show($('msg'),'Exported '+esc(name)+'.'+(dirty?' It holds the tuning as'+
+       ' shown here, including changes not committed to flash.':''),'ok');
+}
+/* Names, or the firmware's own numbers, since a file edited by hand might
+   use either. */
+function keyIndex(keys,v){
+  if(typeof v==='number')
+    return v===Math.floor(v)&&v>=0&&v<keys.length?v:-1;
+  return keys.indexOf(v);
+}
+/* The limits are the firmware's own, from tas58xx_bq_validate(), so a file
+   that loads here is one Apply will not refuse. Returns the filter, or why
+   it is not one. */
+function bqIn(o){
+  if(!o||typeof o!=='object'||Array.isArray(o))return 'not a filter';
+  var b=blankBq(),t=keyIndex(TYPE_KEYS,o.type),k,v;
+  var NUMS=['freq','q','bw','gain','ripple'];
+  if(t<0)return 'unknown type '+esc(JSON.stringify(o.type));
+  b.type=t;
+  if(o.alignment!==undefined){
+    b.sub=keyIndex(SUB_KEYS,o.alignment);
+    if(b.sub<0)return 'unknown alignment '+esc(JSON.stringify(o.alignment));
+  }
+  for(k=0;k<NUMS.length;k++){
+    v=o[NUMS[k]];
+    if(v===undefined)continue;
+    if(typeof v!=='number'||!isFinite(v))return NUMS[k]+' is not a number';
+    b[NUMS[k]]=v;
+  }
+  if(o.invert!==undefined){
+    if(typeof o.invert!=='boolean')return 'invert is not true or false';
+    b.invert=o.invert;
+  }
+  if(t===T_CUSTOM){
+    if(!Array.isArray(o.coeff)||o.coeff.length!==5)
+      return 'a custom section needs five coefficients';
+    for(k=0;k<5;k++)
+      if(typeof o.coeff[k]!=='number'||!(Math.abs(o.coeff[k])<16))
+        return 'coefficient '+(k+1)+' is out of range';
+    b.coeff=o.coeff.slice();
+  }else if(t!==T_BYPASS&&!(b.freq>=1&&b.freq<=30000)){
+    return 'the frequency is out of range';
+  }
+  return b;
+}
+/* All of it is checked before any of it is used, so a file that is wrong
+   anywhere changes nothing. */
+function eqRead(f){
+  if(!f||typeof f!=='object'||!Array.isArray(f.amps)||
+     (f.format!==undefined&&f.format!==EQ_FORMAT))
+    return {err:'it is not an EQ file.'};
+  if(typeof f.version==='number'&&f.version>EQ_VERSION)
+    return {err:'it was saved by newer firmware.'};
+  if(!f.amps.length)return {err:'it holds no amplifiers.'};
+  var r={rate:typeof f.rate==='number'&&f.rate>0?f.rate:0,amps:[]},a,c,i;
+  for(a=0;a<f.amps.length;a++){
+    var fa=f.amps[a],at=f.amps.length>1?'amplifier '+(a+1)+', ':'';
+    var am={chains:[]};
+    if(!fa||typeof fa!=='object'||!Array.isArray(fa.outputs)||
+       fa.outputs.length<1||fa.outputs.length>2)
+      return {err:at+'"outputs" should hold one or two chains.'};
+    for(c=0;c<fa.outputs.length;c++){
+      var src=fa.outputs[c],chain=[],where=at+outLabel(c);
+      if(!Array.isArray(src))return {err:where+' is not a list of filters.'};
+      if(src.length>SLOTS)
+        return {err:where+' has '+src.length+' filters, but an output has '+
+                SLOTS+' slots.'};
+      for(i=0;i<SLOTS;i++){
+        var b=i<src.length?bqIn(src[i]):blankBq();
+        if(typeof b==='string')return {err:where+', filter '+(i+1)+': '+b+'.'};
+        chain.push(b);
+      }
+      am.chains.push(chain);
+    }
+    if(fa.ganged!==undefined&&typeof fa.ganged!=='boolean')
+      return {err:at+'"ganged" is not true or false.'};
+    /* A single chain can only mean both outputs share it. */
+    am.ganged=fa.outputs.length===1||fa.ganged===true;
+    if(fa.mix!==undefined){
+      am.mix=keyIndex(MIX_KEYS,fa.mix);
+      if(am.mix<0)
+        return {err:at+'unknown input routing '+esc(JSON.stringify(fa.mix))+
+                '.'};
+    }
+    if(fa.trim_db!==undefined){
+      if(!Array.isArray(fa.trim_db)||fa.trim_db.length!==2||
+         !fa.trim_db.every(function(v){
+           return typeof v==='number'&&isFinite(v);
+         }))
+        return {err:at+'"trim_db" should be two levels in dB.'};
+      am.gains=fa.trim_db.slice();
+    }
+    r.amps.push(am);
+  }
+  return r;
+}
+function ampRef(a){return data.amps.length>1?'Amp '+(a+1):'The amplifier';}
+/* Lands on the page like any other edit: filters, ganging, routing and
+   levels are all staged, and Apply makes them live together. A custom
+   section is given back its shape at the rate it was saved at, which is
+   what lets it be redesigned for this board's rate. */
+function eqStage(r,name){
+  var n=Math.min(r.amps.length,data.amps.length),sr=r.rate||fs();
+  var notes=[],odd=0,a,c,i;
+  storeRows();
+  for(a=0;a<n;a++){
+    var fa=r.amps[a],am=data.amps[a];
+    for(c=0;c<fa.chains.length;c++)
+      for(i=0;i<SLOTS;i++)
+        if(fa.chains[c][i].type===T_CUSTOM&&!shapeOf(fa.chains[c][i],sr).ok&&
+           sr!==fs())odd++;
+    var A=fa.chains[0],B=fa.ganged?A:fa.chains[1];
+    if(am.pbtl&&JSON.stringify(A)!==JSON.stringify(B))
+      notes.push(ampRef(a)+' is bridged, so it takes the filters for '+
+                 outLabel(0)+' only.');
+    am.channels=[A,JSON.parse(JSON.stringify(B))];
+    if(!am.pbtl)am.ganged=fa.ganged;
+    if(fa.mix!==undefined){
+      if(am.mix_fixed){
+        if(fa.mix!==am.mix)
+          notes.push(ampRef(a)+' cannot route its inputs, so the routing in '+
+                     'the file is not used.');
+      }else if(!am.pbtl||fa.mix!==0)am.mix=fa.mix;
+      else if(am.mix!==0)
+        notes.push(ampRef(a)+' is bridged, so it keeps its own input routing.');
+    }
+    /* A bridged amplifier's level is output A's; the page has no other. */
+    if(fa.gains)
+      for(c=0;c<(am.pbtl?1:2);c++)
+        am.gains[c]=clamp(fa.gains[c],data.gain_min,data.gain_max);
+  }
+  if(r.amps.length>n)
+    notes.push('The file holds '+r.amps.length+' amplifiers and this board '+
+               n+', so only the first '+(n>1?n+' were':'was')+' loaded.');
+  for(a=n;a<data.amps.length;a++)
+    notes.push(ampRef(a)+' kept its filters: the file has none for it.');
+  if(odd)
+    notes.push(odd+' custom section'+(odd>1?'s':'')+' saved at '+r.rate+
+               ' Hz could not be matched to a filter shape, so '+
+               (odd>1?'they':'it')+' will not sound the same at '+fs()+' Hz.');
+  if(isGanged(data.amps[amp]))ch=0;
+  drawTabs();drawMix();drawGains();loadRows();setDirty(true);plot();
+  show($('msg'),'Loaded '+esc(name)+'. Apply to hear it, then Commit to keep'+
+       ' it.'+(notes.length?' '+notes.join(' '):''),'info');
+}
+function importEq(input){
+  var file=input.files&&input.files[0];
+  /* Cleared so that picking the same file again still fires onchange. */
+  input.value='';
+  if(!file||!data)return;
+  var rd=new FileReader();
+  rd.onerror=function(){
+    show($('msg'),'Could not read '+esc(file.name)+'.','err');
+  };
+  rd.onload=function(){
+    var r;
+    try{r=eqRead(JSON.parse(String(rd.result)));}
+    catch(e){r={err:'it is not an EQ file.'};}
+    if(r.err){
+      show($('msg'),'Could not import '+esc(file.name)+': '+r.err,'err');
+      return;
+    }
+    eqStage(r,file.name);
+  };
+  rd.readAsText(file);
+}
+
 function load(){
   return fetch('/api/bq').then(function(r){return r.json();}).then(function(d){
     data=d;
+    snapLive();
     if(amp>=data.amps.length)amp=0;
     if(isGanged(data.amps[amp]))ch=0;
     $('sub').textContent='15 biquads per output at '+d.rate+' Hz';
@@ -2123,7 +2428,13 @@ window.onload=function(){
   })();
   fetch('/api/audio/volume').then(function(r){return r.json();})
     .then(function(v){master=v;drawMaster();}).catch(function(){});
-  load().then(loadGain,function(e){
+  load().then(function(){
+    /* Only to name exported files, so it waits its turn behind the tuning
+       rather than taking another socket alongside it. */
+    fetch('/api/system/info').then(function(r){return r.json();})
+      .then(function(j){devName=(j.info&&j.info.device_name)||'';})
+      .catch(function(){}).then(loadGain);
+  },function(e){
     show($('msg'),'Could not read the current tuning: '+e.message,'err');
   });
 };

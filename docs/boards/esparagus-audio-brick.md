@@ -232,6 +232,24 @@ DSP input mixer ahead of the filters — so they only ever attenuate and cost no
 headroom. Use them to match drivers of differing sensitivity. Levels and mutes take
 effect immediately and are stored in NVS, independently of the filter commit.
 
+### Saving a tuning to a file
+
+**Export to file** downloads the tuning as a small JSON file: the filters on every
+output of every amplifier, with the ganging, input routing and output levels they were
+tuned with. Mutes and the master volume are left out, since they describe the room
+rather than the tuning. Filter types are written by name, and each filter carries only
+the fields its type uses, so the file can be read and edited by hand.
+
+**Import from file…** loads one back, on this board or on another, including one
+running the [software EQ](../features/software-eq.md). The whole file is checked before
+anything changes. What it holds is then staged like any other edit: nothing is heard
+until **Apply**, which sends the routing and levels along with the filters, and nothing
+survives a reboot until committed. Filters are redesigned for the board's own sample
+rate, so a tuning moves between rates intact. The exception is a custom section that
+matches no filter shape: it stays as raw coefficients, which depend on the rate, and the
+page says so. A file with more amplifiers than the board fills the ones it has. A
+TAS5805M, having no routing to choose, saves none and keeps its own when a file has one.
+
 ## Full PPC3 tuning
 
 !!! info "TAS5825M only"
