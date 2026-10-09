@@ -1873,6 +1873,17 @@ static uint32_t tas58xx_flow_sample_rate(void) {
   return (uint32_t)s_bq_fs;
 }
 
+/* The rate a chip's sections run at, which is what they are designed for. A
+ * TAS5805M's EQ sits behind a converter to 96 or 88.2 kHz, so it is not the
+ * I2S rate; a TAS5825M's runs at the I2S rate. */
+static double bq_design_fs(int dev) {
+  if (dev >= 0 && dev < s_dev_count &&
+      s_devs[dev].model == TAS58XX_MODEL_TAS5805M) {
+    return tas5805m_dsp_rate(s_bq_fs);
+  }
+  return s_bq_fs;
+}
+
 /*
  * The user's biquad chain, per amplifier and per channel. This is the single
  * source of truth for the filtering: the hardware's coefficient RAM is only
@@ -2616,11 +2627,12 @@ static esp_err_t bq_program_chain(void) {
   }
 
   const bool ganged = s_bq_ganged[dev];
+  const double fs = bq_design_fs(dev);
   for (int i = 0; i < TAS58XX_BQ_SLOTS; i++) {
     uint8_t left[EQ_COEFF_BYTES], right[EQ_COEFF_BYTES];
-    tas58xx_bq_design_packed(&s_bq[dev][0][i], s_bq_fs, left);
-    tas58xx_bq_design_packed(ganged ? &s_bq[dev][0][i] : &s_bq[dev][1][i],
-                             s_bq_fs, right);
+    tas58xx_bq_design_packed(&s_bq[dev][0][i], fs, left);
+    tas58xx_bq_design_packed(ganged ? &s_bq[dev][0][i] : &s_bq[dev][1][i], fs,
+                             right);
     esp_err_t err = program_biquad_pair(i, left, right);
     if (err != ESP_OK && first_err == ESP_OK) {
       first_err = err;
@@ -2817,7 +2829,7 @@ typedef struct {
 } bq_cfg_file_t;
 
 uint32_t dac_tas58xx_bq_sample_rate(void) {
-  return (uint32_t)s_bq_fs;
+  return (uint32_t)bq_design_fs(0);
 }
 
 bool dac_tas58xx_bq_get(int dev, int ch, tas58xx_bq_t out[TAS58XX_BQ_SLOTS]) {
