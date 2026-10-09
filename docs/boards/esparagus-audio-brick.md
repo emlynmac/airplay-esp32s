@@ -267,11 +267,18 @@ documents as using the sqrt(gain) one, such as rePhase and Hypex, are recognised
 name. Low and high pass filters, with or without a Q, carry over as Butterworth or
 variable-Q sections.
 
+REW's low and high shelves (`LS`, `HS`) are RBJ's cookbook shelves with a Q of 0.707,
+which is exactly the shape of the part's bass and treble shelves. The two only measure
+the frequency differently: REW gives the midpoint of the slope, while past 6 dB of gain
+the part's shelf is set 3 dB short of the shelf itself. So a shelf's frequency on the
+page can differ from REW's (a +9.9 dB shelf at 197.5 Hz loads at about 157 Hz), but the
+response is the same. A shelf with any other Q (`LS Q`, `HSC`) loads with 0.707, and the
+page says so.
+
 The conversion is made for the rate the page shows, and a peaking filter near the top
 of the band can need a narrower section than the part can make: past Q 20 it is held
-there, and the page names the filter. Shelves and REW's other filter types are refused
-rather than guessed, because REW does not publish how it defines them; set those by
-hand.
+there, and the page names the filter. REW's other filter types, such as the fixed-slope
+`LS 6dB` and `LS 12dB`, are refused rather than guessed; set those by hand.
 
 ## Full PPC3 tuning
 

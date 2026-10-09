@@ -2405,6 +2405,15 @@ function rewPeakQ(Q,gain,freq,sr){
   var t0=2*P*freq/sr;
   return Q*Math.pow(10,Math.abs(gain)/40)*t0/Math.sin(t0);
 }
+/* Our frequency for the shelf RBJ's cookbook builds at f0 with Q 0.7071,
+   which is REW's LS and HS. shelfBq() makes the same filter but puts its
+   frequency 3 dB short of the shelf once the gain passes 6 dB, where RBJ's
+   stays at the midpoint, so the two differ by sqrt(gN*gD) on the bilinear
+   transform's warped scale. */
+function rewShelfFreq(f0,gain,sr,low){
+  var gg=gain?shelfG(gain):[1,1],m=Math.sqrt(gg[0]*gg[1]);
+  return Math.atan(Math.tan(P*f0/sr)*(low?1/m:m))*sr/P;
+}
 function rewRead(text,sr){
   var lines=String(text).split(/\r?\n/),out=[],notes=[],eq='',pre=null;
   var sqrtQ=false,i,m;
@@ -2425,7 +2434,7 @@ function rewRead(text,sr){
     var n=m[1],rest=m[3].replace(/\s+/g,' ').trim();
     if(m[2].toUpperCase()==='OFF'||!rest||/^none\b/i.test(rest))continue;
     var at=rest.search(/\bFc\b/i);
-    var type=(at<0?rest:rest.slice(0,at)).trim().toUpperCase();
+    var type=(at<0?rest:rest.slice(0,at)).replace(/ /g,'').toUpperCase();
     var p={},tok=(at<0?'':rest.slice(at)).split(' '),k;
     for(k=0;k<tok.length;k++){
       var key=tok[k].toLowerCase();
@@ -2446,18 +2455,37 @@ function rewRead(text,sr){
       p.fc=Math.floor(sr*0.49);
     }
     b.freq=p.fc;
-    if(type==='PK'||type==='PEQ'||type==='MODAL'){
+    var gained=type==='PK'||type==='PEQ'||type==='MODAL'||
+              /^(LS|HS)(Q|C)?$/.test(type);
+    if(gained){
       if(!isFinite(p.gain))return {err:where+' has no gain.'};
-      if(p.oct>0){
-        var x=Math.pow(2,p.oct);
-        p.q=Math.sqrt(x)/(x-1);
-      }
-      if(!(p.q>0))return {err:where+' has no Q.'};
       if(p.gain<G_MIN||p.gain>G_MAX){
         notes.push('Filter '+n+' asks for '+p.gain+' dB; a section stops at '+
                    (p.gain<0?G_MIN:'+'+G_MAX)+' dB.');
         p.gain=clamp(p.gain,G_MIN,G_MAX);
       }
+    }
+    if(gained&&/^[LH]S/.test(type)){
+      var low=type.charAt(0)==='L',f=rewShelfFreq(p.fc,p.gain,sr,low);
+      if(f>sr*0.49){
+        notes.push('Filter '+n+' needs '+Math.round(f)+' Hz here to match '+
+                   'REW, past what '+sr+' Hz can carry, so it sits at '+
+                   Math.floor(sr*0.49)+' Hz.');
+        f=Math.floor(sr*0.49);
+      }
+      /* Only Q 0.7071 is RBJ's S of 1, the one shape a section has. */
+      if(p.q>0&&Math.abs(p.q/Math.SQRT1_2-1)>0.01)
+        notes.push('Filter '+n+' is a shelf with Q '+p.q+', but a section\'s '+
+                   'shelf has Q 0.707, so its slope is '+
+                   (p.q>Math.SQRT1_2?'gentler':'steeper')+' than REW fitted.');
+      b.type=low?T_LOSHELF:T_HISHELF;b.gain=p.gain;
+      b.freq=Number(f.toPrecision(6));
+    }else if(gained){
+      if(p.oct>0){
+        var x=Math.pow(2,p.oct);
+        p.q=Math.sqrt(x)/(x-1);
+      }
+      if(!(p.q>0))return {err:where+' has no Q.'};
       /* A sqrt-gain Q is RBJ's divided by the square root of the gain. */
       var Q=sqrtQ&&!p.oct?p.q/Math.pow(10,Math.abs(p.gain)/40):p.q;
       var q=rewPeakQ(Q,p.gain,p.fc,sr);
@@ -2478,8 +2506,8 @@ function rewRead(text,sr){
       else b.sub=S_BW2;
     }else{
       return {err:where+' is &ldquo;'+esc(rest.slice(0,at<0?rest.length:at)
-              .trim())+'&rdquo;, which this page cannot match. Peaking, low '+
-              'pass and high pass filters load; set it by hand.'};
+              .trim())+'&rdquo;, which this page cannot match. Peaking, shelf, '+
+              'low pass and high pass filters load; set it by hand.'};
     }
     out.push(b);
   }
