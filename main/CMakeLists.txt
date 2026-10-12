@@ -24,7 +24,6 @@ set( SRC_FILES
     "rtsp/rtsp_fairplay.c"
     "rtsp/rtsp_crypto.c"
     "rtsp/rtsp_rsa.c"
-    "rtsp/rtsp_events.c"
     "plist/plist_xml.c"
     "plist/bplist_parser.c"
     "plist/bplist_builder.c"
@@ -47,6 +46,7 @@ set( SRC_FILES
     "led.c"
     "buttons.c"
     "playback_control.c"
+    "playback_events.c"
     "dacp_client.c"
 )
 
@@ -78,6 +78,16 @@ if(CONFIG_ETH_W5500_ENABLED)
     list(APPEND SRC_FILES "network/ethernet.c")
 endif()
 
+# Sendspin player role (WebSocket + its own playout timeline)
+if(CONFIG_SENDSPIN_ENABLE)
+    list(APPEND SRC_FILES "sendspin/sendspin.c")
+    list(APPEND SRC_FILES "sendspin/sendspin_noise.c")
+    list(APPEND SRC_FILES "sendspin/sendspin_psk.c")
+    list(APPEND SRC_FILES "sendspin/sendspin_cpace.c")
+    list(APPEND SRC_FILES "sendspin/sendspin_time.c")
+    list(APPEND SRC_FILES "sendspin/sendspin_player.c")
+endif()
+
 set( INC_DIRS
     "." 
     "audio" 
@@ -85,6 +95,7 @@ set( INC_DIRS
     "plist" 
     "hap" 
     "network"
+    "sendspin"
     "usb"
 )
 
@@ -107,6 +118,7 @@ set( DEPS
     dac
     dac_tas58xx
     dac_tas57xx
+    dac_pcm51xx
     display
     audio-resampler
     esp_eth

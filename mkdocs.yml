@@ -9,7 +9,9 @@ site_url: https://rbouteiller.github.io/airplay-esp32/
 repo_url: https://github.com/rbouteiller/airplay-esp32
 repo_name: rbouteiller/airplay-esp32
 edit_uri: edit/main/docs/
-copyright: Non-commercial use only. Not affiliated with Apple Inc.
+copyright: >-
+  Copyright &copy; 2026 Rémi Bouteiller and the airplay-esp32 contributors —
+  free software under GPL-3.0-or-later. Not affiliated with Apple Inc.
 
 theme:
   name: material
@@ -111,11 +113,16 @@ nav:
       - SqueezeAMP: boards/squeezeamp.md
       - Esparagus Audio Brick: boards/esparagus-audio-brick.md
       - Esparagus Audio Brick Dual: boards/esparagus-audio-brick-dual-dac.md
+      - HiFi-ESP32: boards/hifi-esp32.md
+      - Loud-ESP32 and Esparagus Echo: boards/loud-esp32.md
+      - Amped-ESP32: boards/amped-esp32.md
+      - Louder-ESP32: boards/louder-esp32.md
       - Seeed XIAO ESP32-C5: boards/xiao-esp32c5.md
       - Custom board: boards/custom.md
   - Features:
       - Bluetooth A2DP: features/bluetooth.md
       - USB audio (UAC): features/usb-audio.md
+      - Sendspin (experimental): features/sendspin.md
       - Ethernet (W5500): features/ethernet.md
       - OLED display: features/oled-display.md
       - ST7789 TFT display: features/tft-display.md

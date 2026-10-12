@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 airplay-esp32 contributors
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 /**
  * Implementation of control interface to TI TAS58xx (TAS5825M) DAC/Amp
  * TAS5825M datasheet:
@@ -211,7 +214,7 @@ static const struct tas58xx_cmd_s tas5805m_init_seq[] = {
     {REG_DIG_VOL_CTRL1, 0x33}, // Default ramp rates
 
     // Auto-mute: enable for both channels
-    {REG_AUTO_MUTE_CTRL, 0x03},
+    {REG_AUTO_MUTE_CTRL, 0x07},
     {REG_AUTO_MUTE_TIME, 0x00},
 
     // Clear any pending faults

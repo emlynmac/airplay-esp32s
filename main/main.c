@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 airplay-esp32 contributors
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 #include "audio_output.h"
 #include "audio_receiver.h"
 #include "buttons.h"
@@ -10,6 +13,7 @@
 #include "mdns_airplay.h"
 #include "nvs_flash.h"
 #include "playback_control.h"
+#include "playback_events.h"
 #include "ptp_clock.h"
 #include "rtsp_server.h"
 #include "settings.h"
@@ -21,11 +25,14 @@
 #ifdef CONFIG_BT_A2DP_ENABLE
 #include "a2dp_sink.h"
 #include "bt_coex.h"
-#include "rtsp_events.h"
 #endif
 
 #ifdef CONFIG_USB_AUDIO_SINK
 #include "usb_audio_sink.h"
+#endif
+
+#ifdef CONFIG_SENDSPIN_ENABLE
+#include "sendspin.h"
 #endif
 
 #ifdef CONFIG_DAC_TAS57XX
@@ -175,13 +182,14 @@ static void network_monitor_task(void *pvParameters) {
     if (has_network) {
       ESP_LOGI(TAG, "Network up (eth=%s, wifi=%s)", eth_up ? "yes" : "no",
                wifi_up ? "yes" : "no");
-      bool usb_owns_output = false;
-#ifdef CONFIG_USB_AUDIO_SINK
-      usb_owns_output = usb_audio_sink_is_streaming();
-#endif
       // Starting AirPlay here would put its playback task back on I2S
-      // underneath the USB writer; the sink starts it when the host goes idle.
-      if (!usb_owns_output) {
+      // underneath whoever is already driving it; each owner restarts the
+      // services itself once it goes idle.
+      bool output_owned = false;
+#ifdef CONFIG_USB_AUDIO_SINK
+      output_owned = output_owned || usb_audio_sink_is_streaming();
+#endif
+      if (!output_owned) {
         start_airplay_services();
       }
       if (dns_running) {
@@ -204,6 +212,9 @@ static void network_monitor_task(void *pvParameters) {
 // over for as long as the host is streaming.  Called from the sink's
 // writer task.
 static void on_usb_audio_state_changed(bool streaming) {
+#ifdef CONFIG_SENDSPIN_ENABLE
+  sendspin_set_output_available(!streaming);
+#endif
   if (streaming) {
     ESP_LOGI(TAG, "USB audio streaming — disabling AirPlay");
     stop_airplay_services();
@@ -225,8 +236,70 @@ static void on_usb_audio_state_changed(bool streaming) {
 }
 #endif
 
+#ifdef CONFIG_SENDSPIN_ENABLE
+// Sendspin drives the same I2S channel as AirPlay through its own scheduler, so
+// ownership swaps whole rather than mixing: the two run off different clocks --
+// Apple's PTP domain and the Sendspin server's -- and one DMA ring cannot
+// honour both.  AirPlay's services stay up throughout so a phone can always
+// take the speaker back; see on_airplay_audio_active().  Called from the
+// WebSocket handler when the server starts or ends a stream.
+static void on_sendspin_activity(bool active) {
+  if (active) {
+    ESP_LOGI(TAG, "Sendspin stream started");
+    playback_control_set_source(PLAYBACK_SOURCE_SENDSPIN);
+    return;
+  }
+
+  ESP_LOGI(TAG, "Sendspin stream ended");
+  playback_control_set_source(playback_events_active_source());
+  if (s_airplay_started) {
+    // The stream end stopped the playback task; AirPlay still wants it.
+    audio_output_start();
+  } else if (ethernet_is_connected() || wifi_is_connected()) {
+    start_airplay_services();
+  }
+}
+
+// AirPlay wins any contest for the output.  Telling Sendspin the output is
+// gone ends the stream through the protocol, so the server knows to stop
+// sending rather than being left to infer it from a dropped socket.
+static void on_airplay_audio_active(bool active) {
+  if (!active) {
+#ifdef CONFIG_BT_A2DP_ENABLE
+    if (bt_a2dp_sink_is_connected()) {
+      // Bluetooth took the output and stopping the RTSP server is what ended
+      // the AirPlay session, so this release is an echo of that takeover, not
+      // the speaker going free.
+      return;
+    }
+#endif
+#ifdef CONFIG_USB_AUDIO_SINK
+    if (usb_audio_sink_is_streaming()) {
+      return;
+    }
+#endif
+    ESP_LOGI(TAG, "AirPlay session ended — output released to Sendspin");
+    sendspin_set_output_available(true);
+    return;
+  }
+
+  ESP_LOGI(TAG, "AirPlay session — taking the output from Sendspin");
+  // Register AirPlay as a source before Sendspin drops its own, so the
+  // aggregate never falls to nothing in between: that would emit DISCONNECTED
+  // and power-cycle the amplifier on every takeover.
+  playback_events_emit(PLAYBACK_SOURCE_AIRPLAY, PLAYBACK_EVENT_CONNECTED, NULL);
+  sendspin_set_output_available(false);
+  // sendspin_player_stream_end() stops the playback task on its way out.
+  audio_output_start();
+  playback_control_set_source(PLAYBACK_SOURCE_AIRPLAY);
+}
+#endif
+
 #ifdef CONFIG_BT_A2DP_ENABLE
 static void on_bt_state_changed(bool connected) {
+#ifdef CONFIG_SENDSPIN_ENABLE
+  sendspin_set_output_available(!connected);
+#endif
   if (connected) {
     ESP_LOGI(TAG, "BT connected — disabling AirPlay");
     stop_airplay_services();
@@ -242,31 +315,36 @@ static void on_bt_state_changed(bool connected) {
   }
 }
 
-static void on_airplay_client_event(rtsp_event_t event,
-                                    const rtsp_event_data_t *data,
-                                    void *user_data) {
+// Bluetooth hides itself while anything else owns the output, so this reacts to
+// the aggregate rather than to AirPlay alone: with Sendspin in the picture the
+// edge that matters is often raised by it, and filtering on the source would
+// leave the radio suspended and the device undiscoverable after it stopped.
+static void on_playback_event(playback_source_t source, playback_event_t event,
+                              const playback_event_data_t *data,
+                              void *user_data) {
+  (void)source;
   (void)data;
   (void)user_data;
   if (bt_a2dp_sink_is_connected()) {
     return;
   }
   switch (event) {
-  case RTSP_EVENT_CLIENT_CONNECTED:
-    ESP_LOGI(TAG, "AirPlay client connected — disabling BT");
+  case PLAYBACK_EVENT_CONNECTED:
+    ESP_LOGI(TAG, "Network audio session started — disabling BT");
     bt_a2dp_sink_set_discoverable(false);
     bt_coex_post(BT_COEX_EVT_AIRPLAY_CONNECTED);
     break;
-  case RTSP_EVENT_PLAYING:
+  case PLAYBACK_EVENT_PLAYING:
     bt_coex_post(BT_COEX_EVT_AIRPLAY_PLAYING);
     break;
-  case RTSP_EVENT_PAUSED:
+  case PLAYBACK_EVENT_PAUSED:
     // Session still active — BT stays suspended and hidden so the phone
     // reconnects to AirPlay rather than falling back to BT.
-    ESP_LOGI(TAG, "AirPlay paused — keeping BT suspended and hidden");
+    ESP_LOGI(TAG, "Network audio paused — keeping BT suspended and hidden");
     bt_coex_post(BT_COEX_EVT_AIRPLAY_PAUSED);
     break;
-  case RTSP_EVENT_DISCONNECTED:
-    ESP_LOGI(TAG, "AirPlay client disconnected — BT resumes after idle delay");
+  case PLAYBACK_EVENT_DISCONNECTED:
+    ESP_LOGI(TAG, "Network audio ended — BT resumes after idle delay");
     bt_a2dp_sink_set_discoverable(true);
     bt_coex_post(BT_COEX_EVT_AIRPLAY_DISCONNECTED);
     break;
@@ -400,6 +478,20 @@ void app_main(void) {
   log_dram("eth+wifi");
 
   // Start services that work on any interface
+#ifdef CONFIG_SENDSPIN_ENABLE
+  // Before the web server: it registers the /sendspin endpoint as it starts.
+  if (settings_sendspin_enabled()) {
+    esp_err_t sendspin_err = sendspin_init(on_sendspin_activity);
+    if (sendspin_err != ESP_OK) {
+      ESP_LOGE(TAG, "Sendspin init failed: %s", esp_err_to_name(sendspin_err));
+    } else {
+      audio_receiver_set_activity_callback(on_airplay_audio_active);
+    }
+    log_dram("sendspin");
+  } else {
+    ESP_LOGI(TAG, "Sendspin disabled in settings");
+  }
+#endif
   web_server_start(80);
   task_create_spiram(network_monitor_task, "net_mon", 4096, NULL, 5, NULL,
                      NULL);
@@ -422,7 +514,7 @@ void app_main(void) {
       if (bt_coex_start() != ESP_OK) {
         ESP_LOGE(TAG, "BT coexistence task start failed");
       }
-      rtsp_events_register(on_airplay_client_event, NULL);
+      playback_events_register(on_playback_event, NULL);
     }
   }
   log_dram("bluetooth");

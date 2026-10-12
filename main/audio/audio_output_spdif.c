@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 airplay-esp32 contributors
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 /**
  * SPDIF audio output via I2S bit-banging — amedes approach
  *
@@ -242,7 +245,7 @@ static void playback_task(void *arg) {
       spdif_ptr = spdif_buf;
       i2s_channel_enable(tx_handle);
     }
-    size_t samples = audio_receiver_read(pcm, FRAME_SAMPLES + 1);
+    size_t samples = audio_output_read_source(pcm, FRAME_SAMPLES + 1);
     if (samples > 0) {
       int16_t *play_buf = pcm;
       size_t play_samples = samples;

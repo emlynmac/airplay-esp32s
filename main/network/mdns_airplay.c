@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 airplay-esp32 contributors
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 #include "esp_app_desc.h"
 #include "esp_log.h"
 #include "esp_mac.h"

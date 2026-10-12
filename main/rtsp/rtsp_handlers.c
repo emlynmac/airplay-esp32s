@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 airplay-esp32 contributors
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 #include "rtsp_handlers.h"
 
 #include <arpa/inet.h>
@@ -33,7 +36,7 @@
 #include "socket_utils.h"
 #include "tlv8.h"
 
-#include "rtsp_events.h"
+#include "playback_events.h"
 #include "dacp_client.h"
 
 static const char *TAG = "rtsp_handlers";
@@ -243,7 +246,8 @@ static void event_port_task(void *pvParameters) {
       }
       event_client_socket = client;
       ESP_LOGI(TAG, "Event client connected");
-      rtsp_events_emit(RTSP_EVENT_CLIENT_CONNECTED, NULL);
+      playback_events_emit(PLAYBACK_SOURCE_AIRPLAY, PLAYBACK_EVENT_CONNECTED,
+                           NULL);
 
       // Monitor connection for disconnection
       while (event_client_socket >= 0 && !event_task_should_stop) {
@@ -1401,7 +1405,7 @@ static void handle_setup(int socket, rtsp_conn_t *conn,
   // RECORD emits PLAYING on the initial connection only; a resume after a
   // stream TEARDOWN sends just a new SETUP, so emit it here too or the DAC
   // stays in the standby it entered on pause and the stream plays silent.
-  rtsp_events_emit(RTSP_EVENT_PLAYING, NULL);
+  playback_events_emit(PLAYBACK_SOURCE_AIRPLAY, PLAYBACK_EVENT_PLAYING, NULL);
 }
 
 static void handle_record(int socket, rtsp_conn_t *conn,
@@ -1437,7 +1441,7 @@ static void handle_record(int socket, rtsp_conn_t *conn,
     audio_receiver_set_playing(true);
   }
   conn->stream_paused = false;
-  rtsp_events_emit(RTSP_EVENT_PLAYING, NULL);
+  playback_events_emit(PLAYBACK_SOURCE_AIRPLAY, PLAYBACK_EVENT_PLAYING, NULL);
 
   // AirPlay 1 RECORD is always type 96 (realtime/UDP) with NTP sync.
   // Internal timing already compensates for hardware latency, so report 0.
@@ -1480,7 +1484,7 @@ static void format_time_mmss(uint32_t seconds, char *out, size_t out_size) {
 #define DMAP_MAX_NESTING 8
 
 static void parse_dmap_metadata(const uint8_t *data, size_t len,
-                                rtsp_metadata_t *meta, int depth) {
+                                playback_metadata_t *meta, int depth) {
   size_t pos = 0;
 
   if (depth > DMAP_MAX_NESTING) {
@@ -1550,7 +1554,7 @@ static void parse_dmap_metadata(const uint8_t *data, size_t len,
  * Sample rate is typically 44100
  */
 static void parse_progress(const char *progress_str, uint32_t sample_rate,
-                           rtsp_metadata_t *meta) {
+                           playback_metadata_t *meta) {
   uint64_t start = 0, current = 0, end = 0;
 
   // NOLINTNEXTLINE(bugprone-unchecked-string-to-number-conversion)
@@ -1578,7 +1582,7 @@ static void handle_set_parameter(int socket, rtsp_conn_t *conn,
                                  size_t raw_len) {
   const uint8_t *body = req->body;
   size_t body_len = req->body_len;
-  rtsp_event_data_t event_data;
+  playback_event_data_t event_data;
   memset(&event_data, 0, sizeof(event_data));
   bool has_metadata = false;
 
@@ -1612,6 +1616,7 @@ static void handle_set_parameter(int socket, rtsp_conn_t *conn,
         const char *vol = strstr((const char *)body, "volume:");
         if (vol) {
           float volume = strtof(vol + 7, NULL);
+          ESP_LOGI(TAG, "SET_PARAMETER: volume=%.2f dB", volume);
           rtsp_conn_set_volume(conn, volume);
         }
       }
@@ -1698,7 +1703,8 @@ static void handle_set_parameter(int socket, rtsp_conn_t *conn,
   }
 
   if (has_metadata) {
-    rtsp_events_emit(RTSP_EVENT_METADATA, &event_data);
+    playback_events_emit(PLAYBACK_SOURCE_AIRPLAY, PLAYBACK_EVENT_METADATA,
+                         &event_data);
   }
 
   rtsp_send_ok(socket, conn, req->cseq);
@@ -1840,7 +1846,8 @@ static void handle_teardown(int socket, rtsp_conn_t *conn,
   // waiting for the listener task to exit).
   if (has_streams) {
     audio_receiver_set_playing(false);
-    rtsp_events_emit(RTSP_EVENT_PAUSED, NULL);
+    settings_persist_volume();
+    playback_events_emit(PLAYBACK_SOURCE_AIRPLAY, PLAYBACK_EVENT_PAUSED, NULL);
   }
   audio_receiver_stop();
   audio_output_flush();
@@ -1854,8 +1861,12 @@ static void handle_teardown(int socket, rtsp_conn_t *conn,
       has_streams; // Keep session ready if only streams torn down
 
   if (!has_streams) {
-    // Full teardown — server cleanup will emit RTSP_EVENT_DISCONNECTED
+    // Full teardown — server cleanup will emit PLAYBACK_EVENT_DISCONNECTED
     // when the TCP connection closes.
+    // Release the audio path now rather than behind the grace period below:
+    // the session is over, so anything else waiting for the speaker can have
+    // it. A stream-level teardown is a pause and deliberately keeps the claim.
+    audio_receiver_end_session();
     // For v1 sessions, keep the DACP session alive across teardown so the
     // grace period can probe mDNS to differentiate pause from real
     // disconnect. v2 sessions clear immediately.
@@ -1925,16 +1936,17 @@ static void handle_setrateanchortime(int socket, rtsp_conn_t *conn,
   if (rate == 0.0) {
     ESP_LOGI(TAG, "SETRATEANCHORTIME: rate=0 -> PAUSING");
     // Mute the DAC first via the synchronous event so audio stops now.
-    rtsp_events_emit(RTSP_EVENT_PAUSED, NULL);
+    playback_events_emit(PLAYBACK_SOURCE_AIRPLAY, PLAYBACK_EVENT_PAUSED, NULL);
     conn->stream_paused = true;
     audio_receiver_pause();
     audio_output_flush();
+    settings_persist_volume();
   } else {
     ESP_LOGI(TAG, "SETRATEANCHORTIME: rate=%.1f -> RESUMING (was_paused=%d)",
              rate, conn->stream_paused);
     conn->stream_paused = false;
     audio_receiver_set_playing(true);
-    rtsp_events_emit(RTSP_EVENT_PLAYING, NULL);
+    playback_events_emit(PLAYBACK_SOURCE_AIRPLAY, PLAYBACK_EVENT_PLAYING, NULL);
   }
 
   rtsp_send_ok(socket, conn, req->cseq);

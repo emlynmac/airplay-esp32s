@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 airplay-esp32 contributors
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 /**
  * Implementation of control interface to TI TAX57xx DAC/Amp chips
  * tas5754m datasheet:

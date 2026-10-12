@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 airplay-esp32 contributors
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 #pragma once
 /**
  * Coefficient RAM addresses of the cascaded EQ biquads (Book 0xAA).
