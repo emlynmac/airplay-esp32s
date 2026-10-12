@@ -1654,11 +1654,20 @@ static uint8_t tas58xx_dig_vol_reg(const tas58xx_dev_t *dev) {
 // Re-apply the cached master volume to every chip. Per-output level lives in
 // the input mixer, not here. Assumes REG_LOCK is held.
 static void tas58xx_apply_volume_locked(void) {
-  ESP_LOGD(TAG, "Volume: AirPlay %.1f dB", s_last_airplay_db);
+  /* Log the level the amp is actually set to: AirPlay's dB maps 2:1 onto it,
+   * offset by CONFIG_TAS58XX_MAX_VOLUME, so the two differ. */
+  const uint8_t reg =
+      tas58xx_db_to_reg(tas58xx_map_volume_db(s_last_airplay_db));
+  if (reg == DIG_VOL_MUTE) {
+    ESP_LOGI(TAG, "Volume: AirPlay %.1f dB -> amp muted", s_last_airplay_db);
+  } else {
+    ESP_LOGI(TAG, "Volume: AirPlay %.1f dB -> amp %.1f dB", s_last_airplay_db,
+             (float)(DIG_VOL_0DB - (int)reg) * 0.5f);
+  }
 
   for (int i = 0; i < s_dev_count; i++) {
     s_cur = &s_devs[i];
-    tas58xx_write_reg(REG_DIG_VOL, tas58xx_dig_vol_reg(&s_devs[i]));
+    tas58xx_write_reg(REG_DIG_VOL, reg);
   }
   s_cur = NULL;
 }
