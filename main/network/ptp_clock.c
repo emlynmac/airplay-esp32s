@@ -65,7 +65,7 @@ static const char *TAG = "ptp_clock";
 #define SMOOTH_POS_STEADY_DIV  16  // later, apply 1/16 of positive jitter
 #define SMOOTH_NEG_DIV         256 // always apply only 1/256 of negative jitter
 #define SMOOTH_NEG_CLAMP_NS    (-2500000LL) // clamp negative jitter at -2.5ms
-#define STARTUP_DURATION_MS 1000 // first second: aggressive positive tracking
+#define STARTUP_DURATION_MS    1000 // first second: aggressive positive tracking
 
 // Threshold above which we reset the PTP smoothing filter on resume.
 // E.g. at 50 ppm crystal accuracy, 30 s of pause accumulates ~1.5 ms of drift —
@@ -132,6 +132,10 @@ static struct {
 
   // Master clock filter (0 = accept any master)
   uint64_t expected_clock_id;
+  // The session that named expected_clock_id has ended. The filter stays on,
+  // so no other master's samples reach the kept lock, but the next session's
+  // master is checked against the samples again.
+  bool session_ended;
   // Master behind the samples since the last reset (0 = none yet,
   // PTP_CLOCK_ID_MIXED = more than one).
   uint64_t sample_clock_id;
@@ -618,6 +622,7 @@ void ptp_clock_clear(void) {
   // Drop the master filter so the next session can lock to whatever master
   // its anchor packet names (which may differ from the previous session).
   ptp.expected_clock_id = 0;
+  ptp.session_ended = false;
   ptp.sample_clock_id = 0;
   ptp.consecutive_outliers = 0;
 }
@@ -637,10 +642,13 @@ void ptp_clock_end_session(void) {
     ptp_clock_clear();
     return;
   }
-  // The master is still sending, so the samples are current. Only drop the
-  // filter, so the next session may name a different master; naming this
-  // one again keeps the lock (see ptp_clock_set_master_clock_id()).
-  ptp.expected_clock_id = 0;
+  // The master is still sending, so the samples are current. Keep its filter:
+  // with it dropped, any other master on the network (an Apple TV, a HomePod)
+  // would feed the offset until the next session names one, and mark the
+  // samples mixed, which drops the lock this path keeps. The next session may
+  // still name a different master; naming this one again keeps the lock (see
+  // ptp_clock_set_master_clock_id()).
+  ptp.session_ended = true;
 }
 
 void ptp_clock_notify_resume(uint32_t pause_duration_ms) {
@@ -689,9 +697,10 @@ int64_t ptp_clock_get_offset_ns(void) {
 }
 
 void ptp_clock_set_master_clock_id(uint64_t clock_id) {
-  if (clock_id == ptp.expected_clock_id) {
+  if (clock_id == ptp.expected_clock_id && !ptp.session_ended) {
     return;
   }
+  ptp.session_ended = false;
 
   // A session naming the master every current sample came from -- the next
   // track from the same phone -- keeps the lock.  Re-acquiring it takes

@@ -248,6 +248,26 @@ static void test_session_handover(void) {
   ptp_clock_end_session();
   ptp_clock_set_master_clock_id(MASTER_A);
   CHECK(!ptp_clock_is_locked(), "samples from two masters: lock kept");
+
+  /* Another master on the network keeps sending between the two sessions;
+   * the ended session's filter still turns it away. */
+  reset();
+  ptp_clock_set_master_clock_id(MASTER_A);
+  settle(MASTER_A, TRUE_OFFSET, 40);
+  ptp_clock_end_session();
+  const uint32_t rejected = ptp.rejected_master_count;
+  uint8_t followup[PTP_HEADER_SIZE + 10] = {PTP_MSG_FOLLOW_UP};
+  for (int i = 0; i < 8; i++) {
+    followup[20 + i] = (uint8_t)(MASTER_B >> (56 - 8 * i));
+  }
+  process_ptp_message(followup, sizeof(followup), false);
+  CHECK(ptp.rejected_master_count == rejected + 1,
+        "other master's FOLLOW_UP let in between sessions");
+  CHECK(ptp.sample_clock_id == MASTER_A,
+        "samples marked mixed between sessions");
+  mock_now_ms += 400;
+  ptp_clock_set_master_clock_id(MASTER_A);
+  CHECK(ptp_clock_is_locked(), "other master between sessions: lock dropped");
 }
 
 int main(void) {
