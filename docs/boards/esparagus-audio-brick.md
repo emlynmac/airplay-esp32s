@@ -283,6 +283,21 @@ of the band can need a narrower section than the part can make: past Q 20 it is 
 there, and the page names the filter. REW's other filter types, such as the fixed-slope
 `LS 6dB` and `LS 12dB`, are refused rather than guessed; set those by hand.
 
+### Locking filters
+
+The **Lock** box at the end of a row keeps that filter through an import, so a
+crossover or a correction set by hand can stay while a REW fit or a saved tuning is
+loaded around it. REW's filters fill the unlocked rows in order. A saved tuning keeps
+its own row numbers, except that a filter it has in a locked row moves to the first
+unlocked row it leaves empty. A file that does not fit around the locked rows is
+refused, and nothing changes. Ganged outputs share output A's locks. Importing a
+ganged tuning onto outputs whose locked filters differ leaves them split, since a
+ganged pair can only have one chain.
+
+Locks only steer imports: the other buttons on the page still change locked rows, and
+the row itself can still be edited. They are kept in the browser, not on the board, so
+another browser starts with none.
+
 ## Full PPC3 tuning
 
 !!! info "TAS5825M only"

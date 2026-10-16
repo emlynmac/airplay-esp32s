@@ -80,10 +80,15 @@ input:disabled,select:disabled{opacity:0.25}
 .manual[open] summary{color:#fff}
 .chainwrap{overflow-x:auto}
 .chaininner{min-width:770px}
-.bq,.bqhead{display:grid;grid-template-columns:24px 1.5fr 1.3fr .8fr .7fr .8fr .7fr .7fr 34px;gap:6px;align-items:center;margin-bottom:6px}
+.bq,.bqhead{display:grid;grid-template-columns:24px 1.5fr 1.3fr .8fr .7fr .8fr .7fr .7fr 34px 34px;gap:6px;align-items:center;margin-bottom:6px}
 .bqhead{font-size:10px;color:#666;text-transform:uppercase;letter-spacing:.5px}
 .bq .n{font-size:11px;color:#666;text-align:right}
 .bq input[type=checkbox]{accent-color:#e94560;width:16px;height:16px;cursor:pointer}
+/* Narrower padding pays for the lock column: a gain such as -8.80 still fits. */
+.bq input[type=number]{padding-left:5px;padding-right:5px}
+/* A locked filter is one an import leaves where it is. */
+.bq.locked .n{color:#e94560}
+.bq.locked select,.bq.locked input[type=number]{border-color:rgba(233,69,96,0.4)}
 .bqc{display:none;grid-template-columns:24px repeat(5,1fr) auto;gap:6px;align-items:center;margin:-2px 0 8px;min-width:770px}
 .bqc .n{font-size:10px;color:#666;text-align:right}
 .xo{display:none;margin-top:14px;padding:16px;border:1px solid rgba(255,255,255,0.1);border-radius:10px;background:rgba(0,0,0,0.2)}
@@ -121,7 +126,7 @@ input:disabled,select:disabled{opacity:0.25}
      longest option keeps a type name from pushing the row sideways. */
   .chaininner,.bqc{min-width:0}
   .bq,.bqhead{grid-template-columns:24px minmax(0,1.5fr) minmax(0,1.3fr)
-    minmax(0,.8fr) minmax(0,.7fr) minmax(0,.8fr) minmax(0,.7fr) minmax(0,.7fr) 34px}
+    minmax(0,.8fr) minmax(0,.7fr) minmax(0,.8fr) minmax(0,.7fr) minmax(0,.7fr) 34px 34px}
 }
 </style></head><body>
 <script src='/shell.js'></script>
@@ -247,7 +252,8 @@ that instead of correcting the band the driver does cover.</p>
 <div class='chainwrap'><div class='chaininner'>
 <div class='bqhead'><span></span><span>Type</span><span>Alignment</span>
 <span>Freq Hz</span><span>Q</span><span>BW Hz</span><span>Gain dB</span>
-<span>Ripple dB</span><span>Inv</span></div>
+<span>Ripple dB</span><span>Inv</span>
+<span title='Locked filters stay as they are when a file is imported'>Lock</span></div>
 <div id='rows'></div>
 </div></div>
 <div id='msg'></div>
@@ -977,7 +983,7 @@ function bqRow(i){
     co+="<input type='number' id='c"+i+'-'+t+"' step='0.000001' title='"+
         names[t]+"' placeholder='"+names[t]+"' oninput='touch()'>";
   var chg='bqSync('+i+');touch()';
-  return "<div class='bq'><span class='n'>"+(i+1)+'</span>'+
+  return "<div class='bq' id='r"+i+"'><span class='n'>"+(i+1)+'</span>'+
     "<select id='r"+i+"-t' onchange='"+chg+"'>"+opts+'</select>'+
     "<select id='r"+i+"-s' onchange='"+chg+"'>"+subs+'</select>'+
     "<input type='number' id='r"+i+"-f' min='10' max='20000' step='1' oninput='touch()'>"+
@@ -986,6 +992,8 @@ function bqRow(i){
     "<input type='number' id='r"+i+"-g' min='"+G_MIN+"' max='"+G_MAX+"' step='0.5' oninput='touch()'>"+
     "<input type='number' id='r"+i+"-r' min='"+R_MIN+"' max='"+R_MAX+"' step='0.1' oninput='touch()'>"+
     "<input type='checkbox' id='r"+i+"-i' title='Invert polarity' onchange='touch()'>"+
+    "<input type='checkbox' id='r"+i+"-l' title='Lock: an import leaves this"+
+    " filter as it is' onchange='lockToggle("+i+")'>"+
     "</div><div class='bqc' id='r"+i+"-c'><span class='n'>coef</span>"+co+
     "<button type='button' title='Find a filter shape that matches these"+
     " coefficients' onclick='toShape("+i+")'>To shape</button>"+'</div>';
@@ -1048,7 +1056,66 @@ function storeRows(){
 }
 function loadRows(){
   var c=chan();
-  for(var i=0;i<SLOTS;i++)bqSet(i,c[i]);
+  for(var i=0;i<SLOTS;i++){bqSet(i,c[i]);lockShow(i);}
+}
+
+/* ---- locks ----
+   A bit per slot, per output, kept in this browser (each speaker is its own
+   site, so its own set). They only steer imports, so they are not part of
+   the tuning and never reach the firmware. A ganged pair shares output A's. */
+var locks={};
+try{locks=JSON.parse(localStorage.getItem('bq-locks'))||{};}catch(e){}
+function lockMask(a,c){
+  var m=locks[a];
+  return (m&&m[isGanged(data.amps[a])?0:c])|0;
+}
+function lockShow(i){
+  var on=!!(lockMask(amp,ch)&(1<<i));
+  $('r'+i+'-l').checked=on;
+  $('r'+i).classList.toggle('locked',on);
+}
+function lockToggle(i){
+  var m=locks[amp]||(locks[amp]=[0,0]),c=isGanged(data.amps[amp])?0:ch;
+  m[c]^=1<<i;
+  if(isGanged(data.amps[amp]))m[1]=m[0];
+  lockSave();lockShow(i);
+}
+function lockSave(){
+  try{localStorage.setItem('bq-locks',JSON.stringify(locks));}catch(e){}
+}
+function lockCount(m){
+  for(var n=0;m;m&=m-1)n++;
+  return n;
+}
+function isBlank(b){return b.type===T_BYPASS&&!b.invert;}
+/* An imported chain laid over the current one: a locked slot keeps what it
+   holds, and a filter the import puts there moves to the first unlocked slot
+   the import leaves empty, so none of it is lost. Null when there is no room
+   for it. */
+function lockMerge(cur,src,mask){
+  var out=[],spill=[],moved,i;
+  for(i=0;i<SLOTS;i++){
+    if(mask&(1<<i)){
+      out.push(JSON.parse(JSON.stringify(cur[i])));
+      if(!isBlank(src[i]))spill.push(src[i]);
+    }else out.push(src[i]);
+  }
+  moved=spill.length;
+  for(i=0;i<SLOTS&&spill.length;i++)
+    if(!(mask&(1<<i))&&isBlank(out[i]))out[i]=spill.shift();
+  return spill.length?null:{chain:out,moved:moved};
+}
+function lockFull(where,mask){
+  var free=SLOTS-lockCount(mask);
+  return 'only '+free+' slot'+(free===1?'':'s')+' of '+where+
+         (free===1?' is':' are')+' unlocked, too few for the filters in the '+
+         'file.';
+}
+function lockNote(kept,moved){
+  if(!kept)return '';
+  return ' '+kept+' locked filter'+(kept>1?'s were':' was')+' left as '+
+         (kept>1?'they were':'it was')+(moved?', and '+moved+' from the file '+
+         'moved out of '+(kept>1?'their':'its')+' way':'')+'.';
 }
 function ampLabel(a){
   var base=data.devices>1?('Amp '+(a+1)):'Speakers';
@@ -2562,20 +2629,53 @@ function ampRef(a){return data.amps.length>1?'Amp '+(a+1):'The amplifier';}
    what lets it be redesigned for this board's rate. */
 function eqStage(r,name){
   var n=Math.min(r.amps.length,data.amps.length),sr=r.rate||fs();
-  var notes=[],odd=0,a,c,i;
+  var notes=[],odd=0,kept=0,moved=0,merged=[],a,c,i;
   storeRows();
+  /* Locked slots first, so a file that does not fit around them changes
+     nothing. */
   for(a=0;a<n;a++){
-    var fa=r.amps[a],am=data.amps[a];
+    var fa=r.amps[a],am=data.amps[a],cg=isGanged(am),mc=[];
+    var src=[fa.chains[0],fa.ganged?fa.chains[0]:fa.chains[1]];
+    /* A bridged amplifier only plays output A's chain. */
+    for(c=0;c<(am.pbtl?1:2);c++){
+      var mask=lockMask(a,c);
+      mc[c]=lockMerge(am.channels[cg?0:c],src[c],mask);
+      if(!mc[c]){
+        show($('msg'),'Could not import '+esc(name)+': '+
+             lockFull((data.amps.length>1?ampLabel(a)+', ':'')+
+                      (cg?chainLabel(am):outLabel(c)),mask),'err');
+        return;
+      }
+    }
+    if(am.pbtl)mc[1]=mc[0];
+    merged.push(mc);
+  }
+  for(a=0;a<n;a++){
+    var fa=r.amps[a],am=data.amps[a],mc=merged[a],gang=fa.ganged;
     for(c=0;c<fa.chains.length;c++)
       for(i=0;i<SLOTS;i++)
         if(fa.chains[c][i].type===T_CUSTOM&&!shapeOf(fa.chains[c][i],sr).ok&&
            sr!==fs())odd++;
-    var A=fa.chains[0],B=fa.ganged?A:fa.chains[1];
-    if(am.pbtl&&JSON.stringify(A)!==JSON.stringify(B))
+    if(am.pbtl&&!fa.ganged&&
+       JSON.stringify(fa.chains[0])!==JSON.stringify(fa.chains[1]))
       notes.push(ampRef(a)+' is bridged, so it takes the filters for '+
                  outLabel(0)+' only.');
-    am.channels=[A,JSON.parse(JSON.stringify(B))];
-    if(!am.pbtl)am.ganged=fa.ganged;
+    /* Ganged outputs share one chain, which they cannot while the filters
+       locked on each differ. */
+    if(gang&&!am.pbtl&&
+       JSON.stringify(mc[0].chain)!==JSON.stringify(mc[1].chain)){
+      gang=false;
+      notes.push(ampRef(a)+' kept '+outLabel(0)+' and '+outLabel(1)+
+                 ' separate: the filters locked on them differ.');
+    }
+    kept+=lockCount(lockMask(a,0));moved+=mc[0].moved;
+    if(!am.pbtl&&!gang){kept+=lockCount(lockMask(a,1));moved+=mc[1].moved;}
+    /* Once split, output B shows the locks it was imported with. */
+    if(isGanged(am)&&!am.pbtl&&!gang&&locks[a]){
+      locks[a][1]=locks[a][0];lockSave();
+    }
+    am.channels=[mc[0].chain,JSON.parse(JSON.stringify(mc[1].chain))];
+    if(!am.pbtl)am.ganged=gang;
     if(fa.mix!==undefined){
       if(am.mix_fixed){
         if(fa.mix!==am.mix)
@@ -2602,7 +2702,8 @@ function eqStage(r,name){
   if(isGanged(data.amps[amp]))ch=0;
   drawTabs();drawMix();drawGains();loadRows();setDirty(true);plot();
   show($('msg'),'Loaded '+esc(name)+'. Apply to hear it, then Commit to keep'+
-       ' it.'+(notes.length?' '+notes.join(' '):''),'info');
+       ' it.'+lockNote(kept,moved)+(notes.length?' '+notes.join(' '):''),
+       'info');
 }
 /* ---- REW filter settings ----
    The text REW saves from the EQ window ("Filter Settings file"), which is
@@ -2745,15 +2846,20 @@ function rewRead(text,sr){
 /* Into the output on screen, or both while they are ganged, replacing its
    chain: REW's filters are a whole correction, fitted on their own. */
 function rewStage(r,name){
-  var am=data.amps[amp],gang=isGanged(am),c,i;
-  var notes=r.notes.slice();
+  var am=data.amps[amp],gang=isGanged(am),mask=lockMask(amp,ch),c,i;
+  var notes=r.notes.slice(),src=[],k=0;
   storeRows();
-  for(c=0;c<2;c++){
-    if(!gang&&c!==ch)continue;
-    for(i=0;i<SLOTS;i++)
-      am.channels[c][i]=i<r.filters.length
-        ?JSON.parse(JSON.stringify(r.filters[i])):blankBq();
+  /* REW's filters fill the unlocked slots in order. */
+  for(i=0;i<SLOTS;i++)
+    src.push(!(mask&(1<<i))&&k<r.filters.length?r.filters[k++]:blankBq());
+  var m=k===r.filters.length&&lockMerge(chan(),src,mask);
+  if(!m){
+    show($('msg'),'Could not import '+esc(name)+': '+
+         lockFull(gang?chainLabel(am):outLabel(ch),mask),'err');
+    return;
   }
+  for(c=0;c<2;c++)
+    if(gang||c===ch)am.channels[c]=JSON.parse(JSON.stringify(m.chain));
   if(r.preamp!==null){
     var g=clamp(r.preamp,data.gain_min,data.gain_max);
     if(g!==r.preamp)
@@ -2767,6 +2873,7 @@ function rewStage(r,name){
        (r.eq?' ('+esc(r.eq)+')':'')+' into '+
        (gang?esc(chainLabel(am)):outLabel(ch))+', converted for '+fs()+
        ' Hz. Apply to hear it, then Commit to keep it.'+
+       lockNote(lockCount(mask),m.moved)+
        (notes.length?' '+notes.join(' '):''),'info');
 }
 function importEq(input){
