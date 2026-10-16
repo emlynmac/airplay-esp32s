@@ -158,8 +158,12 @@ async function scanWiFi(){
   var l=document.getElementById('wifi-list');l.innerHTML='<div class="msg info">Scanning...</div>';
   try{var r=await fetch('/api/wifi/scan');var d=await r.json();
     if(d.success&&d.networks.length>0){l.innerHTML='';d.networks.forEach(function(n){
+      /* An SSID is whatever a nearby network chose to call itself, so it is
+         text, never markup. */
       var i=document.createElement('div');i.className='wifi-item';
-      i.innerHTML='<span class="ssid">'+n.ssid+'</span><span class="rssi">'+n.rssi+' dBm</span>';
+      var ss=document.createElement('span');ss.className='ssid';ss.textContent=n.ssid;
+      var rs=document.createElement('span');rs.className='rssi';rs.textContent=n.rssi+' dBm';
+      i.appendChild(ss);i.appendChild(rs);
       i.onclick=function(){document.querySelectorAll('.wifi-item').forEach(function(x){x.classList.remove('sel');});i.classList.add('sel');document.getElementById('wifi-ssid').value=n.ssid;};
       l.appendChild(i);});}
     else{l.innerHTML='<div class="msg info">No networks found</div>';}}
