@@ -146,12 +146,15 @@ reboot. **Revert** goes back to what is in flash. For plain tone shaping, **Load
 band from 20 Hz to 16 kHz — leaving only the gains to set. It fills in the form and
 nothing more, so the amplifier hears it only once applied.
 
-A boost has to fit above the digital gain set on the settings page. Nothing turns the
-signal down to make room, so when the curves boost further than the supply leaves room
-for, the response graph says by how much and what to set the digital gain to instead.
-On a board that cannot report its supply, the page assumes 5 V, the least any USB-C
-supply gives, unless the digital gain is set higher than the 5 V level, in which case it
-takes the gain to be matched to the supply.
+A boost has to fit above the digital gain, which sits in the Volume card on the same
+page. A board that can read its supply keeps the gain at the loudest level that stays
+clean on it, less the highest boost of the filters playing. Set by hand under **Manual
+override**, as it is on a board that cannot read its supply, nothing turns the signal
+down to make room, so when the curves boost further than the supply leaves room for, the
+response graph says by how much and what to set the digital gain to instead. On a board
+that cannot report its supply, the page assumes 5 V, the least any USB-C supply gives,
+unless the digital gain is set higher than the 5 V level, in which case it takes the gain
+to be matched to the supply.
 
 Crossovers are built from these same sections, so a two-way or subwoofer split is just
 a high pass on one amplifier and a low pass on the other. **Build crossover** does that

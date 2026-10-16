@@ -70,16 +70,17 @@ firmware tells it to, and it forgets on every power loss, so the board asks agai
 boot, before the amplifier comes up. The 42 mm board has no trigger; the same build runs
 both.
 
-Choose the voltage under **USB-C Power** on the settings page. It starts at 5 V, so no
-speaker gets more than it was set up for, and the choice is kept across restarts. Choose
-what your speaker can take. 20 V needs a 65 W charger; a 30 W one manages 15 V. A charger
-that does not offer the voltage you chose gets the highest one below it, and a supply
-without USB-PD, such as a computer's port, stays at 5 V.
+Left to itself, the board asks the charger for the highest voltage it offers, up to
+20 V. To give the speaker less, choose a voltage under **Manual override** on the Biquad
+EQ page; the choice is kept across restarts. Choose what your speaker can take. 20 V needs
+a 65 W charger; a 30 W one manages 15 V. A charger that does not offer the voltage you
+chose gets the highest one below it, and a supply without USB-PD, such as a computer's
+port, stays at 5 V.
 
 The amplifier's gain does not change with its supply, only how far it can swing before it
-clips. So after changing the voltage, set **Digital gain** to match. That is the level full
-volume plays at, and the page marks the recommended level for each supply, the loudest
-that stays clean on it:
+clips, so the **Digital gain**, the level full volume plays at, has to match the supply.
+Left to itself, the board keeps it at the loudest level that stays clean on the supply it
+got:
 
 | Supply | Digital gain | Most it delivers, 4 Ω / 8 Ω |
 | --- | --- | --- |
@@ -89,16 +90,16 @@ that stays clean on it:
 | 15 V | −7 dB | about 22 / 11 W |
 | 20 V | −4.5 dB | about 39 / 19 W |
 
-The digital gain starts at −16.5 dB, the 5 V level, which is right for the 42 mm board.
-It is set by hand rather than following the supply, so it also suits a board that cannot
-read its supply, such as a 55 mm one whose trigger has been strapped to a fixed voltage in
-hardware. A louder setting clips the loudest passages; at low frequencies that is often
-hard to hear.
+An EQ boost needs room above that level too, so the board takes the highest boost of the
+filters playing off the gain: with a +9 dB bass shelf on 20 V it plays at −13.5 dB. It
+follows every change to the filters and output levels as they are applied.
 
-An EQ boost needs room above that level too: the recommended gain leaves none, so a
-+9 dB boost clips at full volume unless the digital gain comes down by 9 dB. The EQ page
-says when the filters boost past what the supply carries, and what to set the digital
-gain to.
+A board that cannot read its supply, such as the 42 mm one or a 55 mm one whose trigger
+has been strapped to a fixed voltage in hardware, keeps a gain set by hand, starting at
+−16.5 dB, the 5 V level. The gain can also be set by hand under **Manual override** on
+any board; the EQ page then says when the filters boost past what the supply carries, and
+what to set it to. A louder setting clips the loudest passages; at low frequencies that
+is often hard to hear.
 
 !!! note "Never more than 20 V"
 

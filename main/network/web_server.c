@@ -1032,13 +1032,26 @@ static esp_err_t dual_mode_post_handler(httpd_req_t *req) {
 
 /* The digital gain AirPlay's full volume maps to, chosen to suit the supply.
  * The level that is clean on each fixed USB-PD voltage comes along as a
- * recommendation. */
+ * recommendation. Where the board can read its supply, the gain can instead
+ * follow it and the EQ ("auto"), so it reports the supply and the boost the
+ * chains playing give too. */
 static esp_err_t send_digital_gain(httpd_req_t *req) {
   static const int volts[] = {5, 9, 12, 15, 20};
+  float boost_hz = 0.0f;
+  const float boost_db = dac_tas58xx_eq_boost_db(&boost_hz);
+  const int supply_mv = dac_tas58xx_get_supply_mv();
   cJSON *json = cJSON_CreateObject();
   cJSON_AddBoolToObject(json, "success", true);
   cJSON_AddNumberToObject(json, "db", dac_tas58xx_get_full_volume_db());
   cJSON_AddNumberToObject(json, "min_db", TAS58XX_FULL_VOLUME_MIN_DB);
+  cJSON_AddBoolToObject(json, "auto", dac_tas58xx_get_auto_gain());
+  cJSON_AddBoolToObject(json, "auto_available", supply_mv > 0);
+  cJSON_AddNumberToObject(json, "supply_mv", supply_mv);
+  if (supply_mv > 0) {
+    cJSON_AddNumberToObject(json, "clean_db", dac_tas58xx_clean_db(supply_mv));
+  }
+  cJSON_AddNumberToObject(json, "boost_db", roundf(boost_db * 100.0f) / 100.0f);
+  cJSON_AddNumberToObject(json, "boost_hz", roundf(boost_hz));
   cJSON *rec = cJSON_AddArrayToObject(json, "recommended");
   for (size_t i = 0; i < sizeof volts / sizeof volts[0]; i++) {
     cJSON *r = cJSON_CreateObject();
@@ -1058,7 +1071,8 @@ static esp_err_t digital_gain_get_handler(httpd_req_t *req) {
   return send_digital_gain(req);
 }
 
-/* {"db": -11} sets the digital gain. */
+/* {"db": -11} sets the digital gain by hand. {"auto": true} has it follow
+ * the supply and the EQ; {"auto": false} keeps the level it has reached. */
 static esp_err_t digital_gain_post_handler(httpd_req_t *req) {
   char *content = recv_body(req, 64);
   if (!content) {
@@ -1068,11 +1082,24 @@ static esp_err_t digital_gain_post_handler(httpd_req_t *req) {
   cJSON *json = cJSON_Parse(content);
   free(content);
   const cJSON *db = json ? cJSON_GetObjectItem(json, "db") : NULL;
+  const cJSON *automatic = json ? cJSON_GetObjectItem(json, "auto") : NULL;
+  if (cJSON_IsBool(automatic)) {
+    const bool on = cJSON_IsTrue(automatic);
+    cJSON_Delete(json);
+    if (on) {
+      dac_tas58xx_set_auto_gain(true);
+    } else {
+      dac_tas58xx_set_full_volume_db(dac_tas58xx_get_full_volume_db());
+      settings_set_full_volume_db(dac_tas58xx_get_full_volume_db());
+    }
+    settings_set_gain_auto(on);
+    return send_digital_gain(req);
+  }
   if (db == NULL || !cJSON_IsNumber(db) || db->valuedouble > 0.0 ||
       db->valuedouble < TAS58XX_FULL_VOLUME_MIN_DB) {
     cJSON_Delete(json);
     httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST,
-                        "Expected {\"db\": -30..0}");
+                        "Expected {\"db\": -30..0} or {\"auto\": bool}");
     return ESP_FAIL;
   }
   const float gain_db = (float)db->valuedouble;
@@ -1080,6 +1107,7 @@ static esp_err_t digital_gain_post_handler(httpd_req_t *req) {
 
   dac_tas58xx_set_full_volume_db(gain_db);
   settings_set_full_volume_db(dac_tas58xx_get_full_volume_db());
+  settings_set_gain_auto(false);
   return send_digital_gain(req);
 }
 #endif /* CONFIG_DAC_TAS58XX */
@@ -1098,6 +1126,7 @@ static esp_err_t send_usb_pd(httpd_req_t *req) {
   }
   cJSON_AddBoolToObject(json, "attached", status.attached);
   cJSON_AddBoolToObject(json, "pd", status.pd);
+  cJSON_AddBoolToObject(json, "auto", settings_get_usb_pd_auto());
   cJSON_AddNumberToObject(json, "volts", status.requested_volts);
   cJSON_AddNumberToObject(json, "max_volts", status.max_volts);
   cJSON_AddNumberToObject(json, "supply_mv", status.supply_mv);
@@ -1129,7 +1158,9 @@ static esp_err_t usb_pd_get_handler(httpd_req_t *req) {
 }
 
 /* Asking the charger for another voltage takes it a second or two, and the
- * reply waits for it, so it reports the supply that resulted. */
+ * reply waits for it, so it reports the supply that resulted. {"volts": 12}
+ * sets one by hand; {"auto": true} asks for the highest the charger offers,
+ * now and on every boot; {"auto": false} keeps the one it is running at. */
 static esp_err_t usb_pd_post_handler(httpd_req_t *req) {
   char *content = recv_body(req, 64);
   if (!content) {
@@ -1139,10 +1170,30 @@ static esp_err_t usb_pd_post_handler(httpd_req_t *req) {
   cJSON *json = cJSON_Parse(content);
   free(content);
   const cJSON *val = json ? cJSON_GetObjectItem(json, "volts") : NULL;
+  const cJSON *automatic = json ? cJSON_GetObjectItem(json, "auto") : NULL;
+  if (cJSON_IsBool(automatic)) {
+    const bool on = cJSON_IsTrue(automatic);
+    cJSON_Delete(json);
+    husb238a_status_t status;
+    if (!husb238a_present() || husb238a_get_status(&status) != ESP_OK) {
+      httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST,
+                          "This board has no USB-PD trigger");
+      return ESP_FAIL;
+    }
+    if (on) {
+      husb238a_request(status.max_volts);
+    } else {
+      settings_set_usb_pd_volts(status.supply_mv > 0 ? status.supply_mv / 1000
+                                                     : status.requested_volts);
+    }
+    settings_set_usb_pd_auto(on);
+    return send_usb_pd(req);
+  }
   if (val == NULL || !cJSON_IsNumber(val)) {
     cJSON_Delete(json);
-    httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST,
-                        "Expected {\"volts\": 5, 9, 12, 15 or 20}");
+    httpd_resp_send_err(
+        req, HTTPD_400_BAD_REQUEST,
+        "Expected {\"volts\": 5, 9, 12, 15 or 20} or {\"auto\": bool}");
     return ESP_FAIL;
   }
   const int volts = val->valueint;
@@ -1158,6 +1209,7 @@ static esp_err_t usb_pd_post_handler(httpd_req_t *req) {
   }
   /* Kept even if this charger cannot give it, for one that can. */
   settings_set_usb_pd_volts(volts);
+  settings_set_usb_pd_auto(false);
   return send_usb_pd(req);
 }
 #endif /* CONFIG_HUSB238A */

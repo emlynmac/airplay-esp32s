@@ -70,6 +70,13 @@ input:disabled,select:disabled{opacity:0.25}
       cursor:pointer;min-width:62px}
 .mute.on{background:#e94560;border-color:#e94560;color:#fff}
 .muted{opacity:.45}
+/* Read-outs rather than controls: the value, then why it is what it is. */
+.trim.pw{align-items:baseline;flex-wrap:wrap}
+.trim.pw b{text-align:left;min-width:64px}
+.trim.pw span{flex:1;min-width:200px;line-height:1.5}
+.manual{margin-top:4px;border-top:1px solid rgba(255,255,255,0.08);padding-top:12px}
+.manual summary{cursor:pointer;font-size:12px;color:#aaa;margin-bottom:12px}
+.manual[open] summary{color:#fff}
 .chainwrap{overflow-x:auto}
 .chaininner{min-width:770px}
 .bq,.bqhead{display:grid;grid-template-columns:24px 1.5fr 1.3fr .8fr .7fr .8fr .7fr .7fr 34px;gap:6px;align-items:center;margin-bottom:6px}
@@ -257,6 +264,28 @@ DSP input mixer ahead of the filters, so they only attenuate and cost no filter
 headroom. Use them to match drivers of differing sensitivity.</p>
 <p class='hint' id='preamp' style='display:none'></p>
 <div id='gains'></div>
+<div id='power' style='display:none'>
+<div class='trim pw'><label>Digital gain</label><b id='pw-db-val'>&mdash;</b>
+<span id='pw-gain-sum'></span></div>
+<div class='trim pw' id='pw-pd-line' style='display:none'><label>USB-C supply</label>
+<b id='pw-v-val'>&mdash;</b><span id='pw-pd-sum'></span></div>
+<details class='manual'>
+<summary>Manual override</summary>
+<div class='trim' id='pw-pd-row' style='display:none'>
+<label for='pw-volts'>USB-C supply</label>
+<select id='pw-volts' onchange='pickVolts()'></select></div>
+<div class='trim'><label for='pw-db'>Digital gain</label>
+<select id='pw-db' onchange='pickGain()'></select></div>
+<p class='hint'>Left on Automatic, the board asks the charger for the highest
+voltage it offers, and keeps the digital gain at the loudest level that stays
+clean on that supply with the EQ playing: the supply's clean level less the
+highest boost of the filters, levels included. Choose a lower voltage if the
+speaker cannot take the power: at full volume about 3, 9, 15, 22 or
+39&nbsp;W into 4&nbsp;&Omega; at 5, 9, 12, 15 or 20&nbsp;V, and half that into
+8&nbsp;&Omega;. 20&nbsp;V needs a 65&nbsp;W charger.</p>
+<div id='pw-msg'></div>
+</details>
+</div>
 </div>
 </div>
 
@@ -1250,11 +1279,12 @@ function plot(){
 }
 
 /* ---- headroom ----
-   The amplifier's digital gain is set to the loudest level its supply carries
-   cleanly, which leaves no room above it: a boost in the curves pushes full
-   volume past that and the loud passages clip. Nothing is turned down for it;
-   the note says by how much the gain should come down. */
-var gainInfo=null,supplyMv=0;
+   The loudest level a supply carries cleanly leaves no room above it, so a
+   boost in the curves pushes full volume past it and the loud passages clip.
+   Left on Automatic the board takes the boost off the digital gain itself,
+   from the chains it is playing; the note says where unapplied edits would
+   move it. Set by hand, the note says when the gain is too high. */
+var gainInfo=null,supplyMv=0,pdInfo=null;
 /* Highest point of one chain, trim included: a 1/48-octave sweep finds every
    peak, and a golden-section search between each local maximum's neighbours
    finds its top, since a Q 20 peak is only about three steps wide. */
@@ -1281,20 +1311,21 @@ function chainPeak(secs,sr,trim){
 function dbText(v){return (v<0?'\u2212':'+')+Math.abs(v).toFixed(1)+' dB';}
 function clipNote(){
   var el=$('clip-note');
-  if(!gainInfo||!data){show(el,'');return;}
+  if(!gainInfo||!data||softwareEq()){show(el,'');return;}
   var chains=activeChains(),pk={db:-Infinity,f:0},k,r,i;
   for(k=0;k<chains.length;k++){
     r=chainPeak(sectionsOf(chains[k].c),fs(),chains[k].g);
     if(r.db>pk.db)pk=r;
   }
-  /* The level clean on the supply, where the board can say what that is.
-     Otherwise every USB-C supply gives at least 5 V, so a gain under the 5 V
-     level has that much room, and one over it is taken to have been matched
-     to a higher supply. */
-  var clean=gainInfo.db,volts=0,rec=gainInfo.recommended||[];
-  for(i=0;i<rec.length;i++){
-    if(supplyMv&&Math.round(supplyMv/1000)===rec[i].volts){clean=rec[i].db;volts=rec[i].volts;}
-    if(!supplyMv&&rec[i].volts===5&&rec[i].db>=gainInfo.db){clean=rec[i].db;volts=5;}
+  /* Nothing playing counts as flat, as it does on the board. */
+  if(pk.db===-Infinity)pk={db:0,f:0};
+  var c=cleanLevel(),clean=c.db,volts=c.volts;
+  if(autoGain()){
+    var next=Math.min(0,Math.max(Math.floor((clean-pk.db)*2)/2,gainInfo.min_db));
+    show(el,Math.abs(next-gainInfo.db)>=0.5?'Applied, these filters move the'+
+      ' automatic digital gain from '+dbText(gainInfo.db)+' to '+dbText(next)+
+      '.':'','info');
+    return;
   }
   var reach=gainInfo.db+pk.db;
   if(!(pk.db>0.05&&reach>clean+0.05)){show(el,'');return;}
@@ -1303,11 +1334,108 @@ function clipNote(){
   show(el,'The filters boost by up to '+dbText(pk.db)+' (at '+hz+'), so full'+
     ' volume reaches '+dbText(reach)+', past the '+dbText(clean)+' that stays'+
     ' clean '+(volts?'on '+volts+' V':'on the supply Digital gain is set for')+
-    '. The loudest passages will clip. To keep them clean, turn Digital gain'+
-    ' down to '+dbText(want)+" on the <a href='/'>settings page</a>, or take"+
-    ' some of the boost out.','warn');
+    '. The loudest passages will clip. To keep them clean, set Digital gain'+
+    ' to '+dbText(want)+(gainInfo.auto_available?' or Automatic':'')+
+    ' under Manual override, or take some of the boost out.','warn');
 }
-function loadGain(){
+/* The level clean on the supply, where the board can say what that is.
+   Otherwise every USB-C supply gives at least 5 V, so a gain under the 5 V
+   level has that much room, and one over it is taken to have been matched
+   to a higher supply. */
+function cleanLevel(){
+  if(gainInfo.clean_db!==undefined)
+    return {db:gainInfo.clean_db,volts:gainInfo.supply_mv/1000};
+  var clean=gainInfo.db,volts=0,rec=gainInfo.recommended||[],i;
+  for(i=0;i<rec.length;i++){
+    if(supplyMv&&Math.round(supplyMv/1000)===rec[i].volts){clean=rec[i].db;volts=rec[i].volts;}
+    if(!supplyMv&&rec[i].volts===5&&rec[i].db>=gainInfo.db){clean=rec[i].db;volts=5;}
+  }
+  return {db:clean,volts:volts};
+}
+function autoGain(){return !!(gainInfo&&gainInfo.auto&&gainInfo.auto_available);}
+
+/* ---- supply and digital gain ----
+   Both are the board's to choose until set by hand under Manual override.
+   Older firmware reports neither choice, so it gets the plain selectors. */
+function hz(f){return f>=1000?(f/1000).toFixed(1)+' kHz':Math.round(f)+' Hz';}
+function drawPower(){
+  var g=gainInfo,p=pdInfo,h,v,o,rec={},i;
+  if(!g){$('power').style.display='none';return;}
+  $('power').style.display='';
+  $('pw-db-val').textContent=dbText(g.db).replace('+','');
+  var sum;
+  if(autoGain()){
+    sum='Automatic: '+dbText(g.clean_db).replace('+','')+' is clean on '+
+        g.supply_mv/1000+' V';
+    if(g.boost_db>0.05)sum+=', less the EQ’s '+dbText(g.boost_db)+
+                           ' boost at '+hz(g.boost_hz);
+    else if(g.boost_db<-0.05)sum+=', and the EQ and levels leave '+
+                                 dbText(-g.boost_db).replace('+','')+' spare';
+    sum+='.';
+  }else if(g.auto&&g.auto_available===false){
+    sum='The board cannot read its supply, so the gain cannot follow it.';
+  }else sum='Set by hand.';
+  $('pw-gain-sum').textContent=sum;
+
+  (g.recommended||[]).forEach(function(r){rec[r.db]=r.volts;});
+  h=g.auto_available?"<option value='auto'>Automatic — loudest that stays clean</option>":'';
+  for(v=0;v>=g.min_db;v-=0.5)
+    h+="<option value='"+v+"'>"+dbText(v).replace('+','')+
+       (rec[v]?' (clean on '+rec[v]+' V)':'')+'</option>';
+  $('pw-db').innerHTML=h;
+  $('pw-db').value=autoGain()?'auto':String(g.db);
+
+  $('pw-pd-line').style.display=p?'':'none';
+  $('pw-pd-row').style.display=p?'':'none';
+  if(!p)return;
+  var offered={};
+  (p.offers||[]).forEach(function(o){offered[o.volts]=o.ma;});
+  $('pw-v-val').textContent=p.supply_mv>0?p.supply_mv/1000+' V':'—';
+  if(p.pd){
+    sum=(p.auto?'Automatic: the highest of the charger’s offers, ':
+         'Set by hand to '+p.volts+' V. The charger offers ')+
+        p.offers.map(function(o){
+          return o.volts+' V at '+(o.ma/1000).toFixed(1)+' A';}).join(', ')+'.';
+  }else if(p.attached)sum='The charger does not speak USB-PD, so the board'+
+                         ' stays at 5 V.';
+  else sum='The supply cannot be read.';
+  $('pw-pd-sum').textContent=sum;
+  /* Firmware from before the automatic choice does not report one. */
+  h=p.auto!==undefined?"<option value='auto'>Automatic — highest offered</option>":'';
+  (p.choices||[]).slice().reverse().forEach(function(c){
+    h+="<option value='"+c+"'>"+c+' V'+(p.pd&&!offered[c]?' (not offered)':'')+
+       '</option>';
+  });
+  $('pw-volts').innerHTML=h;
+  $('pw-volts').value=p.auto?'auto':String(p.volts);
+}
+function powerPost(url,body,busy){
+  var sel=[$('pw-volts'),$('pw-db')];
+  sel.forEach(function(e){e.disabled=true;});
+  show($('pw-msg'),busy,'info');
+  return fetch(url,{method:'POST',headers:{'Content-Type':'application/json'},
+                    body:JSON.stringify(body)})
+    .then(function(r){
+      if(!r.ok)return r.text().then(function(t){throw new Error(t||r.status);});
+      show($('pw-msg'),'Saved.','ok');
+    })
+    .catch(function(e){show($('pw-msg'),'Failed: '+e.message,'err');})
+    .then(loadPower)
+    .then(function(){sel.forEach(function(e){e.disabled=false;});});
+}
+function pickVolts(){
+  var v=$('pw-volts').value;
+  powerPost('/api/power/usb-pd',v==='auto'?{auto:true}:{volts:Number(v)},
+            'Asking the charger'+(v==='auto'?' for its highest voltage':' for '+
+            v+' V')+'…');
+}
+function pickGain(){
+  var v=$('pw-db').value;
+  powerPost('/api/audio/digital-gain',v==='auto'?{auto:true}:{db:Number(v)},
+            'Saving…');
+}
+/* One request at a time: the board serves few sockets. */
+function loadPower(){
   /* Digital gain is the TAS58xx's; a software EQ build has no such endpoint,
      and asking anyway logs a warning on the device for every page load. */
   if(softwareEq())return Promise.resolve();
@@ -1315,14 +1443,33 @@ function loadGain(){
     if(!r.ok)return;
     return r.json().then(function(d){gainInfo=d;
       return fetch('/api/power/usb-pd').then(function(r){return r.ok?r.json():null;})
-        .then(function(p){if(p&&p.supply_mv>0)supplyMv=p.supply_mv;},function(){});
+        .then(function(p){pdInfo=p;if(p&&p.supply_mv>0)supplyMv=p.supply_mv;},
+              function(){});
     });
-  }).then(clipNote,function(){});
+  }).then(function(){drawPower();clipNote();},function(){});
+}
+/* The board moves an automatic gain whenever the chains or levels playing
+   change, so it is read back after each change sent. */
+var gainTimer=0;
+function gainMoved(){
+  if(!autoGain())return;
+  clearTimeout(gainTimer);
+  gainTimer=setTimeout(function(){
+    fetch('/api/audio/digital-gain').then(function(r){return r.ok?r.json():null;})
+      .then(function(d){if(d){gainInfo=d;drawPower();clipNote();}},function(){});
+  },400);
 }
 
 /* Every chain that is actually driving a driver, across both amplifiers, so
    a crossover split over two amps can be read as one picture. A muted output
    is left out rather than drawn flat, since it is contributing nothing. */
+/* A shared chain is as loud as the louder output still playing it. */
+function sharedTrim(am){
+  var g=-Infinity;
+  if(!am.mutes[0])g=Number(am.gains[0])||0;
+  if(!am.pbtl&&!am.mutes[1])g=Math.max(g,Number(am.gains[1])||0);
+  return g===-Infinity?0:g;
+}
 function activeChains(){
   var out=[];
   for(var a=0;a<data.amps.length;a++){
@@ -1331,7 +1478,7 @@ function activeChains(){
       /* Ganged shares one chain across both outputs, so it is still being
          heard unless every output carrying it is muted. */
       if(!am.mutes[0]||(!am.pbtl&&!am.mutes[1]))
-        out.push({c:am.channels[0],n:pre+chainLabel(am),g:trimOf(am,0)});
+        out.push({c:am.channels[0],n:pre+chainLabel(am),g:sharedTrim(am)});
     }else{
       if(!am.mutes[0])out.push({c:am.channels[0],n:pre+'A',g:trimOf(am,0)});
       if(!am.mutes[1])out.push({c:am.channels[1],n:pre+'B',g:trimOf(am,1)});
@@ -1410,6 +1557,7 @@ function post(body,okText){
       if(!r.ok)return r.text().then(function(t){throw new Error(t||r.status);});
       return r.json().catch(function(){return {};}).then(function(j){
         noteLive(body);
+        gainMoved();
         if(j.preamp_db!==undefined){data.preamp_db=j.preamp_db;showPreamp();}
         if(okText)show($('msg'),okText,'ok');
         return true;
@@ -2204,6 +2352,7 @@ function revert(){
     if(!r.ok)throw new Error(r.status);
     return load();
   }).then(function(){
+    gainMoved();
     setDirty(false);show($('msg'),'Reverted to the stored tuning.','ok');
   }).catch(function(e){show($('msg'),'Revert failed: '+e.message,'err');});
 }
@@ -2679,7 +2828,7 @@ window.onload=function(){
        rather than taking another socket alongside it. */
     fetch('/api/system/info').then(function(r){return r.json();})
       .then(function(j){devName=(j.info&&j.info.device_name)||'';})
-      .catch(function(){}).then(loadGain);
+      .catch(function(){}).then(loadPower);
   },function(e){
     show($('msg'),'Could not read the current tuning: '+e.message,'err');
   });
