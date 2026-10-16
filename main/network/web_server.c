@@ -244,23 +244,36 @@ static esp_err_t serve_spiffs_file(httpd_req_t *req, const char *path,
   return ESP_OK;
 }
 
-// API handlers
-static esp_err_t root_handler(httpd_req_t *req) {
-  return serve_spiffs_file(req, "/spiffs/www/index.html", "text/html");
+/* The settings pages, the log viewer, and the stylesheet and script every
+ * page shares. Each is a file in SPIFFS, so it can be replaced on its own
+ * over /api/fs/upload. */
+typedef struct {
+  const char *uri;
+  const char *path;
+  const char *type;
+} static_file_t;
+
+static const static_file_t STATIC_FILES[] = {
+    {"/", "/spiffs/www/index.html", "text/html"},
+    {"/config", "/spiffs/www/config.html", "text/html"},
+    {"/network", "/spiffs/www/network.html", "text/html"},
+    // The speed test is part of the Network page now; keep old links working.
+    {"/speedtest", "/spiffs/www/network.html", "text/html"},
+    {"/logs", "/spiffs/www/logs.html", "text/html"},
+    {"/app.css", "/spiffs/www/app.css", "text/css; charset=utf-8"},
+    {"/shell.js", "/spiffs/www/shell.js", "text/javascript; charset=utf-8"},
+};
+
+static esp_err_t static_file_handler(httpd_req_t *req) {
+  const static_file_t *file = req->user_ctx;
+  return serve_spiffs_file(req, file->path, file->type);
 }
 
+// API handlers
 static esp_err_t favicon_handler(httpd_req_t *req) {
   httpd_resp_set_status(req, "204 No Content");
   httpd_resp_send(req, NULL, 0);
   return ESP_OK;
-}
-
-static esp_err_t logs_page_handler(httpd_req_t *req) {
-  return serve_spiffs_file(req, "/spiffs/www/logs.html", "text/html");
-}
-
-static esp_err_t speedtest_page_handler(httpd_req_t *req) {
-  return serve_spiffs_file(req, "/spiffs/www/speedtest.html", "text/html");
 }
 
 // Tiny endpoint used by JS for RTT timing. Returns minimal body.
@@ -1349,6 +1362,11 @@ static esp_err_t system_info_handler(httpd_req_t *req) {
   cJSON_AddStringToObject(info, "device_name", device_name);
   cJSON_AddBoolToObject(info, "wifi_connected", wifi_connected);
   cJSON_AddBoolToObject(info, "eth_connected", eth_connected);
+#ifdef CONFIG_ETH_W5500_ENABLED
+  cJSON_AddBoolToObject(info, "eth_supported", true);
+#else
+  cJSON_AddBoolToObject(info, "eth_supported", false);
+#endif
   cJSON_AddNumberToObject(info, "free_heap", esp_get_free_heap_size());
 
   // WiFi link diagnostics (only meaningful when associated as STA)
@@ -1443,6 +1461,104 @@ static esp_err_t system_info_handler(httpd_req_t *req) {
   free(json_str);
   cJSON_Delete(json);
 
+  return ESP_OK;
+}
+
+// The name the services were started with; a saved name differs until the
+// next boot.
+static char s_boot_name[65];
+
+static const char *source_name(playback_source_t source) {
+  switch (source) {
+  case PLAYBACK_SOURCE_AIRPLAY:
+    return "airplay";
+  case PLAYBACK_SOURCE_BLUETOOTH:
+    return "bluetooth";
+  case PLAYBACK_SOURCE_USB:
+    return "usb";
+  case PLAYBACK_SOURCE_SENDSPIN:
+    return "sendspin";
+  default:
+    return "";
+  }
+}
+
+/* Everything the status strip at the top of each page shows, in one request,
+ * so a page polls one endpoint: the link, what is playing, the volume, and
+ * the saved settings that wait for a restart. */
+static esp_err_t status_handler(httpd_req_t *req) {
+  cJSON *json = cJSON_CreateObject();
+
+  char name[65] = {0};
+  settings_get_device_name(name, sizeof(name));
+  cJSON_AddStringToObject(json, "name", name);
+
+  char ip_str[16] = {0};
+  const char *link = "none";
+  if (ethernet_is_connected()) {
+    link = "ethernet";
+    ethernet_get_ip_str(ip_str, sizeof(ip_str));
+  } else if (wifi_is_connected()) {
+    link = "wifi";
+    wifi_get_ip_str(ip_str, sizeof(ip_str));
+    wifi_ap_record_t ap;
+    if (esp_wifi_sta_get_ap_info(&ap) == ESP_OK) {
+      cJSON_AddNumberToObject(json, "rssi", ap.rssi);
+    }
+  }
+  cJSON_AddStringToObject(json, "link", link);
+  cJSON_AddStringToObject(json, "ip", ip_str);
+
+  const playback_source_t source = playback_events_active_source();
+  cJSON_AddStringToObject(json, "source", source_name(source));
+  cJSON_AddStringToObject(json, "state",
+                          source == PLAYBACK_SOURCE_NONE  ? "idle"
+                          : playback_events_any_playing() ? "playing"
+                                                          : "connected");
+  playback_metadata_t meta;
+  if (playback_events_get_metadata(&meta)) {
+    cJSON_AddStringToObject(json, "title", meta.title);
+    cJSON_AddStringToObject(json, "artist", meta.artist);
+    cJSON_AddStringToObject(json, "album", meta.album);
+  }
+
+  float db = -15.0f;
+  settings_get_volume(&db);
+  cJSON_AddNumberToObject(json, "volume_db", db);
+  cJSON_AddNumberToObject(json, "volume_min", VOLUME_UI_MIN_DB);
+  cJSON_AddNumberToObject(json, "volume_max", VOLUME_UI_MAX_DB);
+  cJSON_AddBoolToObject(json, "muted", playback_control_is_muted());
+
+  cJSON *restart = cJSON_AddArrayToObject(json, "restart");
+  if (s_boot_name[0] && strcmp(name, s_boot_name) != 0) {
+    cJSON_AddItemToArray(restart, cJSON_CreateString("Device name"));
+  }
+  if (settings_airplay_v1_configured() != settings_airplay_v1()) {
+    cJSON_AddItemToArray(restart, cJSON_CreateString("AirPlay mode"));
+  }
+#ifdef CONFIG_SENDSPIN_ENABLE
+  if (settings_sendspin_enabled_configured() != settings_sendspin_enabled()) {
+    cJSON_AddItemToArray(restart, cJSON_CreateString("Sendspin"));
+  }
+#endif
+#ifdef CONFIG_DAC_TAS58XX
+  if (dac_tas58xx_get_first_pbtl() != dac_tas58xx_get_active_first_pbtl()) {
+    cJSON_AddItemToArray(restart, cJSON_CreateString("Amplifier wiring"));
+  }
+  if (dac_tas58xx_get_device_count() > 1 &&
+      dac_tas58xx_get_second_pbtl() != dac_tas58xx_get_active_second_pbtl()) {
+    cJSON_AddItemToArray(restart,
+                         cJSON_CreateString("Second amplifier wiring"));
+  }
+#endif
+  cJSON_AddBoolToObject(json, "success", true);
+
+  char *json_str = cJSON_PrintUnformatted(json);
+  httpd_resp_set_type(req, "application/json");
+  httpd_resp_set_hdr(req, "Cache-Control", "no-store");
+  httpd_resp_send(req, json_str, HTTPD_RESP_USE_STRLEN);
+  free(json_str);
+  cJSON_Delete(json);
   return ESP_OK;
 }
 
@@ -2892,7 +3008,7 @@ esp_err_t web_server_start(uint16_t port) {
   // Slots are allocated up front and httpd_register_uri_handler failures are
   // unchecked, so an undercount silently drops whatever registers last, which
   // is log_stream's /ws/logs. Keep these in step with the handlers below.
-  config.max_uri_handlers = 38; // 32 here + /ws/logs, plus 5 spare
+  config.max_uri_handlers = 43; // 37 here + /ws/logs, plus 5 spare
 #ifdef CONFIG_SENDSPIN_ENABLE
   config.max_uri_handlers += 5; // /sendspin + mode get/post + unpair + reset
   // The Sendspin server holds its WebSocket open for as long as the speaker
@@ -2928,6 +3044,10 @@ esp_err_t web_server_start(uint16_t port) {
   config.stack_size = 8192;
 #endif
 
+  if (!s_boot_name[0]) {
+    settings_get_device_name(s_boot_name, sizeof(s_boot_name));
+  }
+
   esp_err_t err = httpd_start(&s_server, &config);
   if (err != ESP_OK) {
     ESP_LOGE(TAG, "Failed to start web server: %s", esp_err_to_name(err));
@@ -2936,22 +3056,17 @@ esp_err_t web_server_start(uint16_t port) {
 
   // Register handlers (a restarted server registers them all again)
   s_api_handler_count = 0;
-  httpd_uri_t root_uri = {
-      .uri = "/", .method = HTTP_GET, .handler = root_handler};
-  register_uri(&root_uri);
+  for (size_t i = 0; i < sizeof(STATIC_FILES) / sizeof(STATIC_FILES[0]); i++) {
+    httpd_uri_t file_uri = {.uri = STATIC_FILES[i].uri,
+                            .method = HTTP_GET,
+                            .handler = static_file_handler,
+                            .user_ctx = (void *)&STATIC_FILES[i]};
+    register_uri(&file_uri);
+  }
 
   httpd_uri_t favicon_uri = {
       .uri = "/favicon.ico", .method = HTTP_GET, .handler = favicon_handler};
   register_uri(&favicon_uri);
-
-  httpd_uri_t logs_uri = {
-      .uri = "/logs", .method = HTTP_GET, .handler = logs_page_handler};
-  register_uri(&logs_uri);
-
-  httpd_uri_t speedtest_page_uri = {.uri = "/speedtest",
-                                    .method = HTTP_GET,
-                                    .handler = speedtest_page_handler};
-  register_uri(&speedtest_page_uri);
 
   httpd_uri_t speedtest_ping_uri = {.uri = "/api/speedtest/ping",
                                     .method = HTTP_GET,
@@ -3101,6 +3216,10 @@ esp_err_t web_server_start(uint16_t port) {
                               .method = HTTP_POST,
                               .handler = metadata_post_handler};
   register_uri(&metadata_uri);
+
+  httpd_uri_t status_uri = {
+      .uri = "/api/status", .method = HTTP_GET, .handler = status_handler};
+  register_uri(&status_uri);
 
   httpd_uri_t system_info_uri = {.uri = "/api/system/info",
                                  .method = HTTP_GET,

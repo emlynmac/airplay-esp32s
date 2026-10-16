@@ -1,4 +1,4 @@
-<!DOCTYPE html><html><head>
+<!DOCTYPE html><html data-nav-from='1440'><head>
 <meta charset='UTF-8'>
 <meta name='viewport' content='width=device-width,initial-scale=1'>
 <title>Biquad EQ - AirPlay Receiver</title>
@@ -9,8 +9,6 @@ body{font-family:-apple-system,system-ui,sans-serif;background:linear-gradient(1
 .header{text-align:center;padding:20px 0}
 .header h1{font-size:24px;font-weight:600;margin-bottom:4px}
 .header p{color:#888;font-size:13px}
-.nav{text-align:center;margin-bottom:16px}
-.nav a{color:#e94560;text-decoration:none;font-size:13px;margin:0 8px}
 .card{background:rgba(255,255,255,0.05);border-radius:16px;padding:20px;margin-bottom:16px;border:1px solid rgba(255,255,255,0.1)}
 .card h2{font-size:16px;font-weight:600;margin-bottom:16px;color:#e94560}
 .btn{display:inline-block;padding:10px 16px;border:none;border-radius:8px;font-size:13px;font-weight:500;cursor:pointer;transition:all 0.2s}
@@ -23,9 +21,12 @@ body{font-family:-apple-system,system-ui,sans-serif;background:linear-gradient(1
 .btn:disabled{opacity:0.5;cursor:not-allowed}
 .actions{display:flex;gap:10px;flex-wrap:wrap;align-items:center;margin-top:16px}
 .actions.top{margin:0 0 12px}
-/* Under 1280 px the cards stack, the volume first as it always was. From
-   1280 px the plots sit on the left and stay in view while the chain beside
-   them is edited, with the volume under the chain. */
+/* Narrower than 1200 px the cards stack, the volume first as it always was.
+   From 1200 px the plots sit on the left and stay in view while the chain
+   beside them is edited, with the volume under the chain. The width is the
+   page's, not the screen's, which the navigation shares from 1440 px
+   (data-nav-from above; under that it stays behind the menu button). */
+.cq{container-type:inline-size}
 .work{display:grid;grid-template-columns:minmax(0,1fr);
       grid-template-areas:'vol' 'plots' 'chain'}
 #vol-card{grid-area:vol}
@@ -98,7 +99,7 @@ input:disabled,select:disabled{opacity:0.25}
 .legend{display:flex;gap:14px;flex-wrap:wrap;font-size:11px;color:#999;margin-bottom:6px}
 .legend span{display:flex;align-items:center;gap:5px}
 .legend i{width:11px;height:11px;border-radius:3px}
-.bar{position:sticky;bottom:0;background:rgba(22,33,62,0.95);backdrop-filter:blur(10px);border:1px solid rgba(255,255,255,0.1);border-radius:16px;padding:16px;margin-top:16px;display:flex;gap:10px;flex-wrap:wrap;align-items:center}
+.bar{position:sticky;bottom:var(--sh-bottom,0px);background:rgba(22,33,62,0.95);backdrop-filter:blur(10px);border:1px solid rgba(255,255,255,0.1);border-radius:16px;padding:16px;margin-top:16px;display:flex;gap:10px;flex-wrap:wrap;align-items:center}
 .bar .state{font-size:12px;color:#aaa}
 .dot{display:inline-block;width:8px;height:8px;border-radius:50%;background:#4a4;margin-right:6px}
 .dot.dirty{background:#e94560}
@@ -106,12 +107,13 @@ input:disabled,select:disabled{opacity:0.25}
    commit and revert, at the far end of the bar. */
 .bar .files{margin-left:auto;display:flex;gap:10px;flex-wrap:wrap}
 /* Last, so it overrides the single-column sizes above. */
-@media (min-width:1280px){
+@container (min-width:1200px){
   .wrap{max-width:1800px}
   .work{grid-template-columns:minmax(0,1fr) 760px;column-gap:16px;
         grid-template-areas:'plots chain' 'plots vol';align-items:start}
   /* Leaves room for the bar pinned under it. */
-  #plots{position:sticky;top:16px;max-height:calc(100vh - 128px);overflow-y:auto}
+  #plots{position:sticky;top:16px;overflow-y:auto;
+         max-height:calc(100vh - 128px - var(--sh-bottom,0px))}
   /* Shorter on a short screen, so both plots fit beside the chain. */
   .plot{height:clamp(150px,25vh,260px)}
   /* The column is fixed at a width the rows fit, which gives the plots the
@@ -122,9 +124,9 @@ input:disabled,select:disabled{opacity:0.25}
     minmax(0,.8fr) minmax(0,.7fr) minmax(0,.8fr) minmax(0,.7fr) minmax(0,.7fr) 34px}
 }
 </style></head><body>
-<div class='wrap'>
+<script src='/shell.js'></script>
+<div class='cq'><div class='wrap'>
 <div class='header'><h1>Biquad EQ</h1><p id='sub'>Loading&hellip;</p></div>
-<div class='nav'><a href='/'>&#8592; Back to Settings</a></div>
 
 <div id='banner'></div>
 
@@ -302,7 +304,7 @@ speaker cannot take the power: at full volume about 3, 9, 15, 22 or
 <input type='file' id='eq-file' accept='.json,.txt,application/json,text/plain' hidden
        onchange='importEq(this)'>
 </div>
-</div>
+</div></div>
 
 <script>
 var TYPES=['Bypass','Peaking (Q)','Peaking (bandwidth)','Bass shelf',
@@ -1081,7 +1083,7 @@ function drawMix(){
   $('mix-hint').style.display=a.mix_fixed?'':'none';
   $('mix-hint').textContent=!a.mix_fixed?'':a.pbtl
     ?'This amplifier cannot route its inputs. Bridged, it plays the left '+
-     'channel, so Output Channel on the main page decides what it hears.'
+     'channel, so Output channel on the Configuration page decides what it hears.'
     :'This amplifier cannot route its inputs, so it plays the pair as it '+
      'comes.';
 }

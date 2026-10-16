@@ -280,7 +280,7 @@ one DMA ring, and the two protocols run off different clocks — but they are no
 ## Turning it on
 
 Sendspin is built into every firmware that has PSRAM, but it starts **switched off**. Use
-the **Native SendSpin Client Support** control under Device Settings in the web UI to turn
+the **Native Sendspin client** control on the web UI's Configuration page to turn
 it on. The section is hidden on a firmware built without it.
 
 Like the AirPlay mode setting, it **takes effect on the next restart** — the WebSocket
