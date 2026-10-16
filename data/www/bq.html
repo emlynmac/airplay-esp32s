@@ -22,11 +22,27 @@ body{font-family:-apple-system,system-ui,sans-serif;background:linear-gradient(1
 .btn-secondary.on:hover{background:#d63850}
 .btn:disabled{opacity:0.5;cursor:not-allowed}
 .actions{display:flex;gap:10px;flex-wrap:wrap;align-items:center;margin-top:16px}
-/* Tabs pick what you are editing, the buttons act on it, so they belong on one
-   line; the buttons wrap under the tabs rather than squeezing them. */
-.toprow{display:flex;align-items:flex-start;gap:16px;flex-wrap:wrap;margin-bottom:12px}
-.toprow .tabs{margin-bottom:0}
-.toprow .actions{margin-top:0;margin-left:auto;justify-content:flex-end}
+.actions.top{margin:0 0 12px}
+/* Under 1280 px the cards stack, the volume first as it always was. From
+   1280 px the plots sit on the left and stay in view while the chain beside
+   them is edited, with the volume under the chain. */
+.work{display:grid;grid-template-columns:minmax(0,1fr);
+      grid-template-areas:'vol' 'plots' 'chain'}
+#vol-card{grid-area:vol}
+#plots{grid-area:plots}
+#chain-card{grid-area:chain}
+/* Which output is selected drives both the plots and the chain, so the tabs
+   head the plots, which stay in view on a wide screen. */
+.picker{display:flex;align-items:center;gap:6px 16px;flex-wrap:wrap;
+        margin-bottom:14px;padding-bottom:14px;
+        border-bottom:1px solid rgba(255,255,255,0.08)}
+.picker .tabs{margin-bottom:0}
+/* Wraps under the amplifier tabs as a whole rather than stacking its own
+   tabs, and grows so the copy button keeps to the far end. */
+#ch-tabs{flex:1 0 auto}
+.viewrow{display:flex;align-items:center;gap:6px 16px;flex-wrap:wrap;margin-bottom:12px}
+.viewrow h2{margin-bottom:0}
+.viewrow .tabs{margin:0 0 0 auto}
 .msg{padding:8px;border-radius:6px;margin-top:10px;font-size:13px}
 .msg.ok{background:rgba(27,67,50,0.5)}
 .msg.err{background:rgba(92,26,26,0.5)}
@@ -82,6 +98,22 @@ input:disabled,select:disabled{opacity:0.25}
 /* A file holds the whole tuning rather than one chain, so these sit with
    commit and revert, at the far end of the bar. */
 .bar .files{margin-left:auto;display:flex;gap:10px;flex-wrap:wrap}
+/* Last, so it overrides the single-column sizes above. */
+@media (min-width:1280px){
+  .wrap{max-width:1800px}
+  .work{grid-template-columns:minmax(0,1fr) 760px;column-gap:16px;
+        grid-template-areas:'plots chain' 'plots vol';align-items:start}
+  /* Leaves room for the bar pinned under it. */
+  #plots{position:sticky;top:16px;max-height:calc(100vh - 128px);overflow-y:auto}
+  /* Shorter on a short screen, so both plots fit beside the chain. */
+  .plot{height:clamp(150px,25vh,260px)}
+  /* The column is fixed at a width the rows fit, which gives the plots the
+     slack the rows had at 770 px. Letting the tracks shrink below their
+     longest option keeps a type name from pushing the row sideways. */
+  .chaininner,.bqc{min-width:0}
+  .bq,.bqhead{grid-template-columns:24px minmax(0,1.5fr) minmax(0,1.3fr)
+    minmax(0,.8fr) minmax(0,.7fr) minmax(0,.8fr) minmax(0,.7fr) minmax(0,.7fr) 34px}
+}
 </style></head><body>
 <div class='wrap'>
 <div class='header'><h1>Biquad EQ</h1><p id='sub'>Loading&hellip;</p></div>
@@ -89,23 +121,30 @@ input:disabled,select:disabled{opacity:0.25}
 
 <div id='banner'></div>
 
-<div class='card'>
-<h2>Volume</h2>
-<div class='trim'>
-<label for='master'>Master</label>
-<input type='range' id='master' step='0.5' oninput='masterChanged()'
-       onchange='masterCommit()'>
-<b id='master-val'>&mdash;</b></div>
-<p class='hint' id='trim-hint'>Master is the AirPlay volume and moves every
-output together. The output levels below are trimmed against it, applied in the
-DSP input mixer ahead of the filters, so they only attenuate and cost no filter
-headroom. Use them to match drivers of differing sensitivity.</p>
-<p class='hint' id='preamp' style='display:none'></p>
-<div id='gains'></div>
+<div class='work'>
+<div class='card' id='plots'>
+<div class='picker' id='picker'>
+<div class='tabs' id='amp-tabs'></div>
+<div class='tabs' id='ch-tabs'></div>
 </div>
-
-<div class='card' id='all-wrap'>
-<h2>All Outputs</h2>
+<div class='viewrow'>
+<h2>Response</h2>
+<div class='tabs' id='view-tabs'>
+<button class='tab' id='vt-one' onclick="pickView('one')">Selected output</button>
+<button class='tab' id='vt-all' onclick="pickView('all')">All outputs</button>
+</div></div>
+<div id='clip-note'></div>
+<div id='one-wrap'>
+<div class='legend' id='legend'></div>
+<div class='plotlab'>Magnitude</div>
+<canvas id='mag' class='plot' width='1640' height='460'></canvas>
+<div class='plotlab'>Phase</div>
+<canvas id='phase' class='plot' width='1640' height='460'></canvas>
+<p class='hint'>Curves are computed with the same model the firmware uses, at
+the rate the I2S link is running. Faint lines are individual sections, bold is
+the cascade.</p>
+</div>
+<div id='all-wrap'>
 <label class='gang'>
 <input type='checkbox' id='sumq' onchange='plotAll()' checked>
 <span>Show what the outputs sum to</span></label>
@@ -120,31 +159,16 @@ a dip there means the branches are cancelling, so tick Inv on either one. This
 is the response of the filters alone; it knows nothing of the drivers, their
 spacing or the room.</p>
 </div>
-
-<div class='card'>
-<h2 id='resp-title'>Response</h2>
-<div id='clip-note'></div>
-<div class='legend' id='legend'></div>
-<div class='plotlab'>Magnitude</div>
-<canvas id='mag' class='plot' width='1640' height='460'></canvas>
-<div class='plotlab'>Phase</div>
-<canvas id='phase' class='plot' width='1640' height='460'></canvas>
-<p class='hint'>Curves are computed with the same model the firmware uses, at
-the rate the I2S link is running. Faint lines are individual sections, bold is
-the cascade.</p>
 </div>
 
-<div class='card'>
-<h2>Filter Chain</h2>
-<div class='toprow'>
-<div class='tabs' id='amp-tabs'></div>
-<div class='actions'>
+<div class='card' id='chain-card'>
+<h2 id='chain-title'>Filter Chain</h2>
+<div class='actions top'>
 <button class='btn btn-primary' onclick='apply()'>Apply</button>
 <button class='btn btn-secondary' onclick='resetChain()'>Clear chain</button>
 <button class='btn btn-secondary' onclick='graphicEq()'>Load 15-band EQ</button>
 <button class='btn btn-secondary' id='xo-btn' onclick='xoToggle()'>Build crossover&hellip;</button>
 <button class='btn btn-secondary' id='aeq-btn' onclick='aeqToggle()'>Fit to a measurement&hellip;</button>
-</div>
 </div>
 <div class='xo' id='xo'>
 <div class='trim'>
@@ -211,7 +235,6 @@ that instead of correcting the band the driver does cover.</p>
 <label class='gang' id='gang-row'>
 <input type='checkbox' id='gang' onchange='gangChanged()'>
 <span>Gang outputs A and B</span></label>
-<div class='tabs' id='ch-tabs'></div>
 <div class='chainwrap'><div class='chaininner'>
 <div class='bqhead'><span></span><span>Type</span><span>Alignment</span>
 <span>Freq Hz</span><span>Q</span><span>BW Hz</span><span>Gain dB</span>
@@ -219,6 +242,22 @@ that instead of correcting the band the driver does cover.</p>
 <div id='rows'></div>
 </div></div>
 <div id='msg'></div>
+</div>
+
+<div class='card' id='vol-card'>
+<h2>Volume</h2>
+<div class='trim'>
+<label for='master'>Master</label>
+<input type='range' id='master' step='0.5' oninput='masterChanged()'
+       onchange='masterCommit()'>
+<b id='master-val'>&mdash;</b></div>
+<p class='hint' id='trim-hint'>Master is the AirPlay volume and moves every
+output together. The output levels below are trimmed against it, applied in the
+DSP input mixer ahead of the filters, so they only attenuate and cost no filter
+headroom. Use them to match drivers of differing sensitivity.</p>
+<p class='hint' id='preamp' style='display:none'></p>
+<div id='gains'></div>
+</div>
 </div>
 
 <div class='bar'>
@@ -768,7 +807,16 @@ function sumCurve(groups,sr,gains){
   }
   return out;
 }
+/* The sizes below are in canvas pixels at twice the size shown, so the
+   canvas is matched to its box before drawing: stretching a fixed one would
+   squash the labels whenever the box is not the shape it was drawn for. A
+   hidden canvas keeps its size until it is shown and drawn again. */
+function fitCanvas(cv){
+  var r=cv.getBoundingClientRect(),w=Math.round(r.width*2),h=Math.round(r.height*2);
+  if(w&&h&&(cv.width!==w||cv.height!==h)){cv.width=w;cv.height=h;}
+}
 function drawGraph(cv,sweeps,lo,hi,step,fmt,totalsOnly,extras){
+  fitCanvas(cv);
   var g=cv.getContext('2d'),W=cv.width,H=cv.height;
   /* The hover readout restores a snapshot rather than re-sweeping, so drop
      the stale one whenever the picture underneath changes. */
@@ -1030,8 +1078,10 @@ function drawTabs(){
   h+="<button class='btn btn-secondary' id='copy-btn' onclick='copyChannel()'>"+
      'Copy to '+(ch?'A':'B')+'</button>';
   $('ch-tabs').innerHTML=ganged?'':h;
-  $('resp-title').textContent='Response \u2014 '+ampLabel(amp)+
-    (ganged?'':', '+outLabel(ch)+' selected');
+  $('picker').style.display=data.amps.length>1||!ganged?'':'none';
+  var who=ganged?chainLabel(data.amps[amp]):outLabel(ch);
+  if(data.amps.length>1)who=ampLabel(amp)+', '+who;
+  $('chain-title').textContent='Filter Chain \u2014 '+who;
   drawLegend();
 }
 function drawLegend(){
@@ -1165,6 +1215,8 @@ function peakTotal(sweeps){
 }
 function plot(){
   if(!data)return;
+  /* First, so a canvas being shown is in its box before it is drawn. */
+  drawView(activeChains().length);
   var a=data.amps[amp],groups=[],names=[],trims=[];
   if(isGanged(a)){groups.push(sectionsOf(a.channels[0]));
                   names.push(chainLabel(a));trims.push(trimOf(a,0));}
@@ -1287,10 +1339,28 @@ function activeChains(){
   }
   return out;
 }
+/* One plot area shows either the selected output or every output together,
+   so it fits beside the chain on a wide screen. The choice is kept per
+   browser, and only offered when more than one output is playing; with one,
+   the combined view would just repeat the selected one. */
+var view='one';
+try{if(localStorage.getItem('bq-view')==='all')view='all';}catch(e){}
+function pickView(v){
+  view=v;
+  try{localStorage.setItem('bq-view',v);}catch(e){}
+  plot();
+}
+function drawView(n){
+  var v=n>1?view:'one';
+  $('view-tabs').style.display=n>1?'':'none';
+  $('vt-one').classList.toggle('on',v==='one');
+  $('vt-all').classList.toggle('on',v==='all');
+  $('one-wrap').style.display=v==='one'?'':'none';
+  $('all-wrap').style.display=v==='all'?'':'none';
+}
 function plotAll(){
   var chains=activeChains();
-  /* With a single chain the combined view would just repeat the one above. */
-  $('all-wrap').style.display=chains.length>1?'':'none';
+  drawView(chains.length);
   if(chains.length<2)return;
   var sweeps=[],groups=[],gains=[],leg='',k;
   for(k=0;k<chains.length;k++){
@@ -2591,6 +2661,11 @@ function load(){
            ' exact and still what the part is running.','info');
   });
 }
+var resizeTimer=0;
+window.addEventListener('resize',function(){
+  clearTimeout(resizeTimer);
+  resizeTimer=setTimeout(plot,150);
+});
 window.onload=function(){
   $('rows').innerHTML=(function(){
     var h='';
