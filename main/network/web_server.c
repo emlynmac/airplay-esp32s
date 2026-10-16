@@ -8,7 +8,9 @@
 #include "esp_system.h"
 #include "cJSON.h"
 #include <stdio.h>
+#include <ctype.h>
 #include <string.h>
+#include <strings.h>
 #include <stdlib.h>
 #include <math.h>
 #include <sys/stat.h>
@@ -77,6 +79,133 @@
 
 static const char *TAG = "web_server";
 static httpd_handle_t s_server = NULL;
+
+/* ------------------------------------------------------------------ */
+/* Cross-site request guard                                            */
+/* ------------------------------------------------------------------ */
+
+/* The API has no login, so a page on any other site that a browser on the
+ * LAN opens could otherwise use it: a cross-site POST of a plain-text body
+ * needs no preflight, so it would reach the handler, which takes any body.
+ * A browser marks such a request with an Origin that is not this device's.
+ * The other route is DNS rebinding, where the other site points its own name
+ * at this device and the browser treats the device as that site, so the
+ * Origin matches; the Host then carries the other site's name. So the API
+ * refuses a request whose Host is a name a public domain could hold, and one
+ * whose Origin is not http://<Host>. A request with no Origin (curl, scripts,
+ * Music Assistant) passes, so neither needs to change. */
+
+// Suffixes home networks and their routers use; .fritz.box is AVM's, which
+// AVM holds so that nobody else can.
+static const char *const LOCAL_SUFFIXES[] = {
+    ".local",    ".lan",         ".home",      ".home.arpa",
+    ".internal", ".localdomain", ".fritz.box",
+};
+
+// Longer Host or Origin values are refused rather than truncated.
+#define GUARD_HDR_MAX 128
+
+static bool host_is_local(const char *host) {
+  size_t len = strlen(host);
+  if (host[0] == '[') {
+    return true; // IPv6 literal
+  }
+  const char *colon = strrchr(host, ':');
+  if (colon) {
+    len = (size_t)(colon - host);
+  }
+  if (len > 0 && host[len - 1] == '.') {
+    len--; // fully qualified form
+  }
+  if (len == 0) {
+    return false;
+  }
+
+  bool has_dot = false;
+  bool ipv4 = true;
+  for (size_t i = 0; i < len; i++) {
+    if (host[i] == '.') {
+      has_dot = true;
+    } else if (!isdigit((unsigned char)host[i])) {
+      ipv4 = false;
+    }
+  }
+  if (ipv4 || !has_dot) {
+    return true; // address, or a single-label name
+  }
+  for (size_t i = 0; i < sizeof(LOCAL_SUFFIXES) / sizeof(LOCAL_SUFFIXES[0]);
+       i++) {
+    size_t n = strlen(LOCAL_SUFFIXES[i]);
+    if (len > n && strncasecmp(host + len - n, LOCAL_SUFFIXES[i], n) == 0) {
+      return true;
+    }
+  }
+  return false;
+}
+
+bool web_request_trusted(httpd_req_t *req) {
+  char host[GUARD_HDR_MAX] = "";
+  char origin[GUARD_HDR_MAX] = "";
+
+  size_t len = httpd_req_get_hdr_value_len(req, "Host");
+  if (len > 0) {
+    if (len >= sizeof(host) ||
+        httpd_req_get_hdr_value_str(req, "Host", host, sizeof(host)) !=
+            ESP_OK ||
+        !host_is_local(host)) {
+      ESP_LOGW(TAG, "Refused %s: Host is not a local name", req->uri);
+      return false;
+    }
+  }
+
+  len = httpd_req_get_hdr_value_len(req, "Origin");
+  if (len > 0) {
+    static const char scheme[] = "http://";
+    if (len >= sizeof(origin) ||
+        httpd_req_get_hdr_value_str(req, "Origin", origin, sizeof(origin)) !=
+            ESP_OK ||
+        strncasecmp(origin, scheme, sizeof(scheme) - 1) != 0 ||
+        strcasecmp(origin + sizeof(scheme) - 1, host) != 0) {
+      ESP_LOGW(TAG, "Refused %s: Origin %s is another site", req->uri, origin);
+      return false;
+    }
+  }
+  return true;
+}
+
+typedef esp_err_t (*uri_handler_fn)(httpd_req_t *req);
+
+// More than the server's max_uri_handlers can reach.
+#define API_HANDLERS_MAX 96
+static uri_handler_fn s_api_handlers[API_HANDLERS_MAX];
+static size_t s_api_handler_count;
+
+static esp_err_t api_guard(httpd_req_t *req) {
+  if (!web_request_trusted(req)) {
+    httpd_resp_send_err(req, HTTPD_403_FORBIDDEN,
+                        "Refused: only this device's own pages may use its "
+                        "API. Open them by IP address or <name>.local.");
+    // Close rather than drain what may be a whole firmware image.
+    return ESP_FAIL;
+  }
+  const uri_handler_fn *handler = req->user_ctx;
+  return (*handler)(req);
+}
+
+/* Registers a handler, routing everything under /api/ through the guard.
+ * The real handler rides in user_ctx, which no handler here uses. */
+static void register_uri(httpd_uri_t *uri) {
+  if (strncmp(uri->uri, "/api/", 5) == 0) {
+    if (s_api_handler_count == API_HANDLERS_MAX) {
+      ESP_LOGE(TAG, "No guard slot for %s; not registered", uri->uri);
+      return;
+    }
+    s_api_handlers[s_api_handler_count] = uri->handler;
+    uri->user_ctx = &s_api_handlers[s_api_handler_count++];
+    uri->handler = api_guard;
+  }
+  httpd_register_uri_handler(s_server, uri);
+}
 
 #define SPIFFS_CHUNK_SIZE 1024
 
@@ -2753,326 +2882,327 @@ esp_err_t web_server_start(uint16_t port) {
     return err;
   }
 
-  // Register handlers
+  // Register handlers (a restarted server registers them all again)
+  s_api_handler_count = 0;
   httpd_uri_t root_uri = {
       .uri = "/", .method = HTTP_GET, .handler = root_handler};
-  httpd_register_uri_handler(s_server, &root_uri);
+  register_uri(&root_uri);
 
   httpd_uri_t favicon_uri = {
       .uri = "/favicon.ico", .method = HTTP_GET, .handler = favicon_handler};
-  httpd_register_uri_handler(s_server, &favicon_uri);
+  register_uri(&favicon_uri);
 
   httpd_uri_t logs_uri = {
       .uri = "/logs", .method = HTTP_GET, .handler = logs_page_handler};
-  httpd_register_uri_handler(s_server, &logs_uri);
+  register_uri(&logs_uri);
 
   httpd_uri_t speedtest_page_uri = {.uri = "/speedtest",
                                     .method = HTTP_GET,
                                     .handler = speedtest_page_handler};
-  httpd_register_uri_handler(s_server, &speedtest_page_uri);
+  register_uri(&speedtest_page_uri);
 
   httpd_uri_t speedtest_ping_uri = {.uri = "/api/speedtest/ping",
                                     .method = HTTP_GET,
                                     .handler = speedtest_ping_handler};
-  httpd_register_uri_handler(s_server, &speedtest_ping_uri);
+  register_uri(&speedtest_ping_uri);
 
   httpd_uri_t speedtest_dl_uri = {.uri = "/api/speedtest/download",
                                   .method = HTTP_GET,
                                   .handler = speedtest_download_handler};
-  httpd_register_uri_handler(s_server, &speedtest_dl_uri);
+  register_uri(&speedtest_dl_uri);
 
   httpd_uri_t speedtest_ul_uri = {.uri = "/api/speedtest/upload",
                                   .method = HTTP_POST,
                                   .handler = speedtest_upload_handler};
-  httpd_register_uri_handler(s_server, &speedtest_ul_uri);
+  register_uri(&speedtest_ul_uri);
 
   httpd_uri_t wifi_scan_uri = {.uri = "/api/wifi/scan",
                                .method = HTTP_GET,
                                .handler = wifi_scan_handler};
-  httpd_register_uri_handler(s_server, &wifi_scan_uri);
+  register_uri(&wifi_scan_uri);
 
   httpd_uri_t wifi_config_uri = {.uri = "/api/wifi/config",
                                  .method = HTTP_POST,
                                  .handler = wifi_config_handler};
-  httpd_register_uri_handler(s_server, &wifi_config_uri);
+  register_uri(&wifi_config_uri);
 
   httpd_uri_t device_name_uri = {.uri = "/api/device/name",
                                  .method = HTTP_POST,
                                  .handler = device_name_handler};
-  httpd_register_uri_handler(s_server, &device_name_uri);
+  register_uri(&device_name_uri);
 
   httpd_uri_t led_brightness_get_uri = {.uri = "/api/led/brightness",
                                         .method = HTTP_GET,
                                         .handler = led_brightness_get_handler};
-  httpd_register_uri_handler(s_server, &led_brightness_get_uri);
+  register_uri(&led_brightness_get_uri);
 
   httpd_uri_t led_brightness_post_uri = {.uri = "/api/led/brightness",
                                          .method = HTTP_POST,
                                          .handler =
                                              led_brightness_post_handler};
-  httpd_register_uri_handler(s_server, &led_brightness_post_uri);
+  register_uri(&led_brightness_post_uri);
 
   httpd_uri_t channel_mode_get_uri = {.uri = "/api/audio/channel",
                                       .method = HTTP_GET,
                                       .handler = channel_mode_get_handler};
-  httpd_register_uri_handler(s_server, &channel_mode_get_uri);
+  register_uri(&channel_mode_get_uri);
 
   httpd_uri_t channel_mode_post_uri = {.uri = "/api/audio/channel",
                                        .method = HTTP_POST,
                                        .handler = channel_mode_post_handler};
-  httpd_register_uri_handler(s_server, &channel_mode_post_uri);
+  register_uri(&channel_mode_post_uri);
 
   httpd_uri_t volume_get_uri = {.uri = "/api/audio/volume",
                                 .method = HTTP_GET,
                                 .handler = volume_get_handler};
-  httpd_register_uri_handler(s_server, &volume_get_uri);
+  register_uri(&volume_get_uri);
 
   httpd_uri_t volume_post_uri = {.uri = "/api/audio/volume",
                                  .method = HTTP_POST,
                                  .handler = volume_post_handler};
-  httpd_register_uri_handler(s_server, &volume_post_uri);
+  register_uri(&volume_post_uri);
 
 #ifdef DAC_HAS_SUB_OFFSET
   httpd_uri_t sub_offset_get_uri = {.uri = "/api/audio/sub",
                                     .method = HTTP_GET,
                                     .handler = sub_offset_get_handler};
-  httpd_register_uri_handler(s_server, &sub_offset_get_uri);
+  register_uri(&sub_offset_get_uri);
 
   httpd_uri_t sub_offset_post_uri = {.uri = "/api/audio/sub",
                                      .method = HTTP_POST,
                                      .handler = sub_offset_post_handler};
-  httpd_register_uri_handler(s_server, &sub_offset_post_uri);
+  register_uri(&sub_offset_post_uri);
 #endif
 
 #ifdef DAC_HAS_CH_TRIM
   httpd_uri_t ch_trim_get_uri = {.uri = "/api/audio/channels",
                                  .method = HTTP_GET,
                                  .handler = ch_trim_get_handler};
-  httpd_register_uri_handler(s_server, &ch_trim_get_uri);
+  register_uri(&ch_trim_get_uri);
 
   httpd_uri_t ch_trim_post_uri = {.uri = "/api/audio/channels",
                                   .method = HTTP_POST,
                                   .handler = ch_trim_post_handler};
-  httpd_register_uri_handler(s_server, &ch_trim_post_uri);
+  register_uri(&ch_trim_post_uri);
 #endif
 
 #ifdef CONFIG_DAC_TAS58XX
   httpd_uri_t pbtl_get_uri = {.uri = "/api/audio/pbtl",
                               .method = HTTP_GET,
                               .handler = pbtl_get_handler};
-  httpd_register_uri_handler(s_server, &pbtl_get_uri);
+  register_uri(&pbtl_get_uri);
 
   httpd_uri_t pbtl_post_uri = {.uri = "/api/audio/pbtl",
                                .method = HTTP_POST,
                                .handler = pbtl_post_handler};
-  httpd_register_uri_handler(s_server, &pbtl_post_uri);
+  register_uri(&pbtl_post_uri);
 
   httpd_uri_t dual_mode_get_uri = {.uri = "/api/audio/dual",
                                    .method = HTTP_GET,
                                    .handler = dual_mode_get_handler};
-  httpd_register_uri_handler(s_server, &dual_mode_get_uri);
+  register_uri(&dual_mode_get_uri);
 
   httpd_uri_t dual_mode_post_uri = {.uri = "/api/audio/dual",
                                     .method = HTTP_POST,
                                     .handler = dual_mode_post_handler};
-  httpd_register_uri_handler(s_server, &dual_mode_post_uri);
+  register_uri(&dual_mode_post_uri);
 
   httpd_uri_t digital_gain_get_uri = {.uri = "/api/audio/digital-gain",
                                       .method = HTTP_GET,
                                       .handler = digital_gain_get_handler};
-  httpd_register_uri_handler(s_server, &digital_gain_get_uri);
+  register_uri(&digital_gain_get_uri);
 
   httpd_uri_t digital_gain_post_uri = {.uri = "/api/audio/digital-gain",
                                        .method = HTTP_POST,
                                        .handler = digital_gain_post_handler};
-  httpd_register_uri_handler(s_server, &digital_gain_post_uri);
+  register_uri(&digital_gain_post_uri);
 #endif
 
 #ifdef CONFIG_HUSB238A
   httpd_uri_t usb_pd_get_uri = {.uri = "/api/power/usb-pd",
                                 .method = HTTP_GET,
                                 .handler = usb_pd_get_handler};
-  httpd_register_uri_handler(s_server, &usb_pd_get_uri);
+  register_uri(&usb_pd_get_uri);
 
   httpd_uri_t usb_pd_post_uri = {.uri = "/api/power/usb-pd",
                                  .method = HTTP_POST,
                                  .handler = usb_pd_post_handler};
-  httpd_register_uri_handler(s_server, &usb_pd_post_uri);
+  register_uri(&usb_pd_post_uri);
 #endif
 
   httpd_uri_t airplay_mode_get_uri = {.uri = "/api/airplay/mode",
                                       .method = HTTP_GET,
                                       .handler = airplay_mode_get_handler};
-  httpd_register_uri_handler(s_server, &airplay_mode_get_uri);
+  register_uri(&airplay_mode_get_uri);
 
   httpd_uri_t airplay_mode_post_uri = {.uri = "/api/airplay/mode",
                                        .method = HTTP_POST,
                                        .handler = airplay_mode_post_handler};
-  httpd_register_uri_handler(s_server, &airplay_mode_post_uri);
+  register_uri(&airplay_mode_post_uri);
 
   httpd_uri_t ota_uri = {.uri = "/api/ota/update",
                          .method = HTTP_POST,
                          .handler = ota_update_handler};
-  httpd_register_uri_handler(s_server, &ota_uri);
+  register_uri(&ota_uri);
 
   httpd_uri_t metadata_uri = {.uri = "/api/metadata",
                               .method = HTTP_POST,
                               .handler = metadata_post_handler};
-  httpd_register_uri_handler(s_server, &metadata_uri);
+  register_uri(&metadata_uri);
 
   httpd_uri_t system_info_uri = {.uri = "/api/system/info",
                                  .method = HTTP_GET,
                                  .handler = system_info_handler};
-  httpd_register_uri_handler(s_server, &system_info_uri);
+  register_uri(&system_info_uri);
 
   httpd_uri_t system_restart_uri = {.uri = "/api/system/restart",
                                     .method = HTTP_POST,
                                     .handler = system_restart_handler};
-  httpd_register_uri_handler(s_server, &system_restart_uri);
+  register_uri(&system_restart_uri);
 
 #ifdef CONFIG_SENDSPIN_ENABLE
   httpd_uri_t sendspin_mode_get_uri = {.uri = "/api/sendspin/mode",
                                        .method = HTTP_GET,
                                        .handler = sendspin_mode_get_handler};
-  httpd_register_uri_handler(s_server, &sendspin_mode_get_uri);
+  register_uri(&sendspin_mode_get_uri);
 
   httpd_uri_t sendspin_mode_post_uri = {.uri = "/api/sendspin/mode",
                                         .method = HTTP_POST,
                                         .handler = sendspin_mode_post_handler};
-  httpd_register_uri_handler(s_server, &sendspin_mode_post_uri);
+  register_uri(&sendspin_mode_post_uri);
 
   httpd_uri_t sendspin_unpair_uri = {.uri = "/api/sendspin/unpair",
                                      .method = HTTP_POST,
                                      .handler = sendspin_unpair_handler};
-  httpd_register_uri_handler(s_server, &sendspin_unpair_uri);
+  register_uri(&sendspin_unpair_uri);
 
   httpd_uri_t sendspin_reset_identity_uri = {
       .uri = "/api/sendspin/reset-identity",
       .method = HTTP_POST,
       .handler = sendspin_reset_identity_handler};
-  httpd_register_uri_handler(s_server, &sendspin_reset_identity_uri);
+  register_uri(&sendspin_reset_identity_uri);
 #endif
 
   // File management API
   httpd_uri_t fs_upload_uri = {.uri = "/api/fs/upload",
                                .method = HTTP_POST,
                                .handler = fs_upload_handler};
-  httpd_register_uri_handler(s_server, &fs_upload_uri);
+  register_uri(&fs_upload_uri);
 
   httpd_uri_t fs_delete_uri = {.uri = "/api/fs/delete",
                                .method = HTTP_POST,
                                .handler = fs_delete_handler};
-  httpd_register_uri_handler(s_server, &fs_delete_uri);
+  register_uri(&fs_delete_uri);
 
   httpd_uri_t fs_list_uri = {
       .uri = "/api/fs/list", .method = HTTP_GET, .handler = fs_list_handler};
-  httpd_register_uri_handler(s_server, &fs_list_uri);
+  register_uri(&fs_list_uri);
 
   httpd_uri_t fs_download_uri = {.uri = "/api/fs/download",
                                  .method = HTTP_GET,
                                  .handler = fs_download_handler};
-  httpd_register_uri_handler(s_server, &fs_download_uri);
+  register_uri(&fs_download_uri);
 
   // Captive portal detection endpoints
   // Apple iOS/macOS
   httpd_uri_t apple_captive1 = {.uri = "/hotspot-detect.html",
                                 .method = HTTP_GET,
                                 .handler = captive_apple_handler};
-  httpd_register_uri_handler(s_server, &apple_captive1);
+  register_uri(&apple_captive1);
 
   httpd_uri_t apple_captive2 = {.uri = "/library/test/success.html",
                                 .method = HTTP_GET,
                                 .handler = captive_apple_handler};
-  httpd_register_uri_handler(s_server, &apple_captive2);
+  register_uri(&apple_captive2);
 
   // Android
   httpd_uri_t android_captive = {.uri = "/generate_204",
                                  .method = HTTP_GET,
                                  .handler = captive_android_handler};
-  httpd_register_uri_handler(s_server, &android_captive);
+  register_uri(&android_captive);
 
   // Windows
   httpd_uri_t windows_captive = {.uri = "/connecttest.txt",
                                  .method = HTTP_GET,
                                  .handler = captive_windows_handler};
-  httpd_register_uri_handler(s_server, &windows_captive);
+  register_uri(&windows_captive);
   windows_captive.uri = "/redirect";
-  httpd_register_uri_handler(s_server, &windows_captive);
+  register_uri(&windows_captive);
 
 #ifdef HAS_BQ_API
   httpd_uri_t bq_page_uri = {
       .uri = "/bq", .method = HTTP_GET, .handler = bq_page_handler};
-  httpd_register_uri_handler(s_server, &bq_page_uri);
+  register_uri(&bq_page_uri);
 
   httpd_uri_t bq_get_uri = {
       .uri = "/api/bq", .method = HTTP_GET, .handler = bq_get_handler};
-  httpd_register_uri_handler(s_server, &bq_get_uri);
+  register_uri(&bq_get_uri);
 
   httpd_uri_t bq_post_uri = {
       .uri = "/api/bq", .method = HTTP_POST, .handler = bq_post_handler};
-  httpd_register_uri_handler(s_server, &bq_post_uri);
+  register_uri(&bq_post_uri);
 
   httpd_uri_t bq_commit_uri = {.uri = "/api/bq/commit",
                                .method = HTTP_POST,
                                .handler = bq_commit_handler};
-  httpd_register_uri_handler(s_server, &bq_commit_uri);
+  register_uri(&bq_commit_uri);
 
   httpd_uri_t bq_revert_uri = {.uri = "/api/bq/revert",
                                .method = HTTP_POST,
                                .handler = bq_revert_handler};
-  httpd_register_uri_handler(s_server, &bq_revert_uri);
+  register_uri(&bq_revert_uri);
 #endif
 
 #ifdef CONFIG_DAC_TAS57XX
   httpd_uri_t hf_page_uri = {
       .uri = "/hf", .method = HTTP_GET, .handler = hf_page_handler};
-  httpd_register_uri_handler(s_server, &hf_page_uri);
+  register_uri(&hf_page_uri);
 
   httpd_uri_t hf1_get_uri = {
       .uri = "/api/hf1", .method = HTTP_GET, .handler = hf1_get_handler};
-  httpd_register_uri_handler(s_server, &hf1_get_uri);
+  register_uri(&hf1_get_uri);
 
   httpd_uri_t hf1_post_uri = {
       .uri = "/api/hf1", .method = HTTP_POST, .handler = hf1_post_handler};
-  httpd_register_uri_handler(s_server, &hf1_post_uri);
+  register_uri(&hf1_post_uri);
 
   httpd_uri_t hf1_commit_uri = {.uri = "/api/hf1/commit",
                                 .method = HTTP_POST,
                                 .handler = hf1_commit_handler};
-  httpd_register_uri_handler(s_server, &hf1_commit_uri);
+  register_uri(&hf1_commit_uri);
 
   httpd_uri_t hf1_revert_uri = {.uri = "/api/hf1/revert",
                                 .method = HTTP_POST,
                                 .handler = hf1_revert_handler};
-  httpd_register_uri_handler(s_server, &hf1_revert_uri);
+  register_uri(&hf1_revert_uri);
 
   httpd_uri_t hf3_get_uri = {
       .uri = "/api/hf3", .method = HTTP_GET, .handler = hf3_get_handler};
-  httpd_register_uri_handler(s_server, &hf3_get_uri);
+  register_uri(&hf3_get_uri);
 
   httpd_uri_t hf3_post_uri = {
       .uri = "/api/hf3", .method = HTTP_POST, .handler = hf3_post_handler};
-  httpd_register_uri_handler(s_server, &hf3_post_uri);
+  register_uri(&hf3_post_uri);
 
   httpd_uri_t hf3_commit_uri = {.uri = "/api/hf3/commit",
                                 .method = HTTP_POST,
                                 .handler = hf3_commit_handler};
-  httpd_register_uri_handler(s_server, &hf3_commit_uri);
+  register_uri(&hf3_commit_uri);
 
   httpd_uri_t hf3_revert_uri = {.uri = "/api/hf3/revert",
                                 .method = HTTP_POST,
                                 .handler = hf3_revert_handler};
-  httpd_register_uri_handler(s_server, &hf3_revert_uri);
+  register_uri(&hf3_revert_uri);
 
   httpd_uri_t hf_flow_get_uri = {.uri = "/api/hf/flow",
                                  .method = HTTP_GET,
                                  .handler = hf_flow_get_handler};
-  httpd_register_uri_handler(s_server, &hf_flow_get_uri);
+  register_uri(&hf_flow_get_uri);
 
   httpd_uri_t hf_flow_post_uri = {.uri = "/api/hf/flow",
                                   .method = HTTP_POST,
                                   .handler = hf_flow_post_handler};
-  httpd_register_uri_handler(s_server, &hf_flow_post_uri);
+  register_uri(&hf_flow_post_uri);
 #endif
 
   log_stream_register(s_server);
