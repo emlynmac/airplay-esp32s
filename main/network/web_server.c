@@ -255,7 +255,8 @@ typedef struct {
 
 static const static_file_t STATIC_FILES[] = {
     {"/", "/spiffs/www/index.html", "text/html"},
-    {"/config", "/spiffs/www/config.html", "text/html"},
+    // Playback and audio settings are on the main page now.
+    {"/config", "/spiffs/www/index.html", "text/html"},
     {"/network", "/spiffs/www/network.html", "text/html"},
     // The speed test is part of the Network page now; keep old links working.
     {"/speedtest", "/spiffs/www/network.html", "text/html"},

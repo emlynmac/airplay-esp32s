@@ -55,12 +55,12 @@ page's Primary amplifier choice to bridged.
 !!! danger "Only flash the Mini's own build"
 
     Every other Louder build starts the amplifier as a stereo pair, which drives the tied
-    half-bridges against each other, and lets the Configuration page choose stereo.
+    half-bridges against each other, and lets the Speaker page choose stereo.
 
 A bridged TAS5805M plays the left I2S channel, and the TAS5805M has no input mixer to sum
 the pair into it here. So the board starts with the output channel set to **Mono (L+R)**.
 For a stereo pair of speakers, set one board to Left and the other to Right on the
-Configuration page.
+Speaker page.
 
 ### USB-C power on the 55 mm board
 
@@ -71,8 +71,8 @@ boot, before the amplifier comes up. The 42 mm board has no trigger; the same bu
 both.
 
 Left to itself, the board asks the charger for the highest voltage it offers, up to
-20 V. To give the speaker less, choose a voltage under **Manual override** on the Biquad
-EQ page; the choice is kept across restarts. Choose what your speaker can take. 20 V needs
+20 V. To give the speaker less, choose a **USB-C supply** voltage in the Audio card of
+the Speaker page; the choice is kept across restarts. Choose what your speaker can take. 20 V needs
 a 65 W charger; a 30 W one manages 15 V. A charger that does not offer the voltage you
 chose gets the highest one below it, and a supply without USB-PD, such as a computer's
 port, stays at 5 V.
@@ -96,8 +96,8 @@ follows every change to the filters and output levels as they are applied.
 
 A board that cannot read its supply, such as the 42 mm one or a 55 mm one whose trigger
 has been strapped to a fixed voltage in hardware, keeps a gain set by hand, starting at
-−16.5 dB, the 5 V level. The gain can also be set by hand under **Manual override** on
-any board; the EQ page then says when the filters boost past what the supply carries, and
+−16.5 dB, the 5 V level. The gain can also be set by hand on any board, on the Speaker
+page or under Volume on the EQ page; the EQ page then says when the filters boost past what the supply carries, and
 what to set it to. A louder setting clips the loudest passages; at low frequencies that
 is often hard to hear.
 

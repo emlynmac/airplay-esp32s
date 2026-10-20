@@ -50,6 +50,7 @@ var CSS=
 '.sh-vol input{accent-color:#e94560;width:140px;max-width:none;margin:0}'+
 '.sh-vol .sh-vl{color:#888}'+
 '.sh-vol .sh-vv{min-width:58px;text-align:right;color:#fff}'+
+'.sh-vol[hidden]{display:none}'+
 '.sh-banner{display:flex;flex-wrap:wrap;align-items:center;gap:8px 16px;'+
   'padding:10px 14px;margin-bottom:16px;border-radius:12px;'+
   'background:rgba(233,69,96,0.14);border:1px solid rgba(233,69,96,0.6);'+
@@ -87,7 +88,8 @@ var CSS=
   '.sh-drawer{left:'+NAV_W+'px}'+
 '}'+
 '@media (max-width:759px){'+
-  '.sh-vol{display:none}'+
+  '.sh-vol{flex-basis:100%}'+
+  '.sh-vol input{flex:1;width:auto}'+
   '.sh-play{flex-basis:100%}'+
   'html.sh-logs{--sh-bottom:55vh}'+
   '.sh-drawer{height:55vh}'+
@@ -159,7 +161,7 @@ function info(){
 
 /* ---- frame ---- */
 var path=location.pathname.replace(/\/+$/,'')||'/';
-var here={'/speedtest':'/network','/hf':'/bq'}[path]||path;
+var here={'/config':'/','/speedtest':'/network','/hf':'/bq'}[path]||path;
 
 var nav=el('nav','sh-nav');
 var dev=el('div','sh-dev');
@@ -168,8 +170,7 @@ var devSub=el('span',null,' ');
 dev.appendChild(devName);dev.appendChild(devSub);
 nav.appendChild(dev);
 var links={};
-[['/','Overview'],['/config','Configuration'],['/network','Network'],
- ['/bq','Equaliser']]
+[['/','Speaker'],['/network','Network'],['/bq','Equaliser']]
 .forEach(function(p){
   var a=el('a',p[0]===here?'on':null,p[1]);
   a.href=p[0];
