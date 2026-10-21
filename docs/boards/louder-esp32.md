@@ -97,7 +97,7 @@ follows every change to the filters and output levels as they are applied.
 A board that cannot read its supply, such as the 42 mm one or a 55 mm one whose trigger
 has been strapped to a fixed voltage in hardware, keeps a gain set by hand, starting at
 −16.5 dB, the 5 V level. The gain can also be set by hand on any board, on the Speaker
-page or under Volume on the EQ page; the EQ page then says when the filters boost past what the supply carries, and
+page or in the Output card on the EQ page; the EQ page then says when the filters boost past what the supply carries, and
 what to set it to. A louder setting clips the loudest passages; at low frequencies that
 is often hard to hear.
 

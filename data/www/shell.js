@@ -1,46 +1,31 @@
-/* The frame every page shares: navigation, the status strip, the restart
+/* The frame every page shares: tabs along the top, the status strip, the restart
    banner and the log drawer. A page loads it as the first thing in <body>,
    so the frame is in place before the page's own content is parsed and
    nothing moves when it fills in. Pages reach it through window.Shell. */
 (function(){
 'use strict';
 
-var NAV_W=184;
-// Where the navigation becomes a sidebar. A page that needs the width for
-// itself moves it out with <html data-nav-from='...'>; below that it sits
-// behind the menu button, as on a phone.
-var NAV_FROM=Number(document.documentElement.getAttribute('data-nav-from'))||1024;
 var CSS=
 'html.sh{--sh-bottom:0px}'+
 'html.sh-logs{--sh-bottom:42vh}'+
-'.sh-nav{position:fixed;top:0;left:0;bottom:0;width:'+NAV_W+'px;z-index:40;'+
-  'display:flex;flex-direction:column;gap:2px;padding:18px 10px;overflow-y:auto;'+
-  'background:#121a30;border-right:1px solid rgba(255,255,255,0.08);'+
-  'font:14px -apple-system,system-ui,sans-serif;color:#fff;'+
-  'transform:translateX(-100%);transition:transform .2s}'+
-'.sh-nav.open{transform:none;box-shadow:0 0 40px rgba(0,0,0,0.6)}'+
-'.sh-scrim{position:fixed;inset:0;z-index:39;background:rgba(0,0,0,0.5);display:none}'+
-'.sh-scrim.open{display:block}'+
-'.sh-dev{padding:0 10px 14px;margin-bottom:8px;border-bottom:1px solid rgba(255,255,255,0.08)}'+
-'.sh-dev b{display:block;font-size:16px;font-weight:600;line-height:1.3;'+
-  'overflow-wrap:anywhere}'+
-'.sh-dev span{font-size:12px;color:#888}'+
-'.sh-nav a,.sh-nav button{display:block;width:100%;text-align:left;padding:9px 10px;'+
-  'border:0;border-radius:8px;background:none;color:#bbb;font:inherit;'+
-  'text-decoration:none;cursor:pointer}'+
-'.sh-nav a:hover,.sh-nav button:hover{background:rgba(255,255,255,0.06);color:#fff}'+
-'.sh-nav a.on,.sh-nav button.on{background:rgba(233,69,96,0.18);color:#fff;'+
-  'box-shadow:inset 3px 0 #e94560}'+
+'.sh-nav{display:flex;flex-wrap:wrap;align-items:flex-end;gap:0 4px;'+
+  'margin:-4px 0 14px;border-bottom:1px solid rgba(255,255,255,0.12);'+
+  'font:14px -apple-system,system-ui,sans-serif;color:#fff}'+
+'.sh-dev{display:flex;align-items:baseline;gap:8px;min-width:0;'+
+  'padding:0 20px 10px 2px}'+
+'.sh-dev b{font-size:16px;font-weight:600;overflow-wrap:anywhere}'+
+'.sh-dev span{font-size:12px;color:#888;white-space:nowrap}'+
+'.sh-nav a,.sh-nav button{padding:9px 14px 10px;margin-bottom:-1px;border:0;'+
+  'border-bottom:2px solid transparent;background:none;color:#bbb;font:inherit;'+
+  'text-decoration:none;white-space:nowrap;cursor:pointer}'+
+'.sh-nav a:hover,.sh-nav button:hover{color:#fff}'+
+'.sh-nav a.on,.sh-nav button.on{color:#fff;border-bottom-color:#e94560}'+
+'.sh-nav a[hidden]{display:none}'+
 '.sh-nav .sh-gap{flex:1}'+
 '.sh-strip{display:flex;flex-wrap:wrap;align-items:center;gap:8px 20px;'+
   'padding:10px 14px;margin-bottom:16px;border-radius:12px;'+
   'background:rgba(0,0,0,0.25);border:1px solid rgba(255,255,255,0.08);'+
   'font:13px -apple-system,system-ui,sans-serif;color:#ccc}'+
-'.sh-menu{display:inline-flex;align-items:center;justify-content:center;width:34px;height:30px;'+
-  'border:1px solid rgba(255,255,255,0.15);border-radius:8px;background:none;'+
-  'color:#fff;font-size:16px;cursor:pointer}'+
-'.sh-name{font-weight:600;color:#fff;white-space:nowrap;overflow:hidden;'+
-  'text-overflow:ellipsis;max-width:40vw}'+
 '.sh-net{display:flex;align-items:center;gap:8px;white-space:nowrap}'+
 '.sh-dot{width:9px;height:9px;border-radius:50%;background:#666;flex:none}'+
 '.sh-dot.ok{background:#3fb950}.sh-dot.warn{background:#d29922}.sh-dot.err{background:#f85149}'+
@@ -81,13 +66,9 @@ var CSS=
   "font:12px/1.5 'SF Mono',Consolas,monospace;white-space:pre-wrap;word-break:break-all}"+
 '.sh-dl div[hidden]{display:none}'+
 '.sh-lE{color:#f85149}.sh-lW{color:#d29922}.sh-lI{color:#3fb950}.sh-lD,.sh-lV{color:#6e7681}'+
-'@media (min-width:'+NAV_FROM+'px){'+
-  'html.sh body{margin-left:'+NAV_W+'px}'+
-  '.sh-nav{transform:none;box-shadow:none}'+
-  '.sh-menu,.sh-scrim,.sh-name{display:none!important}'+
-  '.sh-drawer{left:'+NAV_W+'px}'+
-'}'+
 '@media (max-width:759px){'+
+  '.sh-dev{flex-basis:100%;padding-bottom:4px}'+
+  '.sh-nav a,.sh-nav button{padding:9px 10px 10px}'+
   '.sh-vol{flex-basis:100%}'+
   '.sh-vol input{flex:1;width:auto}'+
   '.sh-play{flex-basis:100%}'+
@@ -159,7 +140,8 @@ function info(){
   return infoP;
 }
 
-/* ---- frame ---- */
+/* ---- frame ----
+   Tabs across the top: the device's name, a tab per page, and Logs. */
 var path=location.pathname.replace(/\/+$/,'')||'/';
 var here={'/config':'/','/speedtest':'/network','/hf':'/bq'}[path]||path;
 
@@ -183,12 +165,8 @@ nav.appendChild(el('div','sh-gap'));
 var logsBtn=el('button',null,'Logs');
 logsBtn.type='button';
 nav.appendChild(logsBtn);
-var scrim=el('div','sh-scrim');
 
 var strip=el('div','sh-strip');
-var menu=el('button','sh-menu','☰');
-menu.type='button';menu.title='Menu';
-var stripName=el('span','sh-name');
 var net=el('span','sh-net');
 var netDot=el('i','sh-dot');
 var netText=el('span',null,'Connecting…');
@@ -200,7 +178,7 @@ var volRange=el('input');volRange.type='range';volRange.step='0.5';
 var volVal=el('span','sh-vv','');
 vol.appendChild(volRange);vol.appendChild(volVal);
 vol.hidden=true;
-strip.appendChild(menu);strip.appendChild(stripName);strip.appendChild(net);strip.appendChild(play);
+strip.appendChild(net);strip.appendChild(play);
 strip.appendChild(vol);
 
 var banner=el('div','sh-banner');
@@ -212,19 +190,8 @@ banner.appendChild(bannerText);banner.appendChild(bannerBtn);
 
 var body=document.body;
 body.appendChild(nav);
-body.appendChild(scrim);
 body.appendChild(strip);
 body.appendChild(banner);
-
-function openNav(open){
-  nav.classList.toggle('open',open);
-  scrim.classList.toggle('open',open);
-}
-menu.onclick=function(){openNav(!nav.classList.contains('open'));};
-scrim.onclick=function(){openNav(false);};
-document.addEventListener('keydown',function(e){
-  if(e.key==='Escape')openNav(false);
-});
 
 info().then(function(i){
   if(i.eq_supported||i.sub_supported){links['/bq'].hidden=false;}
@@ -280,7 +247,6 @@ function fromInfo(i){
 }
 function render(s){
   devName.textContent=s.name||' ';
-  stripName.textContent=s.name||'';
   if(s.name)document.title=document.title.replace(/ - .*$/,'')+' - '+s.name;
   var t,c;
   if(s.link==='ethernet'){t='Ethernet · '+s.ip;c='ok';}
@@ -496,7 +462,7 @@ function openLogs(open){
   // Pages with canvases size them to their box.
   window.dispatchEvent(new Event('resize'));
 }
-logsBtn.onclick=function(){openLogs(!root.classList.contains('sh-logs'));openNav(false);};
+logsBtn.onclick=function(){openLogs(!root.classList.contains('sh-logs'));};
 closeBtn.onclick=function(){openLogs(false);};
 clearBtn.onclick=function(){lines=[];dl.textContent='';};
 followBtn.onclick=function(){

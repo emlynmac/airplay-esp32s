@@ -146,7 +146,7 @@ reboot. **Revert** goes back to what is in flash. For plain tone shaping, **Load
 band from 20 Hz to 16 kHz — leaving only the gains to set. It fills in the form and
 nothing more, so the amplifier hears it only once applied.
 
-A boost has to fit above the digital gain, which sits in the Volume card on the same
+A boost has to fit above the digital gain, which sits in the Output card on the same
 page. A board that can read its supply keeps the gain at the loudest level that stays
 clean on it, less the highest boost of the filters playing. Set by hand under **Manual
 override**, as it is on a board that cannot read its supply, nothing turns the signal
@@ -229,8 +229,8 @@ there means the branches are fighting, so one of them needs **Inv**. The trace k
 only the filters, never the drivers, their spacing or the room, so it shows what the
 crossover is aiming at rather than what a microphone would hear.
 
-Levels are set in the Volume section. Master is the AirPlay volume and moves
-everything together. Below it each output has its own level and mute, applied in the
+Levels are set in the Output card. The volume at the top of the page is the AirPlay
+volume and moves everything together; each output has its own level and mute, applied in the
 DSP input mixer ahead of the filters — so they only ever attenuate and cost no filter
 headroom. Use them to match drivers of differing sensitivity. Levels and mutes take
 effect immediately and are stored in NVS, independently of the filter commit.

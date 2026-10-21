@@ -1,4 +1,4 @@
-<!DOCTYPE html><html data-nav-from='1440'><head>
+<!DOCTYPE html><html><head>
 <meta charset='UTF-8'>
 <meta name='viewport' content='width=device-width,initial-scale=1'>
 <title>Biquad EQ - AirPlay Receiver</title>
@@ -21,14 +21,12 @@ body{font-family:-apple-system,system-ui,sans-serif;background:linear-gradient(1
 .btn:disabled{opacity:0.5;cursor:not-allowed}
 .actions{display:flex;gap:10px;flex-wrap:wrap;align-items:center;margin-top:16px}
 .actions.top{margin:0 0 12px}
-/* Narrower than 1200 px the cards stack, the volume first as it always was.
+/* Narrower than 1200 px the cards stack: plots, output levels, chain.
    From 1200 px the plots sit on the left and stay in view while the chain
-   beside them is edited, with the volume under the chain. The width is the
-   page's, not the screen's, which the navigation shares from 1440 px
-   (data-nav-from above; under that it stays behind the menu button). */
+   beside them is edited, with the output levels above the chain. */
 .cq{container-type:inline-size}
 .work{display:grid;grid-template-columns:minmax(0,1fr);
-      grid-template-areas:'vol' 'plots' 'chain'}
+      grid-template-areas:'plots' 'vol' 'chain'}
 #vol-card{grid-area:vol}
 #plots{grid-area:plots}
 #chain-card{grid-area:chain}
@@ -113,7 +111,7 @@ input:disabled,select:disabled{opacity:0.25}
 @container (min-width:1200px){
   .wrap{max-width:1800px}
   .work{grid-template-columns:minmax(0,1fr) 760px;column-gap:16px;
-        grid-template-areas:'plots chain' 'plots vol';align-items:start}
+        grid-template-areas:'plots vol' 'plots chain';align-items:start}
   /* Leaves room for the bar pinned under it. */
   #plots{position:sticky;top:16px;overflow-y:auto;
          max-height:calc(100vh - 128px - var(--sh-bottom,0px))}
@@ -261,16 +259,11 @@ that instead of correcting the band the driver does cover.</p>
 </div>
 
 <div class='card' id='vol-card'>
-<h2>Volume</h2>
-<div class='trim'>
-<label for='master'>Master</label>
-<input type='range' id='master' step='0.5' oninput='masterChanged()'
-       onchange='masterCommit()'>
-<b id='master-val'>&mdash;</b></div>
-<p class='hint' id='trim-hint' style='margin-bottom:14px'>Master is the AirPlay volume. The levels below
-trim each output against it to match drivers; they only cut, so they cost no
-filter headroom.</p>
-<p class='hint' id='preamp' style='display:none'></p>
+<h2>Output</h2>
+<p class='hint' id='trim-hint' style='margin-bottom:14px'>The volume at the top
+of the page is the AirPlay volume. The levels below trim each output against it
+to match drivers; they only cut, so they cost no filter headroom.</p>
+<p class='hint' id='preamp' style='display:none;margin-bottom:14px'></p>
 <div id='gains'></div>
 <div id='power' style='display:none'>
 <div class='trim'><label for='pw-db'>Digital gain</label>
@@ -1181,32 +1174,9 @@ function pickAmp(a){storeRows();amp=a;if(isGanged(data.amps[a]))ch=0;
                     drawTabs();drawMix();loadRows();plot();}
 function pickCh(c){storeRows();ch=c;drawTabs();loadRows();plot();}
 
-/* ---- volume ----
+/* ---- levels ----
    Levels and mutes are mixer writes rather than filter coefficients, so they
    take effect at once and do not go through commit/revert. */
-var master=null;
-function drawMaster(){
-  if(!master)return;
-  var m=$('master');
-  m.min=master.min;m.max=master.max;m.value=master.volume_db;
-  /* Read back rather than echoing the API value, so the number matches where
-     the slider actually snapped. */
-  master.volume_db=Number(m.value);
-  $('master-val').textContent=master.volume_db.toFixed(1)+' dB';
-}
-function masterChanged(){
-  master.volume_db=Number($('master').value);
-  $('master-val').textContent=master.volume_db.toFixed(1)+' dB';
-}
-function masterCommit(){
-  fetch('/api/audio/volume',{method:'POST',
-    headers:{'Content-Type':'application/json'},
-    body:JSON.stringify({volume_db:master.volume_db,persist:true})})
-    .then(function(r){return r.json();})
-    .then(function(){show($('msg'),
-      'Master volume '+master.volume_db.toFixed(1)+' dB','ok');})
-    .catch(function(){show($('msg'),'Could not set master volume','err');});
-}
 /* Outputs of a bridged amplifier feed one driver, so it gets a single row. */
 function gainRows(){
   var out=[],a,c;
@@ -1507,8 +1477,9 @@ function softwareEq(){return !!data&&data.preamp_db!==undefined;}
 function showPreamp(){
   var e=$('preamp');
   if(!softwareEq()){e.style.display='none';return;}
-  $('trim-hint').textContent='Master is the AirPlay volume. The levels'+
-    ' below trim each output against it to match drivers. The software EQ'+
+  $('trim-hint').textContent='The volume at the top of the page is the'+
+    ' AirPlay volume. The levels below trim each output against it to match'+
+    ' drivers. The software EQ'+
     ' turns the signal down by as much as the curves boost, so nothing'+
     ' clips; trimming an output gives some of that back.';
   e.textContent=data.preamp_db<-0.05
@@ -2829,8 +2800,6 @@ window.onload=function(){
     for(var i=0;i<SLOTS;i++)h+=bqRow(i);
     return h;
   })();
-  fetch('/api/audio/volume').then(function(r){return r.json();})
-    .then(function(v){master=v;drawMaster();}).catch(function(){});
   load().then(function(){
     /* Only to name exported files, so it waits its turn behind the tuning
        rather than taking another socket alongside it. */
