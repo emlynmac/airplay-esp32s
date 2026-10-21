@@ -901,16 +901,22 @@ esp_err_t settings_set_usb_pd_volts(int volts) {
 }
 
 /* Both automatic choices default to on: a board that has never been told
- * otherwise picks its own supply and gain. */
-static bool get_auto(const char *key) {
+ * otherwise picks its own supply and gain. One that saved a value by hand
+ * before the choice existed keeps it. */
+static bool get_auto(const char *key, const char *manual_key) {
   nvs_handle_t nvs;
   if (nvs_open(NVS_NAMESPACE, NVS_READONLY, &nvs) != ESP_OK) {
     return true;
   }
-  uint8_t stored = 1;
-  nvs_get_u8(nvs, key, &stored);
+  uint8_t stored;
+  bool on;
+  if (nvs_get_u8(nvs, key, &stored) == ESP_OK) {
+    on = stored != 0;
+  } else {
+    on = nvs_find_key(nvs, manual_key, NULL) != ESP_OK;
+  }
   nvs_close(nvs);
-  return stored != 0;
+  return on;
 }
 
 static esp_err_t set_auto(const char *key, const char *what, bool on) {
@@ -936,7 +942,7 @@ static esp_err_t set_auto(const char *key, const char *what, bool on) {
 }
 
 bool settings_get_usb_pd_auto(void) {
-  return get_auto(NVS_KEY_USB_PD_AUTO);
+  return get_auto(NVS_KEY_USB_PD_AUTO, NVS_KEY_USB_PD_VOLTS);
 }
 
 esp_err_t settings_set_usb_pd_auto(bool on) {
@@ -944,7 +950,7 @@ esp_err_t settings_set_usb_pd_auto(bool on) {
 }
 
 bool settings_get_gain_auto(void) {
-  return get_auto(NVS_KEY_GAIN_AUTO);
+  return get_auto(NVS_KEY_GAIN_AUTO, NVS_KEY_FULL_VOLUME);
 }
 
 esp_err_t settings_set_gain_auto(bool on) {
