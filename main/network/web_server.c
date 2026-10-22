@@ -39,6 +39,20 @@
 #include "dac_tas58xx.h"
 #endif
 
+#ifdef CONFIG_SOFTWARE_EQ
+#include "audio_eq.h"
+#endif
+
+/* The /bq page and API run on the TAS58xx DSP or, for plain DACs, in
+ * software. */
+#if defined(CONFIG_DAC_TAS58XX) || defined(CONFIG_SOFTWARE_EQ)
+#define HAS_BQ_API 1
+#endif
+
+#ifdef CONFIG_HUSB238A
+#include "husb238a.h"
+#endif
+
 #ifdef CONFIG_DAC_TAS57XX
 #include "dac_tas57xx.h"
 #endif
@@ -597,7 +611,7 @@ static esp_err_t volume_post_handler(httpd_req_t *req) {
   if (db > VOLUME_UI_MAX_DB) {
     db = VOLUME_UI_MAX_DB;
   }
-  settings_set_volume(db);
+  playback_control_set_volume_db(db);
   if (persist) {
     settings_persist_volume();
   }
@@ -886,7 +900,138 @@ static esp_err_t dual_mode_post_handler(httpd_req_t *req) {
   cJSON_Delete(response);
   return ESP_OK;
 }
+
+/* The digital gain AirPlay's full volume maps to, chosen to suit the supply.
+ * The level that is clean on each fixed USB-PD voltage comes along as a
+ * recommendation. */
+static esp_err_t send_digital_gain(httpd_req_t *req) {
+  static const int volts[] = {5, 9, 12, 15, 20};
+  cJSON *json = cJSON_CreateObject();
+  cJSON_AddBoolToObject(json, "success", true);
+  cJSON_AddNumberToObject(json, "db", dac_tas58xx_get_full_volume_db());
+  cJSON_AddNumberToObject(json, "min_db", TAS58XX_FULL_VOLUME_MIN_DB);
+  cJSON *rec = cJSON_AddArrayToObject(json, "recommended");
+  for (size_t i = 0; i < sizeof volts / sizeof volts[0]; i++) {
+    cJSON *r = cJSON_CreateObject();
+    cJSON_AddNumberToObject(r, "volts", volts[i]);
+    cJSON_AddNumberToObject(r, "db", dac_tas58xx_clean_db(volts[i] * 1000));
+    cJSON_AddItemToArray(rec, r);
+  }
+  char *json_str = cJSON_Print(json);
+  httpd_resp_set_type(req, "application/json");
+  httpd_resp_send(req, json_str, HTTPD_RESP_USE_STRLEN);
+  free(json_str);
+  cJSON_Delete(json);
+  return ESP_OK;
+}
+
+static esp_err_t digital_gain_get_handler(httpd_req_t *req) {
+  return send_digital_gain(req);
+}
+
+/* {"db": -11} sets the digital gain. */
+static esp_err_t digital_gain_post_handler(httpd_req_t *req) {
+  char *content = recv_body(req, 64);
+  if (!content) {
+    httpd_resp_send_500(req);
+    return ESP_FAIL;
+  }
+  cJSON *json = cJSON_Parse(content);
+  free(content);
+  const cJSON *db = json ? cJSON_GetObjectItem(json, "db") : NULL;
+  if (db == NULL || !cJSON_IsNumber(db) || db->valuedouble > 0.0 ||
+      db->valuedouble < TAS58XX_FULL_VOLUME_MIN_DB) {
+    cJSON_Delete(json);
+    httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST,
+                        "Expected {\"db\": -30..0}");
+    return ESP_FAIL;
+  }
+  const float gain_db = (float)db->valuedouble;
+  cJSON_Delete(json);
+
+  dac_tas58xx_set_full_volume_db(gain_db);
+  settings_set_full_volume_db(dac_tas58xx_get_full_volume_db());
+  return send_digital_gain(req);
+}
 #endif /* CONFIG_DAC_TAS58XX */
+
+#ifdef CONFIG_HUSB238A
+/* The USB-PD trigger: what the charger offers, what it agreed to, and the
+ * voltage the board asks it for on every boot. */
+static esp_err_t send_usb_pd(httpd_req_t *req) {
+  husb238a_status_t status;
+  const esp_err_t err = husb238a_get_status(&status);
+
+  cJSON *json = cJSON_CreateObject();
+  cJSON_AddBoolToObject(json, "success", err == ESP_OK);
+  if (err != ESP_OK) {
+    cJSON_AddStringToObject(json, "error", esp_err_to_name(err));
+  }
+  cJSON_AddBoolToObject(json, "attached", status.attached);
+  cJSON_AddBoolToObject(json, "pd", status.pd);
+  cJSON_AddNumberToObject(json, "volts", status.requested_volts);
+  cJSON_AddNumberToObject(json, "max_volts", status.max_volts);
+  cJSON_AddNumberToObject(json, "supply_mv", status.supply_mv);
+  cJSON *choices = cJSON_AddArrayToObject(json, "choices");
+  cJSON *offers = cJSON_AddArrayToObject(json, "offers");
+  for (int i = 0; i < HUSB238A_FIXED_PDOS; i++) {
+    const int volts = husb238a_fixed_volts[i];
+    if (volts <= status.max_volts) {
+      cJSON_AddItemToArray(choices, cJSON_CreateNumber(volts));
+    }
+    if (status.offer_ma[i] > 0) {
+      cJSON *offer = cJSON_CreateObject();
+      cJSON_AddNumberToObject(offer, "volts", volts);
+      cJSON_AddNumberToObject(offer, "ma", status.offer_ma[i]);
+      cJSON_AddItemToArray(offers, offer);
+    }
+  }
+
+  char *json_str = cJSON_Print(json);
+  httpd_resp_set_type(req, "application/json");
+  httpd_resp_send(req, json_str, HTTPD_RESP_USE_STRLEN);
+  free(json_str);
+  cJSON_Delete(json);
+  return ESP_OK;
+}
+
+static esp_err_t usb_pd_get_handler(httpd_req_t *req) {
+  return send_usb_pd(req);
+}
+
+/* Asking the charger for another voltage takes it a second or two, and the
+ * reply waits for it, so it reports the supply that resulted. */
+static esp_err_t usb_pd_post_handler(httpd_req_t *req) {
+  char *content = recv_body(req, 64);
+  if (!content) {
+    httpd_resp_send_500(req);
+    return ESP_FAIL;
+  }
+  cJSON *json = cJSON_Parse(content);
+  free(content);
+  const cJSON *val = json ? cJSON_GetObjectItem(json, "volts") : NULL;
+  if (val == NULL || !cJSON_IsNumber(val)) {
+    cJSON_Delete(json);
+    httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST,
+                        "Expected {\"volts\": 5, 9, 12, 15 or 20}");
+    return ESP_FAIL;
+  }
+  const int volts = val->valueint;
+  cJSON_Delete(json);
+
+  const esp_err_t err = husb238a_request(volts);
+  if (err == ESP_ERR_INVALID_ARG || err == ESP_ERR_INVALID_STATE) {
+    httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST,
+                        err == ESP_ERR_INVALID_ARG
+                            ? "Not a voltage this board can ask for"
+                            : "This board has no USB-PD trigger");
+    return ESP_FAIL;
+  }
+  /* Kept even if this charger cannot give it, for one that can. */
+  settings_set_usb_pd_volts(volts);
+  return send_usb_pd(req);
+}
+#endif /* CONFIG_HUSB238A */
 
 static esp_err_t airplay_mode_get_handler(httpd_req_t *req) {
   cJSON *json = cJSON_CreateObject();
@@ -1063,7 +1208,7 @@ static esp_err_t system_info_handler(httpd_req_t *req) {
                           reset_reason_str(esp_reset_reason()));
   cJSON_AddNumberToObject(info, "uptime_s",
                           (double)(esp_timer_get_time() / 1000000));
-#ifdef CONFIG_DAC_TAS58XX
+#ifdef HAS_BQ_API
   cJSON_AddBoolToObject(info, "eq_supported", true);
 #else
   cJSON_AddBoolToObject(info, "eq_supported", false);
@@ -1077,6 +1222,11 @@ static esp_err_t system_info_handler(httpd_req_t *req) {
   cJSON_AddBoolToObject(info, "dual_supported", true);
 #else
   cJSON_AddBoolToObject(info, "dual_supported", false);
+#endif
+#ifdef CONFIG_HUSB238A
+  cJSON_AddBoolToObject(info, "usb_pd_supported", husb238a_present());
+#else
+  cJSON_AddBoolToObject(info, "usb_pd_supported", false);
 #endif
 #ifdef CONFIG_DAC_TAS57XX
   cJSON_AddBoolToObject(info, "hf1_supported", dac_tas57xx_hf1_available());
@@ -2044,27 +2194,212 @@ static esp_err_t hf_flow_post_handler(httpd_req_t *req) {
 #endif /* CONFIG_DAC_TAS57XX */
 
 /* ================================================================== */
-/*  Biquad chains  (only when TAS58xx DAC is configured)               */
+/*  Biquad chains  (TAS58xx DSP, or the software EQ on plain DACs)     */
 /* ================================================================== */
 
-#ifdef CONFIG_DAC_TAS58XX
+#ifdef HAS_BQ_API
 
 /* ---------- Parametric biquad chains ---------- */
+
+/* The /bq page drives either the TAS58xx DSP or, on plain DACs, the software
+ * EQ. These wrappers are the whole of what the handlers need from either, so
+ * the JSON side is shared. */
+#ifdef CONFIG_DAC_TAS58XX
+
+#define EQB_CHANNELS    TAS58XX_BQ_CHANNELS
+#define EQB_SLOTS       TAS58XX_BQ_SLOTS
+#define EQB_GAIN_MIN_DB TAS58XX_GAIN_MIN_DB
+#define EQB_GAIN_MAX_DB TAS58XX_GAIN_MAX_DB
+#define EQB_MIX_COUNT   TAS58XX_MIX_COUNT
+#define EQB_MIX_STEREO  TAS58XX_MIX_STEREO
+
+static int eqb_devices(void) {
+  return dac_tas58xx_get_device_count();
+}
+
+/* Which amplifier a chain belongs to, so the page can label the columns
+ * without duplicating the dual-DAC wiring logic. */
+static const char *eqb_role(int dev) {
+  if (dev == 0) {
+    return dac_tas58xx_get_active_first_pbtl() ? "mono" : "stereo";
+  }
+  return dac_tas58xx_get_active_second_pbtl() ? "mono" : "stereo";
+}
+
+static bool eqb_pbtl(int dev) {
+  return dac_tas58xx_is_pbtl(dev);
+}
+static uint32_t eqb_rate(void) {
+  return dac_tas58xx_bq_sample_rate();
+}
+static bool eqb_get_ganged(int dev) {
+  return dac_tas58xx_bq_get_ganged(dev);
+}
+static void eqb_set_ganged(int dev, bool ganged) {
+  dac_tas58xx_bq_set_ganged(dev, ganged);
+}
+static bool eqb_get_chain(int dev, int ch, tas58xx_bq_t out[EQB_SLOTS]) {
+  return dac_tas58xx_bq_get(dev, ch, out);
+}
+static esp_err_t eqb_set_chain(int dev, int ch,
+                               const tas58xx_bq_t in[EQB_SLOTS]) {
+  return dac_tas58xx_bq_set(dev, ch, in);
+}
+static esp_err_t eqb_commit(void) {
+  return dac_tas58xx_bq_commit();
+}
+static esp_err_t eqb_revert(void) {
+  return dac_tas58xx_bq_revert();
+}
+static float eqb_get_gain(int dev, int ch) {
+  return dac_tas58xx_get_gain_db(dev, ch);
+}
+static bool eqb_get_mute(int dev, int ch) {
+  return dac_tas58xx_get_ch_mute(dev, ch);
+}
+static int eqb_get_mix(int dev) {
+  return (int)dac_tas58xx_get_mix(dev);
+}
+static bool eqb_can_route(int dev) {
+  return dac_tas58xx_can_route(dev);
+}
+
+static void eqb_set_gain(int dev, int ch, float db) {
+  dac_tas58xx_set_gain_db(dev, ch, db);
+  float saved[SETTINGS_AMP_OUTPUTS];
+  for (int i = 0; i < SETTINGS_AMP_OUTPUTS; i++) {
+    saved[i] = dac_tas58xx_get_gain_db(i / SETTINGS_AMP_CHANNELS,
+                                       i % SETTINGS_AMP_CHANNELS);
+  }
+  settings_set_amp_gain(saved);
+}
+
+static void eqb_set_mute(int dev, int ch, bool mute) {
+  dac_tas58xx_set_ch_mute(dev, ch, mute);
+  uint8_t saved[SETTINGS_AMP_OUTPUTS];
+  for (int i = 0; i < SETTINGS_AMP_OUTPUTS; i++) {
+    saved[i] = dac_tas58xx_get_ch_mute(i / SETTINGS_AMP_CHANNELS,
+                                       i % SETTINGS_AMP_CHANNELS);
+  }
+  settings_set_amp_mute(saved);
+}
+
+static void eqb_set_mix(int dev, int mix) {
+  dac_tas58xx_set_mix(dev, (tas58xx_mix_t)mix);
+  uint8_t saved[SETTINGS_AMPS];
+  for (int i = 0; i < SETTINGS_AMPS; i++) {
+    saved[i] = (uint8_t)dac_tas58xx_get_mix(i);
+  }
+  settings_set_amp_mix(saved);
+}
+/* The DSP's filters have headroom of their own; nothing is turned down. */
+static bool eqb_preamp_db(float *db) {
+  (void)db;
+  return false;
+}
+
+#else /* CONFIG_SOFTWARE_EQ */
+
+#define EQB_CHANNELS    AUDIO_EQ_CHANNELS
+#define EQB_SLOTS       AUDIO_EQ_SLOTS
+#define EQB_GAIN_MIN_DB AUDIO_EQ_TRIM_MIN_DB
+#define EQB_GAIN_MAX_DB AUDIO_EQ_TRIM_MAX_DB
+#define EQB_MIX_COUNT   4
+#define EQB_MIX_STEREO  0
+
+/* The page's input routings, in its order, as output channel modes: the
+ * software path already has that mixer, so both controls share it. */
+static const audio_channel_mode_t eqb_mix_modes[EQB_MIX_COUNT] = {
+    AUDIO_CHANNEL_STEREO,
+    AUDIO_CHANNEL_MONO,
+    AUDIO_CHANNEL_LEFT,
+    AUDIO_CHANNEL_RIGHT,
+};
+
+static int eqb_devices(void) {
+  return 1;
+}
+static const char *eqb_role(int dev) {
+  (void)dev;
+  return "stereo";
+}
+static bool eqb_pbtl(int dev) {
+  (void)dev;
+  return false;
+}
+static uint32_t eqb_rate(void) {
+  return audio_eq_get_rate();
+}
+static bool eqb_get_ganged(int dev) {
+  (void)dev;
+  return audio_eq_get_ganged();
+}
+static void eqb_set_ganged(int dev, bool ganged) {
+  (void)dev;
+  audio_eq_set_ganged(ganged);
+}
+static bool eqb_get_chain(int dev, int ch, tas58xx_bq_t out[EQB_SLOTS]) {
+  (void)dev;
+  return audio_eq_get_chain(ch, out);
+}
+static esp_err_t eqb_set_chain(int dev, int ch,
+                               const tas58xx_bq_t in[EQB_SLOTS]) {
+  (void)dev;
+  return audio_eq_set_chain(ch, in);
+}
+static esp_err_t eqb_commit(void) {
+  return audio_eq_commit();
+}
+static esp_err_t eqb_revert(void) {
+  return audio_eq_revert();
+}
+static float eqb_get_gain(int dev, int ch) {
+  (void)dev;
+  return audio_eq_get_trim_db(ch);
+}
+static void eqb_set_gain(int dev, int ch, float db) {
+  (void)dev;
+  audio_eq_set_trim_db(ch, db);
+}
+static bool eqb_get_mute(int dev, int ch) {
+  (void)dev;
+  return audio_eq_get_mute(ch);
+}
+static void eqb_set_mute(int dev, int ch, bool mute) {
+  (void)dev;
+  audio_eq_set_mute(ch, mute);
+}
+static int eqb_get_mix(int dev) {
+  (void)dev;
+  audio_channel_mode_t mode = audio_output_get_channel_mode();
+  for (int m = 0; m < EQB_MIX_COUNT; m++) {
+    if (eqb_mix_modes[m] == mode) {
+      return m;
+    }
+  }
+  return 0;
+}
+static void eqb_set_mix(int dev, int mix) {
+  (void)dev;
+  audio_output_set_channel_mode(eqb_mix_modes[mix]);
+}
+static bool eqb_can_route(int dev) {
+  (void)dev;
+  return true;
+}
+/* What the software EQ takes off ahead of the filters to fit the boosts. */
+static bool eqb_preamp_db(float *db) {
+  *db = audio_eq_get_preamp_db();
+  return true;
+}
+
+#endif /* CONFIG_DAC_TAS58XX */
 
 /* Enough for 15 filters worth of JSON with room for whitespace. */
 #define BQ_POST_MAX 6144
 
 static esp_err_t bq_page_handler(httpd_req_t *req) {
   return serve_spiffs_file(req, "/spiffs/www/bq.html", "text/html");
-}
-
-/* Which amplifier a chain belongs to, so the page can label the columns
- * without duplicating the dual-DAC wiring logic. */
-static const char *bq_amp_role(int dev) {
-  if (dev == 0) {
-    return dac_tas58xx_get_active_first_pbtl() ? "mono" : "stereo";
-  }
-  return dac_tas58xx_get_active_second_pbtl() ? "mono" : "stereo";
 }
 
 static cJSON *bq_to_json(const tas58xx_bq_t *bq) {
@@ -2154,41 +2489,45 @@ static bool bq_from_json(const cJSON *o, tas58xx_bq_t *out) {
 }
 
 static esp_err_t bq_get_handler(httpd_req_t *req) {
-  const int devices = dac_tas58xx_get_device_count();
+  const int devices = eqb_devices();
 
   cJSON *json = cJSON_CreateObject();
   cJSON_AddBoolToObject(json, "success", true);
   cJSON_AddNumberToObject(json, "devices", devices);
-  cJSON_AddNumberToObject(json, "channels", TAS58XX_BQ_CHANNELS);
-  cJSON_AddNumberToObject(json, "slots", TAS58XX_BQ_SLOTS);
-  cJSON_AddNumberToObject(json, "rate", dac_tas58xx_bq_sample_rate());
-  cJSON_AddNumberToObject(json, "gain_min", TAS58XX_GAIN_MIN_DB);
-  cJSON_AddNumberToObject(json, "gain_max", TAS58XX_GAIN_MAX_DB);
+  cJSON_AddNumberToObject(json, "channels", EQB_CHANNELS);
+  cJSON_AddNumberToObject(json, "slots", EQB_SLOTS);
+  cJSON_AddNumberToObject(json, "rate", eqb_rate());
+  cJSON_AddNumberToObject(json, "gain_min", EQB_GAIN_MIN_DB);
+  cJSON_AddNumberToObject(json, "gain_max", EQB_GAIN_MAX_DB);
+  float preamp_db;
+  if (eqb_preamp_db(&preamp_db)) {
+    cJSON_AddNumberToObject(json, "preamp_db", preamp_db);
+  }
 
   cJSON *amps = cJSON_AddArrayToObject(json, "amps");
   for (int d = 0; d < devices; d++) {
     cJSON *amp = cJSON_CreateObject();
     cJSON_AddNumberToObject(amp, "index", d);
-    cJSON_AddStringToObject(amp, "role", bq_amp_role(d));
-    cJSON_AddBoolToObject(amp, "ganged", dac_tas58xx_bq_get_ganged(d));
-    cJSON_AddNumberToObject(amp, "mix", dac_tas58xx_get_mix(d));
-    cJSON_AddBoolToObject(amp, "pbtl", dac_tas58xx_is_pbtl(d));
+    cJSON_AddStringToObject(amp, "role", eqb_role(d));
+    cJSON_AddBoolToObject(amp, "ganged", eqb_get_ganged(d));
+    cJSON_AddNumberToObject(amp, "mix", eqb_get_mix(d));
+    cJSON_AddBoolToObject(amp, "pbtl", eqb_pbtl(d));
+    /* A TAS5805M cannot route its inputs, so it has only the one routing. */
+    cJSON_AddBoolToObject(amp, "mix_fixed", !eqb_can_route(d));
 
     cJSON *gains = cJSON_AddArrayToObject(amp, "gains");
     cJSON *mutes = cJSON_AddArrayToObject(amp, "mutes");
-    for (int c = 0; c < TAS58XX_BQ_CHANNELS; c++) {
-      cJSON_AddItemToArray(gains,
-                           cJSON_CreateNumber(dac_tas58xx_get_gain_db(d, c)));
-      cJSON_AddItemToArray(mutes,
-                           cJSON_CreateBool(dac_tas58xx_get_ch_mute(d, c)));
+    for (int c = 0; c < EQB_CHANNELS; c++) {
+      cJSON_AddItemToArray(gains, cJSON_CreateNumber(eqb_get_gain(d, c)));
+      cJSON_AddItemToArray(mutes, cJSON_CreateBool(eqb_get_mute(d, c)));
     }
 
     cJSON *chans = cJSON_AddArrayToObject(amp, "channels");
-    for (int c = 0; c < TAS58XX_BQ_CHANNELS; c++) {
-      tas58xx_bq_t chain[TAS58XX_BQ_SLOTS];
+    for (int c = 0; c < EQB_CHANNELS; c++) {
+      tas58xx_bq_t chain[EQB_SLOTS];
       cJSON *slots = cJSON_CreateArray();
-      if (dac_tas58xx_bq_get(d, c, chain)) {
-        for (int i = 0; i < TAS58XX_BQ_SLOTS; i++) {
+      if (eqb_get_chain(d, c, chain)) {
+        for (int i = 0; i < EQB_SLOTS; i++) {
           cJSON_AddItemToArray(slots, bq_to_json(&chain[i]));
         }
       }
@@ -2225,7 +2564,7 @@ static esp_err_t bq_post_handler(httpd_req_t *req) {
   }
 
   const cJSON *v = cJSON_GetObjectItem(json, "dev");
-  if (!json_int_in_range(v, 0, dac_tas58xx_get_device_count() - 1)) {
+  if (!json_int_in_range(v, 0, eqb_devices() - 1)) {
     cJSON_Delete(json);
     httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Bad 'dev'");
     return ESP_FAIL;
@@ -2236,7 +2575,7 @@ static esp_err_t bq_post_handler(httpd_req_t *req) {
    * the driver mirrors it when programming. */
   const cJSON *g = cJSON_GetObjectItem(json, "ganged");
   if (cJSON_IsBool(g)) {
-    dac_tas58xx_bq_set_ganged(dev, cJSON_IsTrue(g));
+    eqb_set_ganged(dev, cJSON_IsTrue(g));
   }
 
   /* Level and mute are per output rather than per chain, so they ride along
@@ -2245,7 +2584,7 @@ static esp_err_t bq_post_handler(httpd_req_t *req) {
   const cJSON *mute = cJSON_GetObjectItem(json, "mute");
   if (gain || mute) {
     const cJSON *oc = cJSON_GetObjectItem(json, "out");
-    if (!json_int_in_range(oc, 0, TAS58XX_BQ_CHANNELS - 1)) {
+    if (!json_int_in_range(oc, 0, EQB_CHANNELS - 1)) {
       cJSON_Delete(json);
       httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Bad 'out'");
       return ESP_FAIL;
@@ -2261,60 +2600,48 @@ static esp_err_t bq_post_handler(httpd_req_t *req) {
       return ESP_FAIL;
     }
     if (gain) {
-      dac_tas58xx_set_gain_db(dev, oc->valueint, (float)gain->valuedouble);
-      float saved[SETTINGS_AMP_OUTPUTS];
-      for (int i = 0; i < SETTINGS_AMP_OUTPUTS; i++) {
-        saved[i] = dac_tas58xx_get_gain_db(i / SETTINGS_AMP_CHANNELS,
-                                           i % SETTINGS_AMP_CHANNELS);
-      }
-      settings_set_amp_gain(saved);
+      eqb_set_gain(dev, oc->valueint, (float)gain->valuedouble);
     }
     if (mute) {
-      dac_tas58xx_set_ch_mute(dev, oc->valueint, cJSON_IsTrue(mute));
-      uint8_t saved[SETTINGS_AMP_OUTPUTS];
-      for (int i = 0; i < SETTINGS_AMP_OUTPUTS; i++) {
-        saved[i] = dac_tas58xx_get_ch_mute(i / SETTINGS_AMP_CHANNELS,
-                                           i % SETTINGS_AMP_CHANNELS);
-      }
-      settings_set_amp_mute(saved);
+      eqb_set_mute(dev, oc->valueint, cJSON_IsTrue(mute));
     }
   }
 
   const cJSON *mix = cJSON_GetObjectItem(json, "mix");
   if (mix) {
-    if (!json_int_in_range(mix, 0, TAS58XX_MIX_COUNT - 1)) {
+    if (!json_int_in_range(mix, 0, EQB_MIX_COUNT - 1)) {
       cJSON_Delete(json);
       httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Bad 'mix'");
       return ESP_FAIL;
     }
-    dac_tas58xx_set_mix(dev, (tas58xx_mix_t)mix->valueint);
-    uint8_t saved[SETTINGS_AMPS];
-    for (int i = 0; i < SETTINGS_AMPS; i++) {
-      saved[i] = (uint8_t)dac_tas58xx_get_mix(i);
+    if (mix->valueint != EQB_MIX_STEREO && !eqb_can_route(dev)) {
+      cJSON_Delete(json);
+      httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST,
+                          "This amplifier cannot route its inputs");
+      return ESP_FAIL;
     }
-    settings_set_amp_mix(saved);
+    eqb_set_mix(dev, mix->valueint);
   }
 
   const cJSON *filters = cJSON_GetObjectItem(json, "filters");
   if (filters) {
     v = cJSON_GetObjectItem(json, "ch");
-    if (!json_int_in_range(v, 0, TAS58XX_BQ_CHANNELS - 1)) {
+    if (!json_int_in_range(v, 0, EQB_CHANNELS - 1)) {
       cJSON_Delete(json);
       httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Bad 'ch'");
       return ESP_FAIL;
     }
     const int ch = v->valueint;
 
-    if (!cJSON_IsArray(filters) ||
-        cJSON_GetArraySize(filters) != TAS58XX_BQ_SLOTS) {
+    if (!cJSON_IsArray(filters) || cJSON_GetArraySize(filters) != EQB_SLOTS) {
       cJSON_Delete(json);
       httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST,
                           "'filters' must hold 15 entries");
       return ESP_FAIL;
     }
 
-    tas58xx_bq_t chain[TAS58XX_BQ_SLOTS];
-    for (int i = 0; i < TAS58XX_BQ_SLOTS; i++) {
+    tas58xx_bq_t chain[EQB_SLOTS];
+    for (int i = 0; i < EQB_SLOTS; i++) {
       if (!bq_from_json(cJSON_GetArrayItem(filters, i), &chain[i])) {
         cJSON_Delete(json);
         httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Bad filter entry");
@@ -2322,7 +2649,7 @@ static esp_err_t bq_post_handler(httpd_req_t *req) {
       }
     }
 
-    if (dac_tas58xx_bq_set(dev, ch, chain) != ESP_OK) {
+    if (eqb_set_chain(dev, ch, chain) != ESP_OK) {
       cJSON_Delete(json);
       httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Filter rejected");
       return ESP_FAIL;
@@ -2330,15 +2657,22 @@ static esp_err_t bq_post_handler(httpd_req_t *req) {
   }
 
   cJSON_Delete(json);
+  /* The preamp follows every change, so hand it back for the page to show. */
+  char resp[48] = "{\"success\":true}";
+  float preamp_db;
+  if (eqb_preamp_db(&preamp_db)) {
+    snprintf(resp, sizeof(resp), "{\"success\":true,\"preamp_db\":%.1f}",
+             (double)preamp_db);
+  }
   httpd_resp_set_type(req, "application/json");
-  httpd_resp_sendstr(req, "{\"success\":true}");
+  httpd_resp_sendstr(req, resp);
   return ESP_OK;
 }
 
 /* Chain edits stay in RAM until committed, matching the hybrid-flow pages:
  * a tuning can be auditioned and walked away from by rebooting. */
 static esp_err_t bq_commit_handler(httpd_req_t *req) {
-  if (dac_tas58xx_bq_commit() != ESP_OK) {
+  if (eqb_commit() != ESP_OK) {
     httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Write failed");
     return ESP_FAIL;
   }
@@ -2348,7 +2682,7 @@ static esp_err_t bq_commit_handler(httpd_req_t *req) {
 }
 
 static esp_err_t bq_revert_handler(httpd_req_t *req) {
-  if (dac_tas58xx_bq_revert() != ESP_OK) {
+  if (eqb_revert() != ESP_OK) {
     httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Revert failed");
     return ESP_FAIL;
   }
@@ -2357,7 +2691,7 @@ static esp_err_t bq_revert_handler(httpd_req_t *req) {
   return ESP_OK;
 }
 
-#endif /* CONFIG_DAC_TAS58XX */
+#endif /* HAS_BQ_API */
 
 esp_err_t web_server_start(uint16_t port) {
   if (s_server) {
@@ -2392,8 +2726,14 @@ esp_err_t web_server_start(uint16_t port) {
   config.max_uri_handlers += 2; // per-channel level get/post
 #endif
 #ifdef CONFIG_DAC_TAS58XX
-  // primary + dual DAC wiring plus the biquad page/API
-  config.max_uri_handlers += 9;
+  // primary + dual DAC wiring and digital gain, get/post each
+  config.max_uri_handlers += 6;
+#endif
+#ifdef HAS_BQ_API
+  config.max_uri_handlers += 5; // biquad page + get/post/commit/revert
+#endif
+#ifdef CONFIG_HUSB238A
+  config.max_uri_handlers += 2; // USB-PD supply get/post
 #endif
 #ifdef CONFIG_DAC_TAS57XX
   config.max_uri_handlers += 11; // tuning page + HF1/HF3 get/post/commit/revert
@@ -2536,6 +2876,28 @@ esp_err_t web_server_start(uint16_t port) {
                                     .method = HTTP_POST,
                                     .handler = dual_mode_post_handler};
   httpd_register_uri_handler(s_server, &dual_mode_post_uri);
+
+  httpd_uri_t digital_gain_get_uri = {.uri = "/api/audio/digital-gain",
+                                      .method = HTTP_GET,
+                                      .handler = digital_gain_get_handler};
+  httpd_register_uri_handler(s_server, &digital_gain_get_uri);
+
+  httpd_uri_t digital_gain_post_uri = {.uri = "/api/audio/digital-gain",
+                                       .method = HTTP_POST,
+                                       .handler = digital_gain_post_handler};
+  httpd_register_uri_handler(s_server, &digital_gain_post_uri);
+#endif
+
+#ifdef CONFIG_HUSB238A
+  httpd_uri_t usb_pd_get_uri = {.uri = "/api/power/usb-pd",
+                                .method = HTTP_GET,
+                                .handler = usb_pd_get_handler};
+  httpd_register_uri_handler(s_server, &usb_pd_get_uri);
+
+  httpd_uri_t usb_pd_post_uri = {.uri = "/api/power/usb-pd",
+                                 .method = HTTP_POST,
+                                 .handler = usb_pd_post_handler};
+  httpd_register_uri_handler(s_server, &usb_pd_post_uri);
 #endif
 
   httpd_uri_t airplay_mode_get_uri = {.uri = "/api/airplay/mode",
@@ -2637,7 +2999,7 @@ esp_err_t web_server_start(uint16_t port) {
   windows_captive.uri = "/redirect";
   httpd_register_uri_handler(s_server, &windows_captive);
 
-#ifdef CONFIG_DAC_TAS58XX
+#ifdef HAS_BQ_API
   httpd_uri_t bq_page_uri = {
       .uri = "/bq", .method = HTTP_GET, .handler = bq_page_handler};
   httpd_register_uri_handler(s_server, &bq_page_uri);

@@ -110,12 +110,14 @@ static void buffered_audio_task(void *pvParameters) {
     }
 
     while (stream->running) {
-      // Back-pressure: if the pipeline is nearly full, pause reading to let
-      // TCP flow control slow down the sender. This prevents overflow and
-      // keeps frames in order.
+      // Back-pressure: with the decode queue nearly full, pause reading and
+      // let TCP flow control slow the sender.  Only the queue counts: the
+      // decoder waits on the timeline behind it, and the queue is deep enough
+      // to take a sender's whole send-ahead beyond the timeline, so the socket
+      // stays drained.  Segments left unread would pin Wi-Fi RX buffers for
+      // as long as a pause lasts, and the receive window is many of them wide.
       while (stream->running &&
-             (audio_decode_worker_is_nearly_full(state->decode_worker) ||
-              audio_engine_v2_is_nearly_full(&state->engine_v2))) {
+             audio_decode_worker_is_nearly_full(state->decode_worker)) {
         vTaskDelay(pdMS_TO_TICKS(10));
       }
 

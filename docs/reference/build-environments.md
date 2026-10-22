@@ -70,6 +70,7 @@ environment has a `-bt` variant.
 | `louder-esp32-plus` | ESP32 | TAS5825M | 8 MB | — |
 | `louder-esp32-plus-bt` | ESP32 | TAS5825M | 8 MB | yes |
 | `louder-esp32-s3` | ESP32-S3 | TAS5805M | 8 MB | — |
+| `louder-esp32-s3-mini` | ESP32-S3 | TAS5805M, bridged | 8 MB | — |
 | `louder-esp32-s3-plus` | ESP32-S3 | TAS5825M | 8 MB | — |
 
 ## Targets without a PlatformIO environment
@@ -94,10 +95,11 @@ available in the [browser installer](../getting-started/flashing.md):
 `esp32s3`, `waveshare-esp32s3`, `esp32s2`, `squeezeamp-bt`, `squeezeamp-4m`, `smartamp`,
 `esparagus-audio-brick-bt`, `esparagus-audio-brick-s3`, `esparagus-audio-brick-dual-dac`,
 `esparagus-audio-brick-dual-uac`, `esparagus-louder-bt`, `esparagus-louder-s3`,
-`esparagus-echo`, `hifi-esp32-bt`, `hifi-esparagus-bt`, `hifi-esp32-s3`,
-`hifi-esparagus-s3`, `loud-esp32-bt`, `loud-esparagus-bt`, `loud-esp32-s3`,
-`amped-esp32-bt`, `amped-esparagus-bt`, `amped-esp32-s3`, `louder-esp32-bt`,
-`louder-esp32-plus-bt`, `louder-esp32-s3`, `louder-esp32-s3-plus`.
+`esparagus-echo`, `hifi-esp32-bt`, `hifi-esp32-plus-bt`, `hifi-esparagus-bt`,
+`hifi-esp32-s3`, `hifi-esparagus-s3`, `loud-esp32-bt`, `loud-esparagus-bt`,
+`loud-esp32-s3`, `amped-esp32-bt`, `amped-esparagus-bt`, `amped-esp32-s3`,
+`louder-esp32-bt`, `louder-esp32-plus-bt`, `louder-esp32-s3`, `louder-esp32-s3-plus`,
+`louder-esp32-s3-mini`.
 
 The list lives in `.github/workflows/targets.json`, and each entry needs a matching
 `docs/firmware/<name>.json` manifest for the installer to offer it.

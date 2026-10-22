@@ -473,6 +473,20 @@ the board, the pinouts differ.
       <span slot="not-allowed"></span>
     </esp-web-install-button>
 
+-   __Louder-ESP32-Mini__
+
+    ESP32-S3 + TAS5805M, bridged into one speaker. Only flash this build on a Mini.
+
+    <esp-web-install-button manifest="/airplay-esp32/firmware/louder-esp32-s3-mini.json">
+      <button slot="activate" class="md-button md-button--primary">Install</button>
+      <span slot="unsupported">Your browser cannot flash over USB. Use Chrome, Edge or Opera on desktop.</span>
+      <span slot="not-allowed">Flashing needs a secure (HTTPS) connection.</span>
+    </esp-web-install-button><esp-web-install-button class="install-beta" manifest="/airplay-esp32/firmware/beta/louder-esp32-s3-mini.json">
+      <button slot="activate" class="md-button md-button--beta">Install beta</button>
+      <span slot="unsupported"></span>
+      <span slot="not-allowed"></span>
+    </esp-web-install-button>
+
 </div>
 
 Once the install finishes, unplug and re-plug the board. It boots into setup mode — carry
