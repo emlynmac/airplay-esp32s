@@ -120,7 +120,9 @@ static struct {
 
   // Two-step sync tracking
   uint16_t last_sync_seq;
+  uint8_t last_sync_source_port_identity[10];
   int64_t last_sync_local_ns;
+  uint32_t last_sync_received_ms;
   bool awaiting_followup;
 
   // Statistics
@@ -184,9 +186,12 @@ static inline int64_t get_local_time_ns(void) {
 // dampening negative jitter (smaller offset = longer delay) slowly, the
 // filter converges to the offset corresponding to the minimum network
 // delay — the best available approximation of the true clock offset.
-static void update_offset(int64_t new_offset_ns, uint64_t src_clock_id) {
+static void update_offset(int64_t new_offset_ns, uint64_t src_clock_id,
+                          uint32_t sync_received_ms) {
   uint32_t now_ms = xTaskGetTickCount() * portTICK_PERIOD_MS;
-  ptp.last_sync_ms = now_ms;
+  // A delayed FOLLOW_UP still describes the earlier SYNC. Its arrival must
+  // not extend the sample's freshness or revive an expired clock lock.
+  ptp.last_sync_ms = sync_received_ms;
   if (ptp.sample_count == 0) {
     ptp.sample_clock_id = src_clock_id;
   } else if (src_clock_id != ptp.sample_clock_id) {
@@ -200,7 +205,11 @@ static void update_offset(int64_t new_offset_ns, uint64_t src_clock_id) {
   int64_t smoothed_offset;
 
   if (ptp.previous_offset_time_ms == 0) {
-    // First sample (or after reset): accept unconditionally
+    // First sample (or after reset): accept unconditionally. A resume can
+    // re-seed the filter while retaining its lock, but the accepted sample
+    // must still break any outlier run from before the reset.
+    ptp.consecutive_outliers = 0;
+    ptp.outlier_run_best_ns = 0;
     smoothed_offset = new_offset_ns;
     ptp.mastership_start_ms = now_ms;
   } else {
@@ -308,7 +317,10 @@ static void update_offset(int64_t new_offset_ns, uint64_t src_clock_id) {
 static void process_sync(const uint8_t *data, size_t len, uint16_t seq) {
   ptp.sync_count++;
   ptp.last_sync_seq = seq;
+  memcpy(ptp.last_sync_source_port_identity, data + 20,
+         sizeof(ptp.last_sync_source_port_identity));
   ptp.last_sync_local_ns = get_local_time_ns();
+  ptp.last_sync_received_ms = xTaskGetTickCount() * portTICK_PERIOD_MS;
   ptp.awaiting_followup = true;
 
   // Check if this is a one-step sync (timestamp in SYNC itself)
@@ -330,7 +342,7 @@ static void process_sync(const uint8_t *data, size_t len, uint16_t seq) {
       ptp_time_ns = (uint64_t)((int64_t)ptp_time_ns + correction_field);
     }
     int64_t offset = (int64_t)ptp_time_ns - ptp.last_sync_local_ns;
-    update_offset(offset, parse_ptp_clock_id(data));
+    update_offset(offset, parse_ptp_clock_id(data), ptp.last_sync_received_ms);
     ptp.awaiting_followup = false;
   }
 }
@@ -341,8 +353,13 @@ static void process_followup(const uint8_t *data, size_t len, uint16_t seq) {
     return;
   }
 
-  // FOLLOW_UP should match the sequence of the last SYNC
-  if (seq != ptp.last_sync_seq) {
+  // Sequence numbers are only unique within one source port. Before an
+  // anchor selects a master, multiple clocks can send the same sequence;
+  // pairing one clock's SYNC with another's FOLLOW_UP fabricates an offset
+  // and incorrectly attributes it entirely to the FOLLOW_UP clock.
+  if (seq != ptp.last_sync_seq ||
+      memcmp(data + 20, ptp.last_sync_source_port_identity,
+             sizeof(ptp.last_sync_source_port_identity)) != 0) {
     return;
   }
 
@@ -368,7 +385,7 @@ static void process_followup(const uint8_t *data, size_t len, uint16_t seq) {
 
     // offset = PTP_time - local_time_at_sync_receipt
     int64_t offset = (int64_t)ptp_time_ns - ptp.last_sync_local_ns;
-    update_offset(offset, parse_ptp_clock_id(data));
+    update_offset(offset, parse_ptp_clock_id(data), ptp.last_sync_received_ms);
   }
 }
 
@@ -614,6 +631,7 @@ void ptp_clock_clear(void) {
 
   ptp.last_sync_seq = 0;
   ptp.last_sync_local_ns = 0;
+  ptp.last_sync_received_ms = 0;
   ptp.awaiting_followup = false;
 
   ptp.sync_count = 0;

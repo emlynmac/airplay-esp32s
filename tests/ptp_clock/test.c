@@ -69,7 +69,7 @@ static void reset(void) {
 /* One SYNC whose trip took delay_ms longer than the fastest possible. */
 static void sync_from(uint64_t master, int64_t offset_ns, int delay_ms) {
   mock_now_ms += SYNC_INTERVAL;
-  update_offset(offset_ns - delay_ms * MS, master);
+  update_offset(offset_ns - delay_ms * MS, master, mock_now_ms);
 }
 
 /* Typical WiFi: a few ms of queuing on every SYNC, never less than zero. */
@@ -81,6 +81,33 @@ static int jitter_ms(int i) {
 static void settle(uint64_t master, int64_t offset_ns, int count) {
   for (int i = 0; i < count; i++) {
     sync_from(master, offset_ns, jitter_ms(i));
+  }
+}
+
+/* Build complete PTPv2 packets so source/sequence matching is exercised. */
+static void make_packet(uint8_t *packet, uint8_t type, uint64_t master,
+                        uint16_t port, uint16_t seq, uint64_t timestamp_ns) {
+  memset(packet, 0, PTP_HEADER_SIZE + PTP_TIMESTAMP_SIZE);
+  packet[0] = type;
+  packet[1] = 2;
+  packet[3] = PTP_HEADER_SIZE + PTP_TIMESTAMP_SIZE;
+  if (type == PTP_MSG_SYNC) {
+    packet[6] = 2; // twoStepFlag
+  }
+  for (int i = 0; i < 8; i++) {
+    packet[20 + i] = (uint8_t)(master >> (56 - 8 * i));
+  }
+  packet[28] = (uint8_t)(port >> 8);
+  packet[29] = (uint8_t)port;
+  packet[30] = (uint8_t)(seq >> 8);
+  packet[31] = (uint8_t)seq;
+  uint64_t seconds = timestamp_ns / 1000000000ULL;
+  uint32_t nanos = (uint32_t)(timestamp_ns % 1000000000ULL);
+  for (int i = 0; i < 6; i++) {
+    packet[34 + i] = (uint8_t)(seconds >> (40 - 8 * i));
+  }
+  for (int i = 0; i < 4; i++) {
+    packet[40 + i] = (uint8_t)(nanos >> (24 - 8 * i));
   }
 }
 
@@ -209,6 +236,138 @@ static void test_forward_step_followed(void) {
   CHECK(ptp_clock_is_locked(), "unlocked by a forward step");
 }
 
+/* A long pause re-seeds smoothing without dropping the lock. The accepted
+ * sample ends any pre-pause outlier run, so one later delayed SYNC cannot
+ * masquerade as the end of that run and move the resumed stream by 600 ms. */
+static void test_resume_breaks_outlier_run(void) {
+  printf("resume breaks outlier run\n");
+  reset();
+  settle(MASTER_A, TRUE_OFFSET, 40);
+  for (int i = 0; i < OUTLIER_RUN_RESET - 1; i++) {
+    sync_from(MASTER_A, TRUE_OFFSET, 600);
+  }
+  ptp_clock_notify_resume(30000);
+  sync_from(MASTER_A, TRUE_OFFSET, 0);
+  int64_t before = ptp_clock_get_offset_ns();
+  sync_from(MASTER_A, TRUE_OFFSET, 700);
+  CHECK(llabs(ptp_clock_get_offset_ns() - before) < MS,
+        "one delayed sample after resume moved offset by %lld ms",
+        (long long)((ptp_clock_get_offset_ns() - before) / MS));
+  CHECK(ptp_clock_is_locked(), "resume or delayed sample dropped the lock");
+}
+
+/* The unfiltered listener can hear multiple masters before the first anchor.
+ * A same-sequence FOLLOW_UP from another source must not fabricate a forward
+ * clock step or let that step carry over when its master is selected. */
+static void test_followup_source_identity(void) {
+  printf("FOLLOW_UP source identity\n");
+  reset();
+  settle(MASTER_B, TRUE_OFFSET, 40);
+  int64_t before = ptp_clock_get_offset_ns();
+  uint32_t samples = ptp.sample_count;
+  uint8_t sync[PTP_HEADER_SIZE + PTP_TIMESTAMP_SIZE];
+  uint8_t followup[sizeof(sync)];
+  make_packet(sync, PTP_MSG_SYNC, MASTER_A, 1, 123, 0);
+  process_ptp_message(sync, sizeof(sync), true);
+  mock_now_ms += 100;
+  make_packet(followup, PTP_MSG_FOLLOW_UP, MASTER_B, 1, 123,
+              (uint64_t)get_local_time_ns() + TRUE_OFFSET);
+  process_ptp_message(followup, sizeof(followup), false);
+  CHECK(ptp.sample_count == samples && ptp.sample_clock_id == MASTER_B,
+        "mismatched clock changed the accepted sample history");
+  CHECK(ptp_clock_get_offset_ns() == before,
+        "mismatched clock fabricated an offset step");
+  ptp_clock_set_master_clock_id(MASTER_B);
+  CHECK(ptp_clock_is_locked() && ptp_clock_get_offset_ns() == before,
+        "master selection retained a fabricated offset or lost its good lock");
+
+  /* A second port on the same clock is also a different source. Reject it,
+   * and a wrong sequence, without consuming the pending valid SYNC. */
+  make_packet(sync, PTP_MSG_SYNC, MASTER_B, 1, UINT16_MAX, 0);
+  process_ptp_message(sync, sizeof(sync), true);
+  uint64_t origin = (uint64_t)get_local_time_ns() + TRUE_OFFSET;
+  mock_now_ms += 100;
+  make_packet(followup, PTP_MSG_FOLLOW_UP, MASTER_B, 2, UINT16_MAX,
+              (uint64_t)get_local_time_ns() + TRUE_OFFSET);
+  process_ptp_message(followup, sizeof(followup), false);
+  CHECK(ptp.sample_count == samples && ptp_clock_get_offset_ns() == before,
+        "mismatched source port changed the offset");
+  make_packet(followup, PTP_MSG_FOLLOW_UP, MASTER_B, 1, 0, origin);
+  process_ptp_message(followup, sizeof(followup), false);
+  CHECK(ptp.sample_count == samples, "wrong sequence accepted");
+  make_packet(followup, PTP_MSG_FOLLOW_UP, MASTER_B, 1, UINT16_MAX, origin);
+  process_ptp_message(followup, sizeof(followup), false);
+  CHECK(ptp.sample_count == samples + 1, "matching FOLLOW_UP rejected");
+
+  /* Sequence wrap is valid; a duplicate FOLLOW_UP is not another sample. */
+  make_packet(sync, PTP_MSG_SYNC, MASTER_B, 1, 0, 0);
+  process_ptp_message(sync, sizeof(sync), true);
+  make_packet(followup, PTP_MSG_FOLLOW_UP, MASTER_B, 1, 0,
+              (uint64_t)get_local_time_ns() + TRUE_OFFSET);
+  process_ptp_message(followup, sizeof(followup), false);
+  process_ptp_message(followup, sizeof(followup), false);
+  CHECK(ptp.sample_count == samples + 2,
+        "sequence wrap rejected or duplicate FOLLOW_UP counted");
+}
+
+/* A reset or a switch to another master invalidates any pending pair. */
+static void test_followup_invalidation(void) {
+  printf("FOLLOW_UP invalidation\n");
+  reset();
+  ptp_clock_set_master_clock_id(MASTER_A);
+  settle(MASTER_A, TRUE_OFFSET, 40);
+  uint8_t sync[PTP_HEADER_SIZE + PTP_TIMESTAMP_SIZE];
+  uint8_t followup[sizeof(sync)];
+  make_packet(sync, PTP_MSG_SYNC, MASTER_A, 1, 10, 0);
+  process_ptp_message(sync, sizeof(sync), true);
+  ptp_clock_clear();
+  make_packet(followup, PTP_MSG_FOLLOW_UP, MASTER_A, 1, 10,
+              (uint64_t)get_local_time_ns() + TRUE_OFFSET);
+  process_ptp_message(followup, sizeof(followup), false);
+  CHECK(ptp.sample_count == 0, "clear retained a pending SYNC");
+
+  ptp_clock_set_master_clock_id(MASTER_A);
+  settle(MASTER_A, TRUE_OFFSET, 40);
+  process_ptp_message(sync, sizeof(sync), true);
+  ptp_clock_set_master_clock_id(MASTER_B);
+  make_packet(followup, PTP_MSG_FOLLOW_UP, MASTER_B, 1, 10,
+              (uint64_t)get_local_time_ns() + TRUE_OFFSET);
+  process_ptp_message(followup, sizeof(followup), false);
+  CHECK(ptp.sample_count == 0, "master change retained a pending SYNC");
+}
+
+/* Freshness belongs to the SYNC receive time, not a delayed FOLLOW_UP. Test
+ * both retention and lock timeout boundaries while the millisecond tick
+ * counter wraps between the two packets. */
+static void test_followup_does_not_refresh_old_sample(void) {
+  printf("FOLLOW_UP sample freshness\n");
+  static const uint32_t delays[] = {SESSION_KEEP_MS - 1, SESSION_KEEP_MS,
+                                    LOCK_TIMEOUT_MS + 1};
+  for (size_t i = 0; i < sizeof(delays) / sizeof(delays[0]); i++) {
+    reset();
+    mock_now_ms = UINT32_MAX - 1000 - 40 * SYNC_INTERVAL;
+    ptp_clock_set_master_clock_id(MASTER_A);
+    settle(MASTER_A, TRUE_OFFSET, 40);
+    CHECK(ptp_clock_is_locked(), "failed to lock before freshness test");
+    ptp_clock_end_session();
+    uint8_t sync[PTP_HEADER_SIZE + PTP_TIMESTAMP_SIZE];
+    uint8_t followup[sizeof(sync)];
+    make_packet(sync, PTP_MSG_SYNC, MASTER_A, 1, 10, 0);
+    process_ptp_message(sync, sizeof(sync), true);
+    uint64_t origin = (uint64_t)get_local_time_ns() + TRUE_OFFSET;
+    mock_now_ms += delays[i];
+    make_packet(followup, PTP_MSG_FOLLOW_UP, MASTER_A, 1, 10, origin);
+    process_ptp_message(followup, sizeof(followup), false);
+    if (delays[i] > LOCK_TIMEOUT_MS) {
+      CHECK(!ptp_clock_is_locked(), "late FOLLOW_UP revived an expired lock");
+    }
+    ptp_clock_set_master_clock_id(MASTER_A);
+    CHECK(ptp_clock_is_locked() == (delays[i] < SESSION_KEEP_MS),
+          "same-master session with a %u ms old SYNC retained the wrong state",
+          (unsigned)delays[i]);
+  }
+}
+
 /* The next track from the same phone keeps the lock; anything else starts
  * over. */
 static void test_session_handover(void) {
@@ -278,6 +437,10 @@ int main(void) {
   test_congestion_not_followed();
   test_small_step_followed_later();
   test_forward_step_followed();
+  test_resume_breaks_outlier_run();
+  test_followup_source_identity();
+  test_followup_invalidation();
+  test_followup_does_not_refresh_old_sample();
   test_session_handover();
   if (failures) {
     printf("%d check(s) failed\n", failures);
