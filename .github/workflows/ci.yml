@@ -71,6 +71,9 @@ jobs:
       - name: Test the realtime stream's resend requests
         run: python3 tests/rtp_resend/run.py
 
+      - name: Test AirPlay device names in binary plists
+        run: python3 tests/bplist/run.py
+
       - name: Test the USB-PD trigger against a simulated charger
         run: python3 tests/husb238a/run.py
 
