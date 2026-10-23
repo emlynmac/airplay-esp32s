@@ -73,6 +73,9 @@ jobs:
       - name: Test the rate a TAS5805M's filters are designed at
         run: python3 tests/tas5805m_rate/run.py
 
+      - name: Test the PTP offset filter
+        run: python3 tests/ptp_clock/run.py
+
       - name: Test software EQ against a reference
         run: python3 tests/audio_eq/run.py
 
