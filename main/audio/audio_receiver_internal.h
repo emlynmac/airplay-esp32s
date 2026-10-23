@@ -22,6 +22,7 @@
 #include "audio_receiver.h"
 #include "audio_stream.h"
 #include "audio_timing.h"
+#include "rtp_resend.h"
 
 #define MAX_RTP_PACKET_SIZE 2048
 
@@ -59,6 +60,8 @@ typedef struct audio_receiver_state {
   uint32_t aac_diag_epoch;
   uint32_t aac_diag_last_rtp;
   bool aac_diag_rtp_valid;
+  // Buffered frames still to be silenced after a break in the RTP sequence.
+  uint8_t aac_prime_left;
 
   // Last SETRATEANCHORTIME, kept in the sender's PTP domain so it can be
   // re-armed once the PTP clock locks.  An anchor that arrives while the
@@ -97,10 +100,18 @@ typedef struct audio_receiver_state {
   struct sockaddr_in client_control_addr; // Client's control address for NACKs
   bool retransmit_enabled;                // True when client address is set
   int64_t last_resend_error_time_us;      // Backoff timer on sendto failure
-  bool rtp_sequence_valid;
-  uint16_t resend_window_first;
-  uint64_t resend_missing_mask;
-  int64_t resend_last_request_time_us;
+  // The realtime stream's missing packets, owned by its receive task.  Other
+  // tasks reset it by bumping resend_generation, and the receive task does
+  // the reset itself before it next touches the tracker.
+  rtp_resend_t resend;
+  uint32_t resend_generation;
+  uint32_t resend_generation_seen;
+  // For the receive task's status line: when it last reported, the most bytes
+  // it found still queued on the socket after a read, and decoded packets the
+  // timeline turned away, since then.
+  int64_t resend_report_us;
+  uint32_t resend_queue_max;
+  uint32_t resend_rejected;
 
   // Post-seek RTP gates: together they form a window [discard_before_rtp,
   // discard_above_rtp] around the new anchor.  Frames outside the window are
@@ -126,12 +137,17 @@ typedef struct audio_receiver_state {
   // seek: flush empties buffer before anchor arrives, so seek detection in
   // set_anchor_time would otherwise find no oldest_rtp and skip arming).
   bool arm_gate_on_next_anchor;
-  // Set by audio_receiver_seek_flush() to reject ALL incoming frames until
-  // the next SETRATEANCHORTIME provides a valid anchor.  Without this, stale
-  // TCP data (from the old track still draining the socket buffer) fills the
-  // ring buffer between FLUSHBUFFERED and the anchor, causing a second flush
-  // and doubling the startup delay.
-  bool discard_all_until_anchor;
+  // Set by audio_receiver_seek_flush(): after an immediate FLUSHBUFFERED an
+  // iPhone first drains several seconds of the old position from its own send
+  // queue, then starts the new position.  The backlog carries on the RTP
+  // sequence from the last frame before the flush, so it is dropped frame by
+  // frame until the sequence breaks, before it is decrypted or decoded.
+  bool seek_backlog_valid;
+  uint32_t seek_backlog_next_rtp;
+  uint32_t seek_backlog_dropped;
+  // Set when that gate saw the sequence break, so the newest frame read is on
+  // the new position.  A realtime flush clears seek_backlog_valid without one.
+  bool seek_backlog_ended;
 
   // Snapshot of the expected RTP position taken the moment the sender signals
   // PAUSE (SETRATEANCHORTIME rate=0).  Path B in audio_receiver_set_anchor_time

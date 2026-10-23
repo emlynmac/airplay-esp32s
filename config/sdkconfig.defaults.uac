@@ -33,6 +33,18 @@ CONFIG_UAC_BIT_RESOLUTION_16=y
 CONFIG_OUTPUT_SAMPLE_RATE_48000=y
 CONFIG_UAC_SAMPLE_RATE=48000
 
+# usb_device_uac reads each 1 ms packet into a single buffer from the USB
+# interrupt and wakes its speaker task to hand it on, so a packet that comes
+# before the task has run overwrites the one before it. At the default
+# priority of 5 the task shared its level with the web server, which could
+# hold it off for a whole 10 ms tick while serving a page. 15 is the most the
+# component allows. Core 1 keeps the task clear of the Wi-Fi task (23), which
+# is pinned to core 0, and lwIP (18), free until now to run on either core,
+# is pinned there beside it.
+CONFIG_UAC_SPK_TASK_PRIORITY=15
+CONFIG_UAC_SPK_TASK_CORE=1
+CONFIG_LWIP_TCPIP_TASK_AFFINITY_CPU0=y
+
 # Build UAC as one function of a composite device so main/usb can add an HID
 # consumer-control interface (media keys back to the host). This makes
 # usb_device_uac withhold its own descriptors, tusb_config.h and
@@ -42,8 +54,9 @@ CONFIG_USB_DEVICE_UAC_AS_PART=y
 CONFIG_USB_AUDIO_SINK_MANUFACTURER="Espressif"
 CONFIG_USB_AUDIO_SINK_PRODUCT="ESP32 Audio Device"
 
-# Enable if the host is macOS (see the usb_device_uac README — the descriptor
-# cannot satisfy macOS and Windows/Linux at the same time).
+# macOS and Windows want the rate feedback in different formats; main/usb
+# guesses the host and picks one. Enable this to force macOS's format for
+# every host if the guess is ever wrong.
 # CONFIG_UAC_SUPPORT_MACOS=y
 
 # TinyUSB claims the USB PHY, so USB-Serial-JTAG cannot also be a console.

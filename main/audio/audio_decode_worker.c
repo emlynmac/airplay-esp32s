@@ -8,6 +8,7 @@
 #include <string.h>
 
 #include "freertos/FreeRTOS.h"
+#include "freertos/idf_additions.h"
 #include "freertos/queue.h"
 #include "freertos/task.h"
 
@@ -16,7 +17,14 @@
 
 #include "audio_receiver_internal.h"
 
-#define AUDIO_DECODE_QUEUE_DEPTH 16U
+// Deep enough to hold a sender's whole send-ahead beyond the timeline, so the
+// TCP reader never has to stop reading: a phone streams up to the advertised
+// 512 KB ahead (16 s at 256 kbps, 32 s at 128 kbps), and segments left unread
+// in the socket pin Wi-Fi RX buffers for as long as they sit there, which with
+// a receive window many segments wide is most of the driver's pool.  Jobs are
+// allocated to size in PSRAM, so the depth costs only what is queued, at most
+// that send-ahead; the queue's own storage lives in PSRAM too.
+#define AUDIO_DECODE_QUEUE_DEPTH 2048U
 #define AUDIO_DECODE_MAX_PAYLOAD 8192U
 #define AUDIO_DECODE_TASK_STACK  6144U
 
@@ -29,6 +37,13 @@
  * resampler; adding AAC decode there starves IDLE1. Keep the two heavy audio
  * consumers on separate cores. */
 #define AUDIO_DECODE_TASK_CORE 0
+
+/* After a start or seek the sender bursts well ahead of realtime, and the
+ * task then decodes back to back until the timeline fills, several seconds
+ * of audio. On a slow board (an ESP32 with 40 MHz PSRAM and heap poisoning)
+ * that keeps IDLE0 off core 0 past the task watchdog's 5 s, so give the core
+ * up for a tick whenever it has been decoding this long without waiting. */
+#define AUDIO_DECODE_MAX_BUSY_MS 100U
 
 typedef struct audio_decode_job {
   uint32_t generation;
@@ -69,11 +84,16 @@ static void job_free(audio_decode_job_t *job) {
 
 static void decode_task(void *arg) {
   audio_decode_worker_t *worker = (audio_decode_worker_t *)arg;
+  TickType_t busy_since = xTaskGetTickCount();
 
   for (;;) {
+    const bool will_wait = uxQueueMessagesWaiting(worker->queue) == 0U;
     audio_decode_job_t *job = NULL;
     if (xQueueReceive(worker->queue, &job, portMAX_DELAY) != pdTRUE) {
       continue;
+    }
+    if (will_wait) {
+      busy_since = xTaskGetTickCount();
     }
 
     /* NULL is the shutdown sentinel. */
@@ -106,6 +126,12 @@ static void decode_task(void *arg) {
     }
 
     job_free(job);
+
+    if (xTaskGetTickCount() - busy_since >=
+        pdMS_TO_TICKS(AUDIO_DECODE_MAX_BUSY_MS)) {
+      vTaskDelay(1);
+      busy_since = xTaskGetTickCount();
+    }
   }
 
   worker->task = NULL;
@@ -123,8 +149,14 @@ esp_err_t audio_decode_worker_create(audio_receiver_state_t *state,
     return ESP_ERR_NO_MEM;
   }
   worker->state = state;
-  worker->queue =
-      xQueueCreate(AUDIO_DECODE_QUEUE_DEPTH, sizeof(audio_decode_job_t *));
+  worker->queue = xQueueCreateWithCaps(AUDIO_DECODE_QUEUE_DEPTH,
+                                       sizeof(audio_decode_job_t *),
+                                       MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+  if (!worker->queue) {
+    worker->queue = xQueueCreateWithCaps(AUDIO_DECODE_QUEUE_DEPTH,
+                                         sizeof(audio_decode_job_t *),
+                                         MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+  }
   if (!worker->queue) {
     free(worker);
     return ESP_ERR_NO_MEM;
@@ -136,7 +168,7 @@ esp_err_t audio_decode_worker_create(audio_receiver_state_t *state,
       AUDIO_DECODE_TASK_PRIORITY, &worker->task, AUDIO_DECODE_TASK_CORE);
   if (ok != pdPASS || !worker->task) {
     worker->running = false;
-    vQueueDelete(worker->queue);
+    vQueueDeleteWithCaps(worker->queue);
     free(worker);
     return ESP_ERR_NO_MEM;
   }
@@ -205,7 +237,7 @@ void audio_decode_worker_destroy(audio_decode_worker_t *worker) {
         job_free(job);
       }
     }
-    vQueueDelete(worker->queue);
+    vQueueDeleteWithCaps(worker->queue);
   }
   free(worker);
 }

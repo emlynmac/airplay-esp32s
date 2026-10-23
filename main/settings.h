@@ -219,6 +219,7 @@ esp_err_t settings_get_sub_offset(float *offset_db);
 esp_err_t settings_set_sub_offset(float offset_db);
 
 // ---- Per-output level and mute (dual-DAC boards) ----
+// The software EQ keeps its two output trims and mutes in A0 and B0.
 
 /** Amplifiers whose outputs can be levelled against each other. */
 #define SETTINGS_AMPS 2
@@ -300,3 +301,28 @@ esp_err_t settings_get_second_pbtl(bool *pbtl);
  * Save whether the second amplifier is bridged (PBTL) mono.
  */
 esp_err_t settings_set_second_pbtl(bool pbtl);
+
+// ---- Digital gain ----
+
+/**
+ * Get the digital gain AirPlay's full volume maps to, in dB.
+ * @return ESP_OK if one is stored
+ */
+esp_err_t settings_get_full_volume_db(float *db);
+
+/** Save the digital gain in dB (-60..0, kept to 0.5 dB). */
+esp_err_t settings_set_full_volume_db(float db);
+
+// ---- USB-PD supply ----
+
+/**
+ * Get the voltage to ask a USB-PD charger for.
+ * @param volts Output: one of 5, 9, 12, 15 or 20
+ * @return ESP_OK if found, error otherwise
+ */
+esp_err_t settings_get_usb_pd_volts(int *volts);
+
+/**
+ * Save the voltage to ask a USB-PD charger for.
+ */
+esp_err_t settings_set_usb_pd_volts(int volts);

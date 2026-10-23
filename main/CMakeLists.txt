@@ -5,6 +5,7 @@ set( SRC_FILES
     "audio/audio_receiver.c"
     "audio/audio_stream.c"
     "audio/audio_stream_realtime.c"
+    "audio/rtp_resend.c"
     "audio/audio_stream_buffered.c"
     "audio/audio_decoder.c"
     "audio/audio_buffer.c"
@@ -68,6 +69,11 @@ if(CONFIG_BT_A2DP_ENABLE)
     list(APPEND SRC_FILES "bt_coex.c")
 endif()
 
+# Software parametric EQ for DACs without a DSP (I2S backend only)
+if(CONFIG_SOFTWARE_EQ)
+    list(APPEND SRC_FILES "audio/audio_eq.c")
+endif()
+
 # USB Audio Class sink (host -> I2S, chips with USB OTG only)
 if(CONFIG_USB_AUDIO_SINK)
     list(APPEND SRC_FILES "audio/usb_audio_sink.c")
@@ -119,6 +125,7 @@ set( DEPS
     dac_tas58xx
     dac_tas57xx
     dac_pcm51xx
+    husb238a
     display
     audio-resampler
     esp_eth

@@ -1144,6 +1144,17 @@ static void handle_setup(int socket, rtsp_conn_t *conn,
       bplist_find_data_deep(body, body_len, "shk", shk, sizeof(shk), &shk_len);
     }
 
+    // iOS 26.5 and later leave the key out when an app picks the receiver
+    // itself (Spotify's in-app picker, "AirplayHandoffDevice") for a realtime
+    // stream.  Nothing derived from the pairing decrypts it; a HomePod plays
+    // it, third-party receivers do not (shairport-sync #2238).  Say so, since
+    // the session otherwise looks healthy and simply stays silent.
+    if (request_has_streams && shk_len == 0 && ekey_len == 0) {
+      ESP_LOGW(TAG, "SETUP: stream has no key (shk); its audio cannot be "
+                    "decrypted. Pick this speaker from Control Center instead "
+                    "of the app.");
+    }
+
     audio_encrypt_t audio_encrypt = {0};
     bool encryption_set = false;
 
@@ -1749,15 +1760,49 @@ static void handle_pause(int socket, rtsp_conn_t *conn,
   rtsp_send_ok(socket, conn, req->cseq);
 }
 
+// The flush point from a FLUSH's "RTP-Info: seq=...;rtptime=..." header.
+static bool parse_flush_rtptime(const uint8_t *raw, size_t raw_len,
+                                uint32_t *rtptime) {
+  static const char key[] = "rtptime=";
+  const size_t key_len = sizeof(key) - 1;
+  if (!raw) {
+    return false;
+  }
+  const uint8_t *end = rtsp_find_header_end(raw, raw_len);
+  size_t len = end ? (size_t)(end - raw) : raw_len;
+  for (size_t i = 0; i + key_len < len; i++) {
+    if (strncasecmp((const char *)raw + i, key, key_len) != 0) {
+      continue;
+    }
+    uint64_t value = 0;
+    size_t j = i + key_len;
+    if (j >= len || raw[j] < '0' || raw[j] > '9') {
+      return false;
+    }
+    for (; j < len && raw[j] >= '0' && raw[j] <= '9'; j++) {
+      value = value * 10 + (uint64_t)(raw[j] - '0');
+      if (value > UINT32_MAX) {
+        return false;
+      }
+    }
+    *rtptime = (uint32_t)value;
+    return true;
+  }
+  return false;
+}
+
 static void handle_flush(int socket, rtsp_conn_t *conn,
                          const rtsp_request_t *req, const uint8_t *raw,
                          size_t raw_len) {
-  (void)raw;
-  (void)raw_len;
-
-  // Plain AirPlay 1 FLUSH — always immediate.
-  ESP_LOGI(TAG, "FLUSH received");
-  audio_receiver_seek_flush();
+  // Plain FLUSH: AirPlay 1, and AirPlay 2 realtime (macOS).  Always immediate.
+  uint32_t until_rtp = 0;
+  bool until_valid = parse_flush_rtptime(raw, raw_len, &until_rtp);
+  if (until_valid) {
+    ESP_LOGI(TAG, "FLUSH received (rtptime=%" PRIu32 ")", until_rtp);
+  } else {
+    ESP_LOGI(TAG, "FLUSH received");
+  }
+  audio_receiver_realtime_flush(until_valid, until_rtp);
   audio_output_flush();
   rtsp_send_ok(socket, conn, req->cseq);
 }

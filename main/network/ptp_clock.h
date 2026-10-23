@@ -26,14 +26,14 @@ void ptp_clock_stop(void);
 /**
  * Clear PTP clock synchronization state.
  * Resets offset and lock status without stopping the clock.
- * Called during TEARDOWN to allow re-sync on new session.
+ * Used when a new session cannot safely reuse the previous clock state.
  */
 void ptp_clock_clear(void);
 
 /**
  * Called at TEARDOWN.  If the master is still sending (an accepted sample
- * within the last 2 s), keep the offset and lock and only drop the master
- * filter, so a next session from the same master starts without re-locking;
+ * within the last 2 s), keep the offset, lock and master filter, so the next
+ * session from the same master starts without re-locking;
  * otherwise behave like ptp_clock_clear().
  */
 void ptp_clock_end_session(void);

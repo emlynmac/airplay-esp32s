@@ -31,6 +31,10 @@
 #include "usb_audio_sink.h"
 #endif
 
+#ifdef CONFIG_SOFTWARE_EQ
+#include "audio_eq.h"
+#endif
+
 #ifdef CONFIG_SENDSPIN_ENABLE
 #include "sendspin.h"
 #endif
@@ -379,6 +383,17 @@ void app_main(void) {
     }
   }
 #elif defined(CONFIG_DAC_TAS58XX)
+  // Digital gain, the user's to match to the supply.
+  float full_volume_db;
+  if (settings_get_full_volume_db(&full_volume_db) == ESP_OK) {
+    dac_tas58xx_set_full_volume_db(full_volume_db);
+  }
+#ifdef CONFIG_HUSB238A
+  else {
+    // USB-C powered, and a USB-PD trigger starts every port at 5 V.
+    dac_tas58xx_set_full_volume_db(dac_tas58xx_clean_db(5000));
+  }
+#endif
   // Amplifier wiring must be known before the DAC is initialised.
   bool first_pbtl;
   if (settings_get_first_pbtl(&first_pbtl) == ESP_OK) {
@@ -412,6 +427,14 @@ void app_main(void) {
   }
 #endif
   spiffs_storage_init();
+#ifdef CONFIG_SOFTWARE_EQ
+  // Ahead of the web server, which serves the tuning, and of the first
+  // audio, which runs through it. Without it the audio passes through flat.
+  esp_err_t eq_err = audio_eq_init();
+  if (eq_err != ESP_OK) {
+    ESP_LOGE(TAG, "Software EQ init failed: %s", esp_err_to_name(eq_err));
+  }
+#endif
   log_stream_init();
   ESP_ERROR_CHECK(playback_control_init());
   led_init();

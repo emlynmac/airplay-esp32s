@@ -139,6 +139,15 @@ void audio_receiver_flush(void);
 void audio_receiver_seek_flush(void);
 
 /**
+ * Flush for a plain RTSP FLUSH.  On the realtime stream only audio from
+ * before the flush point is stale, so packets arriving after it are kept
+ * rather than discarded until the next anchor.  until_rtp, when valid, is
+ * the flush point from the request's RTP-Info.  On the buffered stream this
+ * is audio_receiver_seek_flush().
+ */
+void audio_receiver_realtime_flush(bool until_valid, uint32_t until_rtp);
+
+/**
  * Arm a deferred flush for AirPlay 2 FLUSHBUFFERED with flushFromSeq.
  *
  * Instead of discarding the buffer immediately, the decode task keeps queueing
