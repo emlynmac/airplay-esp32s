@@ -65,6 +65,14 @@ jobs:
       - name: Test PCM512x failure handling
         run: python3 tests/pcm51xx/run.py
 
+      - name: Install Node.js for EQ page regression tests
+        uses: actions/setup-node@v7
+        with:
+          node-version: '22'
+
+      - name: Test the rate a TAS5805M's filters are designed at
+        run: python3 tests/tas5805m_rate/run.py
+
       - name: Test the PTP offset filter
         run: python3 tests/ptp_clock/run.py
 
@@ -73,6 +81,9 @@ jobs:
 
       - name: Test the realtime stream's resend requests
         run: python3 tests/rtp_resend/run.py
+
+      - name: Test AirPlay device names in binary plists
+        run: python3 tests/bplist/run.py
 
       - name: Test the USB-PD trigger against a simulated charger
         run: python3 tests/husb238a/run.py

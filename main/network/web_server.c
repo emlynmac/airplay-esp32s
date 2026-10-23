@@ -2231,8 +2231,8 @@ static const char *eqb_role(int dev) {
 static bool eqb_pbtl(int dev) {
   return dac_tas58xx_is_pbtl(dev);
 }
-static uint32_t eqb_rate(void) {
-  return dac_tas58xx_bq_sample_rate();
+static uint32_t eqb_rate(int dev) {
+  return dac_tas58xx_bq_device_sample_rate(dev);
 }
 static bool eqb_get_ganged(int dev) {
   return dac_tas58xx_bq_get_ganged(dev);
@@ -2329,7 +2329,8 @@ static bool eqb_pbtl(int dev) {
   (void)dev;
   return false;
 }
-static uint32_t eqb_rate(void) {
+static uint32_t eqb_rate(int dev) {
+  (void)dev;
   return audio_eq_get_rate();
 }
 static bool eqb_get_ganged(int dev) {
@@ -2498,7 +2499,8 @@ static esp_err_t bq_get_handler(httpd_req_t *req) {
   cJSON_AddNumberToObject(json, "devices", devices);
   cJSON_AddNumberToObject(json, "channels", EQB_CHANNELS);
   cJSON_AddNumberToObject(json, "slots", EQB_SLOTS);
-  cJSON_AddNumberToObject(json, "rate", eqb_rate());
+  /* Retain the primary rate for clients predating per-amplifier rates. */
+  cJSON_AddNumberToObject(json, "rate", eqb_rate(0));
   cJSON_AddNumberToObject(json, "gain_min", EQB_GAIN_MIN_DB);
   cJSON_AddNumberToObject(json, "gain_max", EQB_GAIN_MAX_DB);
   float preamp_db;
@@ -2510,6 +2512,7 @@ static esp_err_t bq_get_handler(httpd_req_t *req) {
   for (int d = 0; d < devices; d++) {
     cJSON *amp = cJSON_CreateObject();
     cJSON_AddNumberToObject(amp, "index", d);
+    cJSON_AddNumberToObject(amp, "rate", eqb_rate(d));
     cJSON_AddStringToObject(amp, "role", eqb_role(d));
     cJSON_AddBoolToObject(amp, "ganged", eqb_get_ganged(d));
     cJSON_AddNumberToObject(amp, "mix", eqb_get_mix(d));
