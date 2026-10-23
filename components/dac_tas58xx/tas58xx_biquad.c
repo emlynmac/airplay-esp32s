@@ -350,6 +350,14 @@ static bq_coeff_t bq_phase_shift(double freq, double bw, double fs) {
   return o;
 }
 
+static void bq_store(bq_coeff_t o, double out[5]) {
+  out[0] = o.b0;
+  out[1] = o.b1;
+  out[2] = o.b2;
+  out[3] = o.a1;
+  out[4] = o.a2;
+}
+
 /* ---------------- public entry points ---------------- */
 
 double tas5805m_dsp_rate(double i2s_rate_hz) {
@@ -361,7 +369,12 @@ void tas58xx_bq_design(const tas58xx_bq_t *bq, double sample_rate_hz,
                        double out[5]) {
   bq_coeff_t o = bq_unity;
 
-  if (!bq || !out) {
+  if (!out) {
+    return;
+  }
+  /* Callers pack out[] unconditionally: design unity. */
+  if (!bq) {
+    bq_store(o, out);
     return;
   }
   const double fs = (sample_rate_hz > 1000.0) ? sample_rate_hz : 48000.0;
@@ -431,11 +444,7 @@ void tas58xx_bq_design(const tas58xx_bq_t *bq, double sample_rate_hz,
     o.b2 = -o.b2;
   }
 
-  out[0] = o.b0;
-  out[1] = o.b1;
-  out[2] = o.b2;
-  out[3] = o.a1;
-  out[4] = o.a2;
+  bq_store(o, out);
 }
 
 void tas58xx_bq_pack(const double coeff[5],

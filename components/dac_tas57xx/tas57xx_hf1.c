@@ -118,9 +118,10 @@ static esp_err_t hf1_write_pbe_harmonic(const tas57xx_cram_sink_t *sink,
                                         int harmonic) {
   /* 0 mutes outright; 1-100 maps linearly onto -49.5 .. 0 dB in 0.5 dB steps.
    */
-  int32_t word = harmonic <= 0
-                     ? 0
-                     : hf1_q23(powf(10.0f, (0.5f * harmonic - 50.0f) / 20.0f));
+  int32_t word =
+      harmonic <= 0
+          ? 0
+          : hf1_q23(powf(10.0f, (0.5f * (float)harmonic - 50.0f) / 20.0f));
   return tas57xx_cram_write(sink, HF1_PBE_HARMONIC_WORD, &word, 1);
 }
 

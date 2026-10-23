@@ -66,7 +66,7 @@
 
 // P0-R61/R62: 0x30 is 0 dB, each step is 0.5 dB, 0xFE is -103 dB, 0xFF mutes.
 #define PCM51XX_VOL_0DB_CODE 0x30
-#define PCM51XX_VOL_MIN_DB   -103.0f
+#define PCM51XX_VOL_MIN_DB   (-103.0f)
 
 #define I2C_LINE_SPEED       100000
 #define I2C_PROBE_TIMEOUT_MS 50
