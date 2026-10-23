@@ -90,21 +90,9 @@ static const char *TAG = "ptp_clock";
 // sample_clock_id when samples from more than one master have been mixed.
 #define PTP_CLOCK_ID_MIXED UINT64_MAX
 
-// PTP state
+// PTP state, grouped by alignment to avoid padding on 32-bit targets.
 static struct {
-  bool running;
-  TaskHandle_t task_handle;
-  spiram_task_mem_t task_mem;
-  int event_socket;
-  int general_socket;
-
-  // Synchronization state
-  bool locked;
-  uint32_t lock_start_ms;
-  uint32_t lock_candidate_start_ms;
-  uint32_t last_sync_ms;
   int64_t filtered_offset_ns; // PTP_time = local_time + offset
-  uint32_t sample_count;
 
   // Asymmetric smoothing state (replaces median ring buffer)
   int64_t previous_offset;
@@ -115,15 +103,24 @@ static struct {
   // value, so an error in it is invisible to those figures.  Keeping the raw
   // sample lets callers compare the two and detect filter divergence.
   int64_t raw_offset_ns;
+  int64_t last_sync_local_ns;
+
+  // Master clock filter (0 = accept any master)
+  uint64_t expected_clock_id;
+  // Master behind the samples since the last reset (0 = none yet,
+  // PTP_CLOCK_ID_MIXED = more than one).
+  uint64_t sample_clock_id;
+  int64_t outlier_run_best_ns; // highest offset in the current run
+  TaskHandle_t task_handle;
+  int event_socket;
+  int general_socket;
+  uint32_t lock_start_ms;
+  uint32_t lock_candidate_start_ms;
+  uint32_t last_sync_ms;
+  uint32_t sample_count;
   uint32_t previous_offset_time_ms; // 0 = no previous sample yet
   uint32_t mastership_start_ms;     // when continuous tracking began
-
-  // Two-step sync tracking
-  uint16_t last_sync_seq;
-  uint8_t last_sync_source_port_identity[10];
-  int64_t last_sync_local_ns;
   uint32_t last_sync_received_ms;
-  bool awaiting_followup;
 
   // Statistics
   uint32_t sync_count;
@@ -131,18 +128,21 @@ static struct {
   uint32_t announce_count;
   uint32_t rejected_master_count; // SYNC/FOLLOW_UP from a non-matching master
   uint32_t outlier_count;         // samples rejected by 50ms threshold
+  uint32_t consecutive_outliers;
+  spiram_task_mem_t task_mem;
 
-  // Master clock filter (0 = accept any master)
-  uint64_t expected_clock_id;
+  // Two-step sync tracking
+  uint16_t last_sync_seq;
+  bool running;
+
+  // Synchronization state
+  bool locked;
+  bool awaiting_followup;
   // The session that named expected_clock_id has ended. The filter stays on,
   // so no other master's samples reach the kept lock, but the next session's
   // master is checked against the samples again.
   bool session_ended;
-  // Master behind the samples since the last reset (0 = none yet,
-  // PTP_CLOCK_ID_MIXED = more than one).
-  uint64_t sample_clock_id;
-  uint32_t consecutive_outliers;
-  int64_t outlier_run_best_ns; // highest offset in the current run
+  uint8_t last_sync_source_port_identity[10];
 } ptp = {0};
 
 // PTP packets and RTSP session changes run on different tasks (and cores).
