@@ -33,8 +33,33 @@ static int failures;
 /* ---------- mocks ---------- */
 
 uint32_t mock_now_ms = 1000;
+static _Thread_local unsigned critical_depth;
+static void (*log_hook)(void);
+
+void mock_enter_critical(portMUX_TYPE *mux) {
+  if (pthread_mutex_lock(mux) != 0) {
+    abort();
+  }
+  critical_depth++;
+}
+
+void mock_exit_critical(portMUX_TYPE *mux) {
+  critical_depth--;
+  if (pthread_mutex_unlock(mux) != 0) {
+    abort();
+  }
+}
 
 void mock_log(const char *tag, const char *format, ...) {
+  if (critical_depth != 0) {
+    fputs("FAIL: logging while the clock-state mux is held\n", stderr);
+    abort();
+  }
+  if (log_hook) {
+    void (*hook)(void) = log_hook;
+    log_hook = NULL;
+    hook();
+  }
   if (getenv("PTP_TEST_VERBOSE") == NULL) {
     return;
   }
@@ -69,7 +94,11 @@ static void reset(void) {
 /* One SYNC whose trip took delay_ms longer than the fastest possible. */
 static void sync_from(uint64_t master, int64_t offset_ns, int delay_ms) {
   mock_now_ms += SYNC_INTERVAL;
-  update_offset(offset_ns - delay_ms * MS, master, mock_now_ms);
+  ptp_update_log_t log = {0};
+  portENTER_CRITICAL(&ptp_state_mux);
+  update_offset(offset_ns - delay_ms * MS, master, mock_now_ms, &log);
+  portEXIT_CRITICAL(&ptp_state_mux);
+  log_offset_update(&log);
 }
 
 /* Typical WiFi: a few ms of queuing on every SYNC, never less than zero. */
@@ -368,6 +397,90 @@ static void test_followup_does_not_refresh_old_sample(void) {
   }
 }
 
+/* ESP_LOGI can yield to the PTP task. Once master selection reaches its log,
+ * a foreign packet must already be excluded from the lock it decided to keep.
+ */
+static void foreign_packet_during_master_log(void) {
+  uint8_t packet[PTP_HEADER_SIZE + PTP_TIMESTAMP_SIZE];
+  make_packet(packet, PTP_MSG_SYNC, MASTER_A, 1, 50,
+              (uint64_t)get_local_time_ns() + TRUE_OFFSET + 100 * MS);
+  packet[6] = 0; // one-step sample
+  process_ptp_message(packet, sizeof(packet), true);
+}
+
+static void test_master_selection_log_yield(void) {
+  printf("master selection log yield\n");
+  reset();
+  settle(MASTER_B, TRUE_OFFSET, 40);
+  int64_t before = ptp_clock_get_offset_ns();
+  uint32_t rejected = ptp.rejected_master_count;
+  log_hook = foreign_packet_during_master_log;
+  ptp_clock_set_master_clock_id(MASTER_B);
+  CHECK(log_hook == NULL, "master selection did not reach its log");
+  CHECK(ptp.rejected_master_count == rejected + 1,
+        "foreign packet was accepted during the master-selection log");
+  CHECK(ptp.sample_clock_id == MASTER_B && ptp_clock_is_locked() &&
+            ptp_clock_get_offset_ns() == before,
+        "master selection retained a mixed clock or fabricated offset");
+}
+
+static void *packet_worker(void *unused) {
+  (void)unused;
+  uint8_t sync[PTP_HEADER_SIZE + PTP_TIMESTAMP_SIZE];
+  uint8_t followup[sizeof(sync)];
+  for (uint16_t i = 0; i < 6000; i++) {
+    uint64_t master = i % 2 ? MASTER_A : MASTER_B;
+    uint64_t origin = (uint64_t)get_local_time_ns() + TRUE_OFFSET +
+                      (master == MASTER_A ? 100 * MS : 0);
+    make_packet(sync, PTP_MSG_SYNC, master, 1, i, origin);
+    if (i % 3 == 0) {
+      sync[6] = 0;
+    }
+    process_ptp_message(sync, sizeof(sync), true);
+    make_packet(followup, PTP_MSG_FOLLOW_UP, master, 1, i, origin);
+    process_ptp_message(followup, sizeof(followup), false);
+  }
+  return NULL;
+}
+
+/* Exercise real host mutual exclusion while packets, session transitions and
+ * diagnostic/audio getters run concurrently. Mock time stays fixed so this
+ * isolates shared clock state from the test clock itself. */
+static void test_concurrent_packets_and_sessions(void) {
+  printf("concurrent packets and sessions\n");
+  reset();
+  pthread_t sender;
+  int err = pthread_create(&sender, NULL, packet_worker, NULL);
+  CHECK(err == 0, "failed to start packet worker: %d", err);
+  if (err != 0) {
+    return;
+  }
+  for (unsigned i = 0; i < 6000; i++) {
+    if (i % 37 == 0) {
+      ptp_clock_clear();
+    }
+    ptp_clock_set_master_clock_id(i % 2 ? MASTER_A : MASTER_B);
+    if (i % 3 == 0) {
+      ptp_clock_end_session();
+    }
+    if (i % 7 == 0) {
+      ptp_clock_notify_resume(30000);
+    }
+    ptp_stats_t stats;
+    ptp_clock_get_stats(&stats);
+    (void)ptp_clock_get_offset_ns();
+    (void)ptp_clock_get_time_ns();
+    (void)ptp_clock_is_locked();
+    (void)ptp_clock_get_master_clock_id();
+    portENTER_CRITICAL(&ptp_state_mux);
+    CHECK(ptp.expected_clock_id == 0 || ptp.sample_count == 0 ||
+              ptp.sample_clock_id == ptp.expected_clock_id,
+          "selected master retained samples from another clock");
+    portEXIT_CRITICAL(&ptp_state_mux);
+  }
+  CHECK(pthread_join(sender, NULL) == 0, "failed to join packet worker");
+}
+
 /* The next track from the same phone keeps the lock; anything else starts
  * over. */
 static void test_session_handover(void) {
@@ -441,6 +554,8 @@ int main(void) {
   test_followup_source_identity();
   test_followup_invalidation();
   test_followup_does_not_refresh_old_sample();
+  test_master_selection_log_yield();
+  test_concurrent_packets_and_sessions();
   test_session_handover();
   if (failures) {
     printf("%d check(s) failed\n", failures);

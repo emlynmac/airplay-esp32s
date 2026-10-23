@@ -3,6 +3,7 @@
 
 #pragma once
 
+#include <pthread.h>
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
@@ -21,6 +22,14 @@ void mock_log(const char *tag, const char *format, ...);
 // Time is whatever the test says it is.
 extern uint32_t mock_now_ms;
 #define esp_timer_get_time() ((int64_t)mock_now_ms * 1000)
+
+// A real host mutex makes the packet/session concurrency stress test useful.
+typedef pthread_mutex_t portMUX_TYPE;
+#define portMUX_INITIALIZER_UNLOCKED PTHREAD_MUTEX_INITIALIZER
+void mock_enter_critical(portMUX_TYPE *mux);
+void mock_exit_critical(portMUX_TYPE *mux);
+#define portENTER_CRITICAL(mux) mock_enter_critical(mux)
+#define portEXIT_CRITICAL(mux)  mock_exit_critical(mux)
 
 typedef int BaseType_t;
 typedef uint32_t TickType_t;

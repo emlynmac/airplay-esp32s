@@ -30,7 +30,7 @@ with tempfile.TemporaryDirectory(prefix="ptp-clock-tests-") as temporary:
         shim.write_text('#include "mocks.h"\n')
 
     command = shlex.split(os.environ.get("CC", "cc")) + [
-        "-std=gnu11", "-Wall", "-Wextra", "-Werror", "-g", "-O1",
+        "-std=gnu11", "-Wall", "-Wextra", "-Werror", "-g", "-O1", "-pthread",
         "-fsanitize=address,undefined", "-fno-omit-frame-pointer",
         # The FreeRTOS task entry point never reads its parameter.
         "-Wno-unused-parameter",
