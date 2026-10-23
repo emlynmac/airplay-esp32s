@@ -84,10 +84,11 @@ static void scroll_tick(void) {
   static int carry_subpx;
 
   const int64_t now = esp_timer_get_time();
-  int64_t dt = (last_us == 0) ? (SCROLL_INTERVAL_MS * 1000) : (now - last_us);
+  const int64_t interval_us = (int64_t)SCROLL_INTERVAL_MS * 1000;
+  int64_t dt = (last_us == 0) ? interval_us : (now - last_us);
   last_us = now;
-  if (dt > (4 * SCROLL_INTERVAL_MS * 1000)) {
-    dt = 4 * SCROLL_INTERVAL_MS * 1000; // resuming, not catching up
+  if (dt > 4 * interval_us) {
+    dt = 4 * interval_us; // resuming, not catching up
   }
   carry_subpx += (int)((dt * SCROLL_PX_PER_SEC * 256) / 1000000);
   s_scroll.step = carry_subpx / 256;

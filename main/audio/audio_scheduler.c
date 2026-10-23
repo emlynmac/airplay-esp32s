@@ -233,7 +233,7 @@ static void trim_resample(int16_t *out, size_t frames, uint8_t channels,
 #define DRIFT_SERVO_TRIM_THRESHOLD 237000
 /* Anti-windup: bound the queued correction so a transient unwinds in two trims
  * rather than overshooting by however long it lasted. */
-#define DRIFT_SERVO_ACCUM_LIMIT (2 * DRIFT_SERVO_TRIM_THRESHOLD)
+#define DRIFT_SERVO_ACCUM_LIMIT (INT64_C(2) * DRIFT_SERVO_TRIM_THRESHOLD)
 /* Rate limit, in renders between trims.  At the 352-sample render quantum one
  * sample per 4 renders is 710 ppm, a 0.07 % pitch deviation and comfortably
  * under the ~0.2 % JND.  It binds only above ~3.8 ms of error, so recovery
@@ -382,7 +382,7 @@ size_t audio_scheduler_render(audio_scheduler_t *scheduler,
           (raw_q16 - scheduler->filtered_playout_error_q16) / 8;
     }
     scheduler->playout_error_samples =
-        scheduler->filtered_playout_error_q16 >> 16;
+        (int32_t)(scheduler->filtered_playout_error_q16 >> 16);
 
     int32_t abs_error = scheduler->playout_error_samples < 0
                             ? -scheduler->playout_error_samples
@@ -404,10 +404,12 @@ size_t audio_scheduler_render(audio_scheduler_t *scheduler,
         /* Divide in q16: truncating delta to whole samples first would
          * quantise the result to one sample per window, 22 ppm at 44.1 kHz. */
         int64_t ppm = (delta_q16 * 1000000LL) / (elapsed_samples * 65536LL);
-        if (ppm > 20000)
+        if (ppm > 20000) {
           ppm = 20000;
-        if (ppm < -20000)
+        }
+        if (ppm < -20000) {
           ppm = -20000;
+        }
         scheduler->estimated_drift_ppm = (int32_t)ppm;
       }
       scheduler->drift_reference_error_q16 =

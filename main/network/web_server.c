@@ -103,13 +103,14 @@ static esp_err_t serve_spiffs_file(httpd_req_t *req, const char *path,
   }
   char buf[SPIFFS_CHUNK_SIZE];
   size_t n;
-  while ((n = fread(buf, 1, sizeof(buf), f)) > 0) {
-    if (httpd_resp_send_chunk(req, buf, (ssize_t)n) != ESP_OK) {
+  do {
+    n = fread(buf, 1, sizeof(buf), f);
+    if (n > 0 && httpd_resp_send_chunk(req, buf, (ssize_t)n) != ESP_OK) {
       fclose(f);
       httpd_resp_send_chunk(req, NULL, 0);
       return ESP_FAIL;
     }
-  }
+  } while (n == sizeof(buf));
   fclose(f);
   httpd_resp_send_chunk(req, NULL, 0);
   return ESP_OK;
@@ -489,22 +490,22 @@ static esp_err_t led_brightness_post_handler(httpd_req_t *req) {
 /* Read a whole request body into a NUL-terminated heap buffer. httpd_req_recv()
  * can return a short read, so keep going until the declared length arrives. */
 static char *recv_body(httpd_req_t *req, size_t max_len) {
-  int len = req->content_len;
-  if (len <= 0 || (size_t)len > max_len) {
+  size_t len = req->content_len;
+  if (len == 0 || len > max_len) {
     return NULL;
   }
-  char *buf = malloc((size_t)len + 1);
+  char *buf = malloc(len + 1);
   if (!buf) {
     return NULL;
   }
-  int got = 0;
+  size_t got = 0;
   while (got < len) {
-    int r = httpd_req_recv(req, buf + got, (size_t)(len - got));
+    int r = httpd_req_recv(req, buf + got, len - got);
     if (r <= 0) {
       free(buf);
       return NULL;
     }
-    got += r;
+    got += (size_t)r;
   }
   buf[len] = '\0';
   return buf;
@@ -568,7 +569,7 @@ static esp_err_t channel_mode_post_handler(httpd_req_t *req) {
 }
 
 /* AirPlay dB scale, matching playback_control's clamp. */
-#define VOLUME_UI_MIN_DB -30.0f
+#define VOLUME_UI_MIN_DB (-30.0f)
 #define VOLUME_UI_MAX_DB 0.0f
 
 static esp_err_t volume_get_handler(httpd_req_t *req) {
@@ -597,7 +598,7 @@ static esp_err_t volume_post_handler(httpd_req_t *req) {
   cJSON *json = cJSON_Parse(content);
   free(content);
   cJSON *val = json ? cJSON_GetObjectItem(json, "volume_db") : NULL;
-  if (!cJSON_IsNumber(val)) {
+  if (!val || !cJSON_IsNumber(val)) {
     cJSON_Delete(json);
     httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Expected volume_db");
     return ESP_FAIL;
@@ -1206,8 +1207,8 @@ static esp_err_t system_info_handler(httpd_req_t *req) {
   cJSON_AddStringToObject(info, "firmware_version", app_desc->version);
   cJSON_AddStringToObject(info, "reset_reason",
                           reset_reason_str(esp_reset_reason()));
-  cJSON_AddNumberToObject(info, "uptime_s",
-                          (double)(esp_timer_get_time() / 1000000));
+  const int64_t uptime_s = esp_timer_get_time() / 1000000;
+  cJSON_AddNumberToObject(info, "uptime_s", (double)uptime_s);
 #ifdef HAS_BQ_API
   cJSON_AddBoolToObject(info, "eq_supported", true);
 #else
@@ -1569,12 +1570,13 @@ static esp_err_t fs_download_handler(httpd_req_t *req) {
   httpd_resp_set_type(req, "application/octet-stream");
   char buf[SPIFFS_CHUNK_SIZE];
   size_t n;
-  while ((n = fread(buf, 1, sizeof(buf), f)) > 0) {
-    if (httpd_resp_send_chunk(req, buf, (ssize_t)n) != ESP_OK) {
+  do {
+    n = fread(buf, 1, sizeof(buf), f);
+    if (n > 0 && httpd_resp_send_chunk(req, buf, (ssize_t)n) != ESP_OK) {
       fclose(f);
       return ESP_FAIL;
     }
-  }
+  } while (n == sizeof(buf));
   fclose(f);
   httpd_resp_send_chunk(req, NULL, 0);
   return ESP_OK;
@@ -2229,8 +2231,8 @@ static const char *eqb_role(int dev) {
 static bool eqb_pbtl(int dev) {
   return dac_tas58xx_is_pbtl(dev);
 }
-static uint32_t eqb_rate(void) {
-  return dac_tas58xx_bq_sample_rate();
+static uint32_t eqb_rate(int dev) {
+  return dac_tas58xx_bq_device_sample_rate(dev);
 }
 static bool eqb_get_ganged(int dev) {
   return dac_tas58xx_bq_get_ganged(dev);
@@ -2327,7 +2329,8 @@ static bool eqb_pbtl(int dev) {
   (void)dev;
   return false;
 }
-static uint32_t eqb_rate(void) {
+static uint32_t eqb_rate(int dev) {
+  (void)dev;
   return audio_eq_get_rate();
 }
 static bool eqb_get_ganged(int dev) {
@@ -2496,7 +2499,8 @@ static esp_err_t bq_get_handler(httpd_req_t *req) {
   cJSON_AddNumberToObject(json, "devices", devices);
   cJSON_AddNumberToObject(json, "channels", EQB_CHANNELS);
   cJSON_AddNumberToObject(json, "slots", EQB_SLOTS);
-  cJSON_AddNumberToObject(json, "rate", eqb_rate());
+  /* Retain the primary rate for clients predating per-amplifier rates. */
+  cJSON_AddNumberToObject(json, "rate", eqb_rate(0));
   cJSON_AddNumberToObject(json, "gain_min", EQB_GAIN_MIN_DB);
   cJSON_AddNumberToObject(json, "gain_max", EQB_GAIN_MAX_DB);
   float preamp_db;
@@ -2508,6 +2512,7 @@ static esp_err_t bq_get_handler(httpd_req_t *req) {
   for (int d = 0; d < devices; d++) {
     cJSON *amp = cJSON_CreateObject();
     cJSON_AddNumberToObject(amp, "index", d);
+    cJSON_AddNumberToObject(amp, "rate", eqb_rate(d));
     cJSON_AddStringToObject(amp, "role", eqb_role(d));
     cJSON_AddBoolToObject(amp, "ganged", eqb_get_ganged(d));
     cJSON_AddNumberToObject(amp, "mix", eqb_get_mix(d));

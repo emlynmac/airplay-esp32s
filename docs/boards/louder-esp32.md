@@ -27,6 +27,7 @@ Volume is done in the amplifier (`CONFIG_DAC_CONTROLS_VOLUME`) rather than in so
 | `louder-esp32-s3` | ESP32-S3 | TAS5805M | — | yes |
 | `louder-esp32-s3-plus` | ESP32-S3 | TAS5825M | — | yes |
 | `louder-esp32-s3-mini` | ESP32-S3 | TAS5805M, bridged | — | yes |
+| `louder-esp32-s3-mini-uac` | ESP32-S3 | TAS5805M, bridged | — | — |
 
 Bluetooth Classic exists only on the original ESP32, so neither S3 board has a `-bt`
 build. On an ESP32 the published binary is the Bluetooth one.
@@ -61,6 +62,17 @@ A bridged TAS5805M plays the left I2S channel, and the TAS5805M has no input mix
 the pair into it here. So the board starts with the output channel set to **Mono (L+R)**.
 For a stereo pair of speakers, set one board to Left and the other to Right on the
 settings page.
+
+### USB audio
+
+`louder-esp32-s3-mini-uac` is the same build with [USB audio](../features/usb-audio.md)
+layered on, so the USB-C port that powers the board also makes it a USB speaker for the
+computer at the other end. The host's audio goes through the same mono mix, EQ and volume
+control as AirPlay's, and AirPlay is suspended while the host is streaming. It runs at
+48 kHz, and plays from macOS, Windows and Linux hosts alike.
+
+TinyUSB claims the USB port, so this build has no USB console, and reflashing over USB
+needs BOOT held while EN is pressed. [OTA updates](../reference/ota.md) sidestep both.
 
 ### USB-C power on the 55 mm board
 
