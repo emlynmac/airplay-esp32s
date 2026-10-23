@@ -72,6 +72,15 @@ void playback_control_toggle_mute(void);
 void playback_control_set_muted(bool muted);
 
 /**
+ * Set the volume in AirPlay dB (-30..0) from this device, as the buttons do:
+ * the DAC and the AirPlay session both follow, and the sender is told over
+ * DACP when it listens. Not persisted.
+ *
+ * Muted stays muted; the level is what unmuting restores.
+ */
+void playback_control_set_volume_db(float db);
+
+/**
  * Set the volume as a percentage (0..100). Always adjusts the local DAC: the
  * sources that call this carry an absolute volume of their own, rather than
  * the relative steps the buttons send.

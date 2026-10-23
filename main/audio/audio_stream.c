@@ -13,14 +13,16 @@
 #include "audio_decoder.h"
 #include "audio_receiver_internal.h"
 
-// Upper bound on how long a decoded frame waits for timeline space.  Sized to
-// outlast a full drain of the ring (~4.5 s of PCM): a gapless track change can
-// shift RTP phase mid-epoch, and the timeline can only adopt the new phase once
-// the outgoing track has played out.  Waiting that long keeps the incoming
-// track intact; past it the packet is dropped so the decode task stays
-// responsive to teardown.  Flush and teardown break the wait early by bumping
-// the epoch, so this bound is only reached when the sender really is ahead.
-#define AUDIO_DECODE_PUSH_TIMEOUT_MS 6000U
+// How long a decoded frame waits for a timeline slot.  Ten minutes, not
+// seconds: a paused sender leaves the timeline full for as long as the pause
+// lasts, and a bound of a few seconds dropped a frame every time it expired,
+// a hole a few seconds into the resume.  Flush and teardown bump the epoch,
+// which ends the wait at once, so the bound is only a backstop.
+#define AUDIO_DECODE_PUSH_TIMEOUT_MS 600000U
+
+// Frames silenced after a break in the buffered stream's RTP sequence, while
+// the AAC decoder's overlap buffers still hold the audio from before it.
+#define AAC_PRIME_FRAMES 2U
 
 static const char *TAG = "audio_stream";
 
@@ -32,8 +34,10 @@ extern const audio_stream_ops_t audio_stream_buffered_ops;
 // silenced.  A fresh start needs no priming, which is what the second test
 // picks out: only a restart leaves the in-sequence count behind the total.
 //
-// Sampled where the counters are advanced, which for the buffered path is the
-// TCP reader rather than the decode worker.
+// Realtime path only.  The buffered path decides from the RTP sequence
+// instead (audio_stream_decode_encoded_packet): a phone resuming a pause
+// carries on in sequence, and muting there cut a hole where its new frames
+// joined the buffered ones.
 bool audio_stream_aac_prime_mute_wanted(const audio_receiver_state_t *state) {
   return state && (state->blocks_read_in_sequence <= 2) &&
          (state->blocks_read_in_sequence != state->blocks_read);
@@ -56,12 +60,25 @@ bool audio_stream_accept_timestamp(audio_receiver_state_t *state,
     return false;
   }
 
-  // Blanket gate: reject everything between seek_flush and the next anchor.
-  // Deliberately checked before decrypt/decode in the buffered TCP task so
-  // old-track backlog is drained from the socket without decoder CPU or PCM
-  // ring use.
-  if (state->discard_all_until_anchor) {
-    return false;
+  // Old-position backlog after an immediate FLUSHBUFFERED: frames that carry
+  // on the RTP sequence from before the flush.  The first break in the
+  // sequence is the new position, and ends the gate.  Two frames of slack
+  // cover the frame the reader was on when the flush landed.
+  if (state->seek_backlog_valid) {
+    const uint32_t frame_samples = state->engine_v2.timeline.frame_samples;
+    const int32_t delta = (int32_t)(timestamp - state->seek_backlog_next_rtp);
+    if (delta >= -2 * (int32_t)frame_samples &&
+        delta <= 2 * (int32_t)frame_samples) {
+      state->seek_backlog_next_rtp = timestamp + frame_samples;
+      state->seek_backlog_dropped++;
+      return false;
+    }
+    state->seek_backlog_valid = false;
+    state->seek_backlog_ended = true;
+    ESP_LOGI(TAG,
+             "Seek: new audio from rtp=%" PRIu32 " after %" PRIu32
+             " backlog frames (step %" PRId32 ")",
+             timestamp, state->seek_backlog_dropped, delta);
   }
 
   // Post-seek RTP window gate: discard frames outside [discard_before_rtp,
@@ -95,9 +112,6 @@ bool audio_stream_accept_timestamp(audio_receiver_state_t *state,
 // whether the frame must be dropped.
 static bool timestamp_is_gated(const audio_receiver_state_t *state,
                                uint32_t timestamp) {
-  if (state->discard_all_until_anchor) {
-    return true;
-  }
   if (state->discard_before_rtp_valid &&
       (int32_t)(timestamp - state->discard_before_rtp) < 0) {
     return true;
@@ -168,9 +182,9 @@ bool audio_stream_process_accepted_frame(audio_receiver_state_t *state,
                            decode_buffer, (size_t)decoded_samples, channels);
 
   // Re-check the gates after decode.  A concurrent seek/anchor flush (RTSP
-  // task) can set discard_all_until_anchor OR arm the RTP window gates
-  // (discard_before_rtp / discard_above_rtp, Path B) and flush the ring while
-  // this frame was being decrypted/decoded.  Use the read-only predicate so a
+  // task) can arm the RTP window gates (discard_before_rtp /
+  // discard_above_rtp, Path B) and flush the ring while this frame was being
+  // decrypted/decoded.  Use the read-only predicate so a
   // stale mid-flight frame is dropped without disarming a gate a concurrent
   // seek just armed (which would let later backlog through).
   if (timestamp_is_gated(state, timestamp)) {
@@ -250,28 +264,40 @@ bool audio_stream_decode_encoded_packet(audio_receiver_state_t *state,
     channels = 2;
   }
 
-  apply_aac_transient_mute(state, packet->prime_mute, decode_buffer,
-                           (size_t)decoded_samples, channels);
-  xSemaphoreGive(state->decoder_mutex);
-
-  (void)__atomic_add_fetch(&state->engine_v2.diag_decode_ok, 1U,
-                           __ATOMIC_RELAXED);
-
   // Decoded frames must advance by exactly one timeline frame.  A break means a
-  // packet was lost or reordered, which the timeline will show as a hole.
+  // packet was lost or reordered, which the timeline will show as a hole, or a
+  // seek or flush.  Either way the decoder's overlap buffers hold the wrong
+  // audio, so the next frames are silenced.  A pause resumed in sequence is
+  // not a break: the phone carries on from where it stopped, and muting there
+  // cut a hole where its new frames joined the buffered ones.
   const uint32_t frame_samples = state->engine_v2.timeline.frame_samples;
-  if (state->aac_diag_rtp_valid && state->aac_diag_epoch == packet->epoch) {
+  if (state->aac_diag_rtp_valid) {
     const int32_t delta =
         (int32_t)(packet->rtp_timestamp - state->aac_diag_last_rtp);
-    if (delta != (int32_t)frame_samples) {
+    if (state->aac_diag_epoch != packet->epoch) {
+      state->aac_prime_left = AAC_PRIME_FRAMES;
+    } else if (delta != (int32_t)frame_samples) {
       ESP_LOGW(TAG,
                "RTP step %" PRId32 " at rtp=%" PRIu32 " (expected %" PRIu32 ")",
                delta, packet->rtp_timestamp, frame_samples);
+      state->aac_prime_left = AAC_PRIME_FRAMES;
     }
   }
   state->aac_diag_epoch = packet->epoch;
   state->aac_diag_last_rtp = packet->rtp_timestamp;
   state->aac_diag_rtp_valid = true;
+
+  bool mute = false;
+  if (state->aac_prime_left > 0) {
+    state->aac_prime_left--;
+    mute = true;
+  }
+  apply_aac_transient_mute(state, mute, decode_buffer, (size_t)decoded_samples,
+                           channels);
+  xSemaphoreGive(state->decoder_mutex);
+
+  (void)__atomic_add_fetch(&state->engine_v2.diag_decode_ok, 1U,
+                           __ATOMIC_RELAXED);
 
   // Deferred FLUSHBUFFERED boundary: cut the timeline here so this packet and
   // its successors replace the tail of the outgoing track.  Applied before the

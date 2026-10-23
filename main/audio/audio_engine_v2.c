@@ -18,6 +18,10 @@ static const char *TAG = "audio_v2";
  * consumer never signals. */
 #define AUDIO_V2_PUSH_WAIT_SLICE_MS 50U
 
+/* Startup watchdog: first report, then the interval between repeats. */
+#define START_STALL_AFTER_US  3000000LL
+#define START_STALL_REPEAT_US 10000000LL
+
 esp_err_t audio_engine_v2_init(audio_engine_v2_t *engine,
                                const audio_format_t *format,
                                uint32_t frame_samples, uint16_t capacity) {
@@ -97,6 +101,7 @@ uint32_t audio_engine_v2_begin_epoch(audio_engine_v2_t *engine,
   __atomic_store_n(&engine->diag_pcm_inserted, 0, __ATOMIC_RELAXED);
   engine->start_watchdog_armed = false;
   engine->start_watchdog_anchor_us = 0;
+  engine->start_watchdog_report_us = 0;
   engine->start_watchdog_epoch = next;
   engine->start_watchdog_anchor_rtp = 0;
   ESP_LOGI(TAG, "new epoch=%" PRIu32, next);
@@ -132,6 +137,65 @@ bool audio_engine_v2_set_frame_samples(audio_engine_v2_t *engine,
   return true;
 }
 
+/* Startup watchdog report.  Logs the engine's state once a start has waited
+ * START_STALL_AFTER_US past its first anchor, then every
+ * START_STALL_REPEAT_US for as long as it stays stuck.  Called from the
+ * render path and from every anchor, so a stall still shows when nothing is
+ * rendering. */
+static void start_watchdog_check(audio_engine_v2_t *engine, int64_t now_us) {
+  if (!engine->start_watchdog_armed ||
+      engine->start_watchdog_epoch != engine->scheduler.epoch ||
+      engine->scheduler.state == AUDIO_SCHED_PLAYING ||
+      engine->start_watchdog_anchor_us <= 0 ||
+      now_us - engine->start_watchdog_anchor_us < START_STALL_AFTER_US ||
+      now_us - engine->start_watchdog_report_us < START_STALL_REPEAT_US) {
+    return;
+  }
+  engine->start_watchdog_report_us = now_us;
+  audio_timeline_diag_t diag;
+  memset(&diag, 0, sizeof(diag));
+  (void)audio_timeline_get_diag(&engine->timeline, engine->scheduler.epoch,
+                                engine->scheduler.wanted_rtp, &diag);
+  ESP_LOGE(TAG,
+           "START STALL: %" PRId64 " s since anchor, renders=%" PRIu64
+           " epoch=%" PRIu32 " anchor=%" PRIu32
+           " playing=%d state=%s reason=%s clock=%d wanted=%" PRIu32
+           " blocks=%u oldest=%s%" PRIu32 " newest_end=%s%" PRIu32
+           " covered=%d next=%s%" PRIu32 " contiguous=%" PRIu32 "/%" PRIu32
+           " attempts=%" PRIu64 " fallback=%" PRIu64 " silent=%" PRIu64
+           " inserted=%" PRIu64 " rejected=%" PRIu64,
+           (now_us - engine->start_watchdog_anchor_us) / 1000000LL,
+           __atomic_load_n(&engine->render_calls, __ATOMIC_RELAXED),
+           engine->scheduler.epoch, engine->start_watchdog_anchor_rtp,
+           engine->playing ? 1 : 0,
+           audio_scheduler_state_name(engine->scheduler.state),
+           audio_scheduler_wait_reason_name(engine->scheduler.wait_reason),
+           engine->clock_map.valid ? 1 : 0, engine->scheduler.wanted_rtp,
+           (unsigned)diag.count, diag.has_oldest ? "" : "n/a:", diag.oldest_rtp,
+           diag.has_newest ? "" : "n/a:", diag.newest_end_rtp,
+           diag.target_covered ? 1 : 0,
+           diag.has_next ? "" : "n/a:", diag.next_rtp, diag.contiguous_samples,
+           engine->scheduler.preroll_samples, engine->scheduler.start_attempts,
+           engine->scheduler.fallback_attempts,
+           engine->scheduler.silent_render_calls, engine->blocks_inserted,
+           engine->blocks_rejected);
+  ESP_LOGE(TAG,
+           "PIPELINE: rx=%" PRIu64 " gate_drop=%" PRIu64 " enq=%" PRIu64
+           " enq_retry=%" PRIu64 " queue_drop=%" PRIu64 " deq=%" PRIu64
+           " epoch_drop=%" PRIu64 " decode_ok=%" PRIu64 " decode_fail=%" PRIu64
+           " pcm_insert=%" PRIu64,
+           __atomic_load_n(&engine->diag_rx_packets, __ATOMIC_RELAXED),
+           __atomic_load_n(&engine->diag_gate_drops, __ATOMIC_RELAXED),
+           __atomic_load_n(&engine->diag_enqueue_ok, __ATOMIC_RELAXED),
+           __atomic_load_n(&engine->diag_enqueue_retries, __ATOMIC_RELAXED),
+           __atomic_load_n(&engine->diag_queue_drops, __ATOMIC_RELAXED),
+           __atomic_load_n(&engine->diag_dequeued, __ATOMIC_RELAXED),
+           __atomic_load_n(&engine->diag_epoch_drops, __ATOMIC_RELAXED),
+           __atomic_load_n(&engine->diag_decode_ok, __ATOMIC_RELAXED),
+           __atomic_load_n(&engine->diag_decode_fail, __ATOMIC_RELAXED),
+           __atomic_load_n(&engine->diag_pcm_inserted, __ATOMIC_RELAXED));
+}
+
 bool audio_engine_v2_set_anchor(audio_engine_v2_t *engine, uint32_t anchor_rtp,
                                 uint64_t anchor_network_ns,
                                 int64_t playout_offset_ns) {
@@ -146,10 +210,19 @@ bool audio_engine_v2_set_anchor(audio_engine_v2_t *engine, uint32_t anchor_rtp,
       engine->scheduler.state = AUDIO_SCHED_PREROLL;
       engine->scheduler.wait_reason = AUDIO_SCHED_WAIT_PREROLL;
     }
-    engine->start_watchdog_armed = true;
-    engine->start_watchdog_anchor_us = esp_timer_get_time();
-    engine->start_watchdog_epoch = engine->scheduler.epoch;
-    engine->start_watchdog_anchor_rtp = anchor_rtp;
+    /* A realtime sender re-anchors every second or so.  Timing the stall
+     * from the latest anchor would restart the clock each time and the
+     * watchdog would never fire, so it runs from the attempt's first. */
+    const int64_t now_us = esp_timer_get_time();
+    if (!engine->start_watchdog_armed ||
+        engine->start_watchdog_epoch != engine->scheduler.epoch) {
+      engine->start_watchdog_armed = true;
+      engine->start_watchdog_anchor_us = now_us;
+      engine->start_watchdog_report_us = 0;
+      engine->start_watchdog_epoch = engine->scheduler.epoch;
+      engine->start_watchdog_anchor_rtp = anchor_rtp;
+    }
+    start_watchdog_check(engine, now_us);
   }
   return ok;
 }
@@ -227,6 +300,17 @@ void audio_engine_v2_set_playing(audio_engine_v2_t *engine, bool playing) {
 bool audio_engine_v2_is_nearly_full(audio_engine_v2_t *engine) {
   return engine && engine->initialized &&
          audio_timeline_is_nearly_full(&engine->timeline);
+}
+
+bool audio_engine_v2_play_cursor(const audio_engine_v2_t *engine,
+                                 uint32_t *rtp) {
+  if (!engine || !rtp || !engine->initialized ||
+      __atomic_load_n(&engine->scheduler.state, __ATOMIC_RELAXED) !=
+          AUDIO_SCHED_PLAYING) {
+    return false;
+  }
+  *rtp = __atomic_load_n(&engine->scheduler.cursor_rtp, __ATOMIC_RELAXED);
+  return true;
 }
 
 size_t audio_engine_v2_deferred_flush(audio_engine_v2_t *engine, uint32_t epoch,
@@ -336,6 +420,28 @@ bool audio_engine_v2_push_pcm_wait(audio_engine_v2_t *engine, uint32_t epoch,
       esp_timer_get_time() + (int64_t)timeout_ms * 1000LL;
 
   while (audio_epoch_matches(&engine->epoch, epoch)) {
+    /* A block of another RTP phase while nothing is scheduled cannot be a
+     * gapless transition waiting for the outgoing audio to drain: there is
+     * no outgoing audio.  A block or two of the wrong phase got in ahead of a
+     * new stream (a seek's backlog frame, say) and fixed the phase, so they
+     * go, or the new stream never gets in and the sender stalls behind it.
+     * A whole buffered stream of the other phase means this block is the odd
+     * one out, and it is dropped instead. */
+    if (audio_timeline_phase_blocked(&engine->timeline, epoch, first_rtp) &&
+        (engine->scheduler.state == AUDIO_SCHED_WAIT_ANCHOR ||
+         engine->scheduler.state == AUDIO_SCHED_IDLE)) {
+      const size_t held = audio_timeline_count(&engine->timeline);
+      if (held > 8U) {
+        ESP_LOGW(TAG,
+                 "Dropping rtp=%" PRIu32
+                 ": another phase than the %u blocks held",
+                 first_rtp, (unsigned)held);
+        return false;
+      }
+      ESP_LOGW(TAG, "Dropping %u blocks of another phase ahead of rtp=%" PRIu32,
+               (unsigned)held, first_rtp);
+      audio_timeline_clear(&engine->timeline);
+    }
     if (!audio_timeline_phase_blocked(&engine->timeline, epoch, first_rtp) &&
         audio_timeline_free_slots(&engine->timeline) > 0U) {
       return audio_engine_v2_push_pcm(engine, epoch, first_rtp, pcm, samples,
@@ -367,8 +473,10 @@ size_t audio_engine_v2_render(audio_engine_v2_t *engine,
   if (!engine || !engine->initialized || !out || samples == 0U) {
     return 0;
   }
+  __atomic_add_fetch(&engine->render_calls, 1, __ATOMIC_RELAXED);
   if (!engine->playing) {
     memset(out, 0, samples * engine->format.channels * sizeof(int16_t));
+    start_watchdog_check(engine, esp_timer_get_time());
     return samples;
   }
 
@@ -396,54 +504,7 @@ size_t audio_engine_v2_render(audio_engine_v2_t *engine,
         engine->scheduler.start_attempts, engine->scheduler.fallback_attempts);
   }
 
-  if (engine->start_watchdog_armed &&
-      engine->start_watchdog_epoch == engine->scheduler.epoch) {
-    int64_t watchdog_now_us = esp_timer_get_time();
-    if (engine->start_watchdog_anchor_us > 0 &&
-        watchdog_now_us - engine->start_watchdog_anchor_us >= 3000000LL) {
-      audio_timeline_diag_t diag;
-      memset(&diag, 0, sizeof(diag));
-      (void)audio_timeline_get_diag(&engine->timeline, engine->scheduler.epoch,
-                                    engine->scheduler.wanted_rtp, &diag);
-      ESP_LOGE(
-          TAG,
-          "START STALL: epoch=%" PRIu32 " anchor=%" PRIu32
-          " playing=%d state=%s reason=%s clock=%d wanted=%" PRIu32
-          " blocks=%u oldest=%s%" PRIu32 " newest_end=%s%" PRIu32
-          " covered=%d next=%s%" PRIu32 " contiguous=%" PRIu32 "/%" PRIu32
-          " attempts=%" PRIu64 " fallback=%" PRIu64 " silent=%" PRIu64
-          " inserted=%" PRIu64 " rejected=%" PRIu64,
-          engine->scheduler.epoch, engine->start_watchdog_anchor_rtp,
-          engine->playing ? 1 : 0,
-          audio_scheduler_state_name(engine->scheduler.state),
-          audio_scheduler_wait_reason_name(engine->scheduler.wait_reason),
-          engine->clock_map.valid ? 1 : 0, engine->scheduler.wanted_rtp,
-          (unsigned)diag.count, diag.has_oldest ? "" : "n/a:", diag.oldest_rtp,
-          diag.has_newest ? "" : "n/a:", diag.newest_end_rtp,
-          diag.target_covered ? 1 : 0,
-          diag.has_next ? "" : "n/a:", diag.next_rtp, diag.contiguous_samples,
-          engine->scheduler.preroll_samples, engine->scheduler.start_attempts,
-          engine->scheduler.fallback_attempts,
-          engine->scheduler.silent_render_calls, engine->blocks_inserted,
-          engine->blocks_rejected);
-      ESP_LOGE(TAG,
-               "PIPELINE: rx=%" PRIu64 " gate_drop=%" PRIu64 " enq=%" PRIu64
-               " enq_retry=%" PRIu64 " queue_drop=%" PRIu64 " deq=%" PRIu64
-               " epoch_drop=%" PRIu64 " decode_ok=%" PRIu64
-               " decode_fail=%" PRIu64 " pcm_insert=%" PRIu64,
-               __atomic_load_n(&engine->diag_rx_packets, __ATOMIC_RELAXED),
-               __atomic_load_n(&engine->diag_gate_drops, __ATOMIC_RELAXED),
-               __atomic_load_n(&engine->diag_enqueue_ok, __ATOMIC_RELAXED),
-               __atomic_load_n(&engine->diag_enqueue_retries, __ATOMIC_RELAXED),
-               __atomic_load_n(&engine->diag_queue_drops, __ATOMIC_RELAXED),
-               __atomic_load_n(&engine->diag_dequeued, __ATOMIC_RELAXED),
-               __atomic_load_n(&engine->diag_epoch_drops, __ATOMIC_RELAXED),
-               __atomic_load_n(&engine->diag_decode_ok, __ATOMIC_RELAXED),
-               __atomic_load_n(&engine->diag_decode_fail, __ATOMIC_RELAXED),
-               __atomic_load_n(&engine->diag_pcm_inserted, __ATOMIC_RELAXED));
-      engine->start_watchdog_armed = false;
-    }
-  }
+  start_watchdog_check(engine, esp_timer_get_time());
 
   if (concealed > 0U) {
     /* Concealment is recorded, never logged from here.  This runs on the I2S

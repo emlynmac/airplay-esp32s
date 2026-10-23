@@ -46,12 +46,16 @@ typedef struct {
   uint64_t diag_decode_ok;
   uint64_t diag_decode_fail;
   uint64_t diag_pcm_inserted;
+  /* Every render call, paused or not: shows whether output asks at all. */
+  uint64_t render_calls;
 
-  /* One-shot startup watchdog. Armed by a valid anchor and cleared as soon
-   * as the scheduler reaches PLAYING. It is diagnostic only and never changes
+  /* Startup watchdog. Armed by an epoch's first valid anchor and cleared as
+   * soon as the scheduler reaches PLAYING; until then it reports every
+   * START_STALL_REPEAT_US. It is diagnostic only and never changes
    * scheduler, timeline, RTP gate, decoder, or I2S behavior. */
   bool start_watchdog_armed;
   int64_t start_watchdog_anchor_us;
+  int64_t start_watchdog_report_us;
   uint32_t start_watchdog_epoch;
   uint32_t start_watchdog_anchor_rtp;
 
@@ -78,6 +82,11 @@ bool audio_engine_v2_set_anchor(audio_engine_v2_t *engine, uint32_t anchor_rtp,
 void audio_engine_v2_wait_for_anchor(audio_engine_v2_t *engine, int64_t now_us);
 void audio_engine_v2_set_playing(audio_engine_v2_t *engine, bool playing);
 bool audio_engine_v2_is_nearly_full(audio_engine_v2_t *engine);
+/* The RTP of the next frame to play, while the scheduler is playing.  Read
+ * without a lock, so it can be a block out of date: the realtime receive task
+ * only uses it to stop asking for packets that are already due. */
+bool audio_engine_v2_play_cursor(const audio_engine_v2_t *engine,
+                                 uint32_t *rtp);
 
 /* AirPlay 2 deferred FLUSHBUFFERED.  Drops buffered PCM from `flush_rtp`
  * onwards while leaving earlier audio, the epoch and the clock map intact, so

@@ -120,6 +120,18 @@ static void apply_level(float db) {
   }
 }
 
+// A level set on this device (buttons, web UI). An AirPlay session has to hear
+// about it as well as the DAC: on a DAC with no volume control of its own, the
+// session's level is what scales the samples.
+static void set_local_level(float db) {
+  apply_level(db);
+  if (s_source == PLAYBACK_SOURCE_AIRPLAY) {
+    airplay_set_volume(db);
+    // Notify AirPlay client via DACP (best-effort, don't block local action)
+    dacp_send_volume(db_to_dacp_percent(db));
+  }
+}
+
 static void local_adjust_volume(float step_db) {
   float current_db;
   (void)settings_get_volume(&current_db);
@@ -128,16 +140,9 @@ static void local_adjust_volume(float step_db) {
   }
 
   float new_db = clamp_volume(current_db + step_db);
-  apply_level(new_db);
-
   ESP_LOGI(TAG, "Volume: %.1f -> %.1f dB%s", current_db, new_db,
            s_muted ? " (muted)" : "");
-
-  if (s_source == PLAYBACK_SOURCE_AIRPLAY) {
-    airplay_set_volume(new_db);
-    // Notify AirPlay client via DACP (best-effort, don't block local action)
-    dacp_send_volume(db_to_dacp_percent(new_db));
-  }
+  set_local_level(new_db);
 }
 
 // ============================================================================
@@ -301,6 +306,12 @@ void playback_control_set_muted(bool muted) {
     playback_events_emit(s_source, PLAYBACK_EVENT_PLAYING, NULL);
     ESP_LOGI(TAG, "Unmuted locally (%.1f dB)", s_pre_mute_db);
   }
+}
+
+void playback_control_set_volume_db(float db) {
+  db = clamp_volume(db);
+  set_local_level(db);
+  ESP_LOGI(TAG, "Volume set to %.1f dB%s", db, s_muted ? " (muted)" : "");
 }
 
 void playback_control_set_volume_percent(int percent) {

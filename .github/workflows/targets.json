@@ -166,5 +166,11 @@
     "target": "esp32s3",
     "sdkconfig": "config/sdkconfig.defaults;config/sdkconfig.defaults.louder-esp32-s3-plus",
     "core": false
+  },
+  {
+    "name": "louder-esp32-s3-mini",
+    "target": "esp32s3",
+    "sdkconfig": "config/sdkconfig.defaults;config/sdkconfig.defaults.louder-esp32-s3-mini",
+    "core": true
   }
 ]
