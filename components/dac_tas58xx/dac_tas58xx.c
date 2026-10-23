@@ -2909,7 +2909,11 @@ typedef struct {
 } bq_cfg_file_t;
 
 uint32_t dac_tas58xx_bq_sample_rate(void) {
-  return (uint32_t)bq_design_fs(0);
+  return dac_tas58xx_bq_device_sample_rate(0);
+}
+
+uint32_t dac_tas58xx_bq_device_sample_rate(int dev) {
+  return (uint32_t)bq_design_fs(dev);
 }
 
 bool dac_tas58xx_bq_get(int dev, int ch, tas58xx_bq_t out[TAS58XX_BQ_SLOTS]) {
