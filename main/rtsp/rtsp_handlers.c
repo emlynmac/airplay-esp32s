@@ -52,7 +52,7 @@ uint64_t airplay_features(void) {
 
 static void configure_codec(audio_format_t *fmt, const char *name, int64_t sr,
                             int64_t spf) {
-  strcpy(fmt->codec, name);
+  strlcpy(fmt->codec, name, sizeof(fmt->codec));
   fmt->sample_rate = (int)sr;
   fmt->channels = 2;
   fmt->bits_per_sample = 16;
@@ -1347,7 +1347,7 @@ static void handle_setup(int socket, rtsp_conn_t *conn,
         }
       }
     }
-    if (latency_min > 0 && latency_min <= 5 * 44100) {
+    if (latency_min > 0 && latency_min <= INT64_C(5) * 44100) {
       latency_src = "SETUP latencyMin";
     } else {
       latency_min = AIRPLAY_RT_LATENCY_DEFAULT_SAMPLES;
