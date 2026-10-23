@@ -127,7 +127,7 @@ spacing or the room.</p>
 <div class='plotlab'>Phase</div>
 <canvas id='phase' class='plot' width='1640' height='460'></canvas>
 <p class='hint'>Curves are computed with the same model the firmware uses, at
-the rate the I2S link is running. Faint lines are individual sections, bold is
+the amplifier's processing rate. Faint lines are individual sections, bold is
 the cascade.</p>
 </div>
 
@@ -259,7 +259,12 @@ function setDirty(d){
   $('state').innerHTML="<span class='dot"+(d?' dirty':'')+"'></span>"+
     (d?'Uncommitted changes':'In sync with flash');
 }
-function fs(){return (data&&data.rate)||48000;}
+/* Older firmware reports only the primary rate. Newer firmware also reports
+   each amplifier's rate: different DSPs can share the same I2S clock. */
+function fs(a){
+  var am=data&&data.amps&&data.amps[a===undefined?amp:a];
+  return (am&&am.rate)||(data&&data.rate)||48000;
+}
 function fMax(){return fs()*0.49;}
 
 /* ---- PPC3 filter models ----
@@ -677,7 +682,7 @@ function autoShape(){
     for(c=0;c<data.amps[a].channels.length;c++){
       cs=data.amps[a].channels[c];
       for(i=0;i<SLOTS;i++)
-        if(cs[i].type===T_CUSTOM&&!shapeOf(cs[i],fs()).ok)left++;
+        if(cs[i].type===T_CUSTOM&&!shapeOf(cs[i],fs(a)).ok)left++;
     }
   return left;
 }
@@ -701,8 +706,8 @@ function toShape(i){
 }
 /* Phase is unwrapped as it goes, so an all-pass reads -360 rather than
    folding back to 0. */
-function sweep(secs,sr,fn,unwrap){
-  var N=360,F0=20,F1=Math.min(20000,sr/2),k;
+function sweep(secs,sr,fn,unwrap,maxHz){
+  var N=360,F0=20,F1=Math.min(maxHz||20000,sr/2),k;
   var curves=[],prev=[],total=[];
   for(k=0;k<secs.length;k++){curves.push([]);prev.push(0);}
   for(var i=0;i<=N;i++){
@@ -742,13 +747,14 @@ function chainH(secs,w){
   return {re:re,im:im};
 }
 /* On the same grid sweep() walks, so it overlays the per-chain curves. */
-function sumCurve(groups,sr,gains){
-  var N=360,F0=20,F1=Math.min(20000,sr/2),out=[],i,k,h,re,im,m,w,g;
+function sumCurve(groups,rates,gains){
+  var N=360,F0=20,F1=Math.min(20000,Math.min.apply(null,rates)/2);
+  var out=[],i,k,h,re,im,m,f,g;
   for(i=0;i<=N;i++){
-    w=2*P*F0*Math.pow(F1/F0,i/N)/sr;
+    f=F0*Math.pow(F1/F0,i/N);
     re=0;im=0;
     for(k=0;k<groups.length;k++){
-      h=chainH(groups[k],w);
+      h=chainH(groups[k],2*P*f/rates[k]);
       g=gains?gains[k]:1;
       re+=h.re*g;im+=h.im*g;
     }
@@ -1005,6 +1011,7 @@ function mixChanged(){
 }
 function drawTabs(){
   var h='',a;
+  $('sub').textContent='15 biquads per output at '+fs()+' Hz';
   for(a=0;a<data.amps.length;a++)
     h+="<button class='tab"+(a===amp?' on':'')+"' onclick='pickAmp("+a+
        ")'>"+ampLabel(a)+'</button>';
@@ -1121,12 +1128,13 @@ function gangChanged(){
   plot();
 }
 
-function sectionsOf(c){
+function sectionsOf(c,sr){
   var secs=[];
+  sr=sr||fs();
   for(var i=0;i<SLOTS;i++){
     var b=c[i];
     if(b.type===T_BYPASS&&!b.invert)continue;
-    secs.push(designBq(b,fs()));
+    secs.push(designBq(b,sr));
   }
   return secs;
 }
@@ -1221,7 +1229,8 @@ function clipNote(){
   if(!gainInfo||!data){show(el,'');return;}
   var chains=activeChains(),pk={db:-Infinity,f:0},k,r,i;
   for(k=0;k<chains.length;k++){
-    r=chainPeak(sectionsOf(chains[k].c),fs(),chains[k].g);
+    r=chainPeak(sectionsOf(chains[k].c,chains[k].rate),chains[k].rate,
+                chains[k].g);
     if(r.db>pk.db)pk=r;
   }
   /* The level clean on the supply, where the board can say what that is.
@@ -1268,10 +1277,13 @@ function activeChains(){
       /* Ganged shares one chain across both outputs, so it is still being
          heard unless every output carrying it is muted. */
       if(!am.mutes[0]||(!am.pbtl&&!am.mutes[1]))
-        out.push({c:am.channels[0],n:pre+chainLabel(am),g:trimOf(am,0)});
+        out.push({c:am.channels[0],n:pre+chainLabel(am),g:trimOf(am,0),
+                  rate:fs(a)});
     }else{
-      if(!am.mutes[0])out.push({c:am.channels[0],n:pre+'A',g:trimOf(am,0)});
-      if(!am.mutes[1])out.push({c:am.channels[1],n:pre+'B',g:trimOf(am,1)});
+      if(!am.mutes[0])out.push({c:am.channels[0],n:pre+'A',g:trimOf(am,0),
+                              rate:fs(a)});
+      if(!am.mutes[1])out.push({c:am.channels[1],n:pre+'B',g:trimOf(am,1),
+                              rate:fs(a)});
     }
   }
   return out;
@@ -1281,19 +1293,23 @@ function plotAll(){
   /* With a single chain the combined view would just repeat the one above. */
   $('all-wrap').style.display=chains.length>1?'':'none';
   if(chains.length<2)return;
-  var sweeps=[],groups=[],gains=[],leg='',k;
+  var sweeps=[],groups=[],gains=[],rates=[],leg='',k,maxHz=20000;
+  /* Every curve needs the same frequency grid, even when one DSP runs at
+     32 kHz and another at 96 kHz. Evaluate each at its own angular frequency. */
+  for(k=0;k<chains.length;k++)maxHz=Math.min(maxHz,chains[k].rate/2);
   for(k=0;k<chains.length;k++){
-    var secs=sectionsOf(chains[k].c);
-    var s=offsetTotal(sweep(secs,fs(),magDb,false),chains[k].g);
+    var secs=sectionsOf(chains[k].c,chains[k].rate);
+    var s=offsetTotal(sweep(secs,chains[k].rate,magDb,false,maxHz),chains[k].g);
     s.name=chains[k].n;
     groups.push(secs);sweeps.push(s);
+    rates.push(chains[k].rate);
     gains.push(Math.pow(10,chains[k].g/20));
     leg+="<span><i style='background:"+TRACE[k%TRACE.length][0]+"'></i>"+
          chains[k].n+'</span>';
   }
   var ex=null,hi=growScale(24,peakTotal(sweeps));
   if($('sumq').checked){
-    ex=[{v:sumCurve(groups,fs(),gains),c:C_SUM,w:4,n:'Sum'}];
+    ex=[{v:sumCurve(groups,rates,gains),c:C_SUM,w:4,n:'Sum'}];
     leg+="<span><i style='background:"+C_SUM+"'></i>Sum</span>";
   }
   $('sum-hint').style.display=ex?'':'none';
@@ -1487,7 +1503,10 @@ function xoBuild(){
   if(!p.lay||!p.al||!p.lay.ok)return;
   var f=num('xo-freq');
   if(!isFinite(f)){show($('msg'),'Enter a crossover frequency.','err');return;}
-  f=clamp(f,F_MIN,fs()*0.45);
+  var maxHz=Infinity;
+  for(var part=0;part<p.lay.parts.length;part++)
+    maxHz=Math.min(maxHz,fs(p.lay.parts[part].a)*0.45);
+  f=clamp(f,F_MIN,maxHz);
   var inv=p.al.inv,i,k;
   for(i=0;i<p.lay.parts.length;i++){
     var pt=p.lay.parts[i],am=data.amps[pt.a];
@@ -2106,7 +2125,6 @@ function load(){
     data=d;
     if(amp>=data.amps.length)amp=0;
     if(isGanged(data.amps[amp]))ch=0;
-    $('sub').textContent='15 biquads per output at '+d.rate+' Hz';
     var left=autoShape();
     drawTabs();drawMix();drawGains();loadRows();plot();showPreamp();
     if(left)

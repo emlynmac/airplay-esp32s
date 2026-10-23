@@ -360,6 +360,11 @@ static void bq_store(bq_coeff_t o, double out[5]) {
 
 /* ---------------- public entry points ---------------- */
 
+double tas5805m_dsp_rate(double i2s_rate_hz) {
+  const long hz = lround(i2s_rate_hz);
+  return (hz > 0 && hz % 11025 == 0) ? 88200.0 : 96000.0;
+}
+
 void tas58xx_bq_design(const tas58xx_bq_t *bq, double sample_rate_hz,
                        double out[5]) {
   bq_coeff_t o = bq_unity;
