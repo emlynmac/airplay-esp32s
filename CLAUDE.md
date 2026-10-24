@@ -57,6 +57,9 @@ idf.py -p /dev/ttyUSB0 monitor
 | `amped-esp32` | ESP32 + PCM5100 DAC + TPA3110/TPA3128 amp | No I2C; UNMUTE pin gated by playback play/pause |
 | `amped-esp32-bt` | Same + Bluetooth | |
 | `amped-esp32-s3` | ESP32-S3 + PCM5100 + TPA3110/TPA3128 | |
+| `amped-esp32-plus` | ESP32 + PCM5122 (I2C) + TPA3118 | Rev J1+ I2C pinout; shares the `hifi-esp32-plus` board dir |
+| `amped-esp32-plus-bt` | Same + Bluetooth | |
+| `amped-esp32-s3-plus` | ESP32-S3 + PCM5122 (I2C) + TPA3118 | Different pinout from the ESP32 revision |
 | `amped-esparagus` | ESP32 + PCM5100 + TPA3110/TPA3128 | Rev M only; rotary encoder (volume + play/pause); no display — hardware TFT (ILI9342) isn't a supported driver |
 | `amped-esparagus-bt` | Same + Bluetooth | |
 | `esparagus-audio-brick` | ESP32 + TAS5825M/TAS5805M DAC/amp | Ethernet is on in every brick build |
@@ -67,6 +70,7 @@ idf.py -p /dev/ttyUSB0 monitor
 | `louder-esp32-plus` | ESP32 + TAS5825M DAC/amp | |
 | `louder-esp32-plus-bt` | Same + Bluetooth | |
 | `louder-esp32-s3-plus` | ESP32-S3 + TAS5825M | |
+| `louder-esp32-s3-pro` | ESP32-S3 + TAS5825M | Louder-ESP32-S3-Plus pins + RGB LED + a 320x240 ST7789 TFT (BL on GPIO 42) instead of the OLED; the fan (GPIO 1/2) is not driven |
 | `esparagus-louder` | ESP32 + TAS5825M/TAS5805M | |
 | `esparagus-louder-bt` | Louder + Bluetooth | |
 | `esparagus-louder-s3` | ESP32-S3 + Louder | |
@@ -166,6 +170,7 @@ components/
 │   ├── waveshare-esp32s3/  # Waveshare ESP32-S3 board init
 │   ├── squeezeamp/         # SqueezeAMP (ESP32 + TAS5756)
 │   ├── hifi-esp32/         # HiFi-ESP32(-S3) / HiFi-Esparagus(-S3) (PCM5100)
+│   ├── hifi-esp32-plus/    # PCM5122 over I2C: HiFi-ESP32-Plus, Amped-ESP32-Plus(-S3)
 │   ├── loud-esp32/         # Loud-ESP32(-S3), Loud-Esparagus, Esparagus-Echo, Amped-ESP32(-S3), Amped-Esparagus (RTSP-gated amp enable pin)
 │   └── esparagus-audio-brick/ # Esparagus Audio Brick (ESP32/S3 + TAS58xx + W5500)
 ├── spiffs_storage/         # SPIFFS filesystem mount (stores web pages + DSP configs)
