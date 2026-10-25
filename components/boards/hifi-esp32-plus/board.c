@@ -3,15 +3,18 @@
 
 /**
  * @file board.c
- * @brief Board implementation for Sonocotta HiFi-ESP32-Plus (rev J1+)
+ * @brief Board implementation for the Sonocotta PCM5122 boards
  *
- * Same layout as HiFi-ESP32 (I2S on 26/25/22, W5500 + OLED on a shared SPI
- * bus) but with a PCM5122 instead of the PCM5100. The PCM5122 is controlled
- * over I2C (SDA 21, SCL 27, address 0x4D) and needs a handful of registers
- * written at boot before it plays without an MCLK line, so this board brings
- * up the DAC I2C bus and registers the PCM51xx driver. GPIO 13 is the board's
- * DAC/AMP enable (XSMT), toggled from playback events like the other
- * Sonocotta boards do.
+ * Covers HiFi-ESP32-Plus (rev J1+), Amped-ESP32-Plus and
+ * Amped-ESP32-S3-Plus. All three put a PCM5122 where the plain boards have a
+ * PCM5100, and keep the W5500 + OLED on a shared SPI bus. The PCM5122 is
+ * controlled over I2C (address 0x4D) and needs a handful of registers written
+ * at boot before it plays without an MCLK line, so this board brings up the
+ * DAC I2C bus and registers the PCM51xx driver. CONFIG_DAC_ENABLE_GPIO is the
+ * board's enable line — XSMT on the HiFi, the TPA3118's UNMUTE on the Amped
+ * boards — and is toggled from playback events like the other Sonocotta
+ * boards do. Every pin comes from Kconfig, so the three differ only in their
+ * defaults.
  */
 
 #include "iot_board.h"
@@ -28,7 +31,7 @@
 #include "driver/spi_master.h"
 #endif
 
-static const char TAG[] = "HiFiEsp32Plus";
+static const char TAG[] = "Pcm5122Board";
 
 static bool s_board_initialized = false;
 static i2c_master_bus_handle_t s_i2c_dac_bus_handle = NULL;
@@ -135,7 +138,7 @@ esp_err_t iot_board_init(void) {
   }
 
   s_board_initialized = true;
-  ESP_LOGI(TAG, "HiFi-ESP32-Plus initialized");
+  ESP_LOGI(TAG, "%s initialized", BOARD_NAME);
   return ESP_OK;
 
 fail:
