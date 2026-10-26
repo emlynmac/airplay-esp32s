@@ -559,7 +559,8 @@ float tas58xx_bq_chain_peak_db(const double (*coeff)[5], int count,
   const float golden = 0.618034f;
   float best = 0.0f, best_f = 10.0f;
   float prev = 0.0f, cur = chain_power(polys, count, fs, 10.0f);
-  for (float f = 10.0f; f <= top; f *= step) {
+  float f = 10.0f;
+  while (f <= top) {
     const float next =
         f * step <= top ? chain_power(polys, count, fs, f * step) : 0.0f;
     if (cur > best) {
@@ -590,6 +591,7 @@ float tas58xx_bq_chain_peak_db(const double (*coeff)[5], int count,
     }
     prev = cur;
     cur = next;
+    f *= step;
   }
 
   if (at_hz) {

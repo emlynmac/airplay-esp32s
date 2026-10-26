@@ -188,7 +188,7 @@ static esp_err_t api_guard(httpd_req_t *req) {
     // Close rather than drain what may be a whole firmware image.
     return ESP_FAIL;
   }
-  const uri_handler_fn *handler = req->user_ctx;
+  const uri_handler_fn *handler = (const uri_handler_fn *)req->user_ctx;
   return (*handler)(req);
 }
 
@@ -201,7 +201,7 @@ static void register_uri(httpd_uri_t *uri) {
       return;
     }
     s_api_handlers[s_api_handler_count] = uri->handler;
-    uri->user_ctx = &s_api_handlers[s_api_handler_count++];
+    uri->user_ctx = (void *)&s_api_handlers[s_api_handler_count++];
     uri->handler = api_guard;
   }
   httpd_register_uri_handler(s_server, uri);
