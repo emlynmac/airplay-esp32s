@@ -3180,7 +3180,8 @@ static float eq_boost_locked(float *at_hz) {
   for (int dev = 0; dev < s_dev_count; dev++) {
     const bool pbtl = dac_tas58xx_is_pbtl(dev);
     const bool ganged = pbtl || s_bq_ganged[dev];
-    const double fs = s_bq_fs;
+    /* At the rate the chain plays at, as bq_program_chain() designs it. */
+    const double fs = bq_design_fs(dev);
     for (int ch = 0; ch < (ganged ? 1 : TAS58XX_BQ_CHANNELS); ch++) {
       /* Bridged, the chip drives one output from path A. */
       float trim = -INFINITY;
