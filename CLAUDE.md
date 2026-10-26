@@ -57,6 +57,9 @@ idf.py -p /dev/ttyUSB0 monitor
 | `amped-esp32` | ESP32 + PCM5100 DAC + TPA3110/TPA3128 amp | No I2C; UNMUTE pin gated by playback play/pause |
 | `amped-esp32-bt` | Same + Bluetooth | |
 | `amped-esp32-s3` | ESP32-S3 + PCM5100 + TPA3110/TPA3128 | |
+| `amped-esp32-plus` | ESP32 + PCM5122 (I2C) + TPA3118 | Rev J1+ I2C pinout; shares the `hifi-esp32-plus` board dir |
+| `amped-esp32-plus-bt` | Same + Bluetooth | |
+| `amped-esp32-s3-plus` | ESP32-S3 + PCM5122 (I2C) + TPA3118 | Different pinout from the ESP32 revision |
 | `amped-esparagus` | ESP32 + PCM5100 + TPA3110/TPA3128 | Rev M only; rotary encoder (volume + play/pause); no display — hardware TFT (ILI9342) isn't a supported driver |
 | `amped-esparagus-bt` | Same + Bluetooth | |
 | `esparagus-audio-brick` | ESP32 + TAS5825M/TAS5805M DAC/amp | Ethernet is on in every brick build |
@@ -67,6 +70,7 @@ idf.py -p /dev/ttyUSB0 monitor
 | `louder-esp32-plus` | ESP32 + TAS5825M DAC/amp | |
 | `louder-esp32-plus-bt` | Same + Bluetooth | |
 | `louder-esp32-s3-plus` | ESP32-S3 + TAS5825M | |
+| `louder-esp32-s3-pro` | ESP32-S3 + TAS5825M | Louder-ESP32-S3-Plus pins + RGB LED + a 320x240 ST7789 TFT (BL on GPIO 42) instead of the OLED; the fan (GPIO 1/2) is not driven |
 | `esparagus-louder` | ESP32 + TAS5825M/TAS5805M | |
 | `esparagus-louder-bt` | Louder + Bluetooth | |
 | `esparagus-louder-s3` | ESP32-S3 + Louder | |
@@ -74,6 +78,7 @@ idf.py -p /dev/ttyUSB0 monitor
 | `louder-esp32-bt` | Same + Bluetooth | |
 | `louder-esp32-s3` | ESP32-S3 + TAS5805M | |
 | `louder-esp32-s3-mini` | Louder-ESP32-Mini: ESP32-S3 + TAS5805M | Bridged (PBTL) in copper: `CONFIG_TAS58XX_FORCE_PBTL` is not optional |
+| `louder-esp32-s3-mini-uac` | Same, as a USB speaker | Extends louder-esp32-s3-mini + `defaults.uac` |
 
 Bluetooth Classic only exists on the original ESP32, so the S3 revision of a board never has a `-bt` environment.
 
@@ -165,6 +170,7 @@ components/
 │   ├── waveshare-esp32s3/  # Waveshare ESP32-S3 board init
 │   ├── squeezeamp/         # SqueezeAMP (ESP32 + TAS5756)
 │   ├── hifi-esp32/         # HiFi-ESP32(-S3) / HiFi-Esparagus(-S3) (PCM5100)
+│   ├── hifi-esp32-plus/    # PCM5122 over I2C: HiFi-ESP32-Plus, Amped-ESP32-Plus(-S3)
 │   ├── loud-esp32/         # Loud-ESP32(-S3), Loud-Esparagus, Esparagus-Echo, Amped-ESP32(-S3), Amped-Esparagus (RTSP-gated amp enable pin)
 │   └── esparagus-audio-brick/ # Esparagus Audio Brick (ESP32/S3 + TAS58xx + W5500)
 ├── spiffs_storage/         # SPIFFS filesystem mount (stores web pages + DSP configs)
@@ -195,6 +201,7 @@ components/
 
 - **Two parts, one driver.** The model is guessed from the I2C address (0x4C–0x4F → TAS5825M, 0x2C–0x2F → TAS5805M), then confirmed against the die ID in register 0x67; a disagreement is logged as a warning.
 - **A TAS5805M has no process flow.** PPC3 dumps are skipped for it (`tas58xx_load_hf()` returns early unless the model is a TAS5825M) and the input mixer refuses anything but stereo: `dac_tas58xx_can_route()` is false, `dac_tas58xx_set_mix()` returns `ESP_ERR_NOT_SUPPORTED`, init drops a stored routing, and `/api/bq` reports the amp as `mix_fixed` so the page greys the control out. Volume, mute and the 15 biquads per channel work on both parts, so the `/bq` web UI is the tuning route for a 5805M.
+- **A TAS5805M's biquads run at 96 kHz, not the I2S rate.** Its ROM flow converts every input to 96 kHz (88.2 kHz for the 44.1 kHz family) ahead of the EQ (TI SLOA263A, Process Flow 1), so `bq_design_fs()` designs its sections at `tas5805m_dsp_rate()` and `/api/bq` reports that rate. Designed at the I2S rate instead, every section plays an octave high at 48 kHz. Designed at 96 kHz, our coefficients match the PPC3-generated ones for this part to within 3 LSB. A TAS5825M's sections run at the I2S rate.
 - **PPC3 dump filenames**, searched most specific first: `tas5825m_fw<i>-<rate>.bin` → `tas5825m_fw-<rate>.bin` → `tas5825m_fw<i>.bin` → `tas5825m_fw.bin`. The unindexed names only stand in for device 0. `components/dac_tas58xx/ppc3_convert.py` produces them from a PPC3 export.
 - **Fault handling.** A clock fault is expected when the I2S clock stops at the end of a track, so it is logged and cleared rather than muting the amplifier; channel and global2 faults still mute. Rev D has no fault line at all and is polled instead.
 - **The digital gain follows the supply and the EQ unless set by hand.** The gain does not change with PVDD: at 0 dB analog gain, 0 dBFS is 29.5 V peak, and the output clips at about 93 % of PVDD. `dac_tas58xx_clean_db()` gives the loudest clean level for a supply (−16.5 dB at 5 V, −11 dB at 9 V). With `dac_tas58xx_set_auto_gain()` on and a supply known (`dac_tas58xx_set_supply_mv()`, fed by the HUSB238A callback), the driver keeps the gain (`dac_tas58xx_set_full_volume_db()`, the level AirPlay's full volume maps to) at that level less the highest point of every unmuted chain, trims included (`tas58xx_bq_chain_peak_db()`, host test `tests/tas58xx_peak`), recomputed on every chain, trim, mute, gang, rate and supply change. Automatic voltage (the highest offer up to `CONFIG_HUSB238A_MAX_VOLTS`) and automatic gain are both on unless turned off (NVS `pd_auto`, `gain_auto`); setting either by hand turns its own off. A board that cannot read its supply keeps the hand-set gain (`full_vol`, half-dB steps; a `CONFIG_HUSB238A` build with nothing stored starts at the 5 V level). The supply is set on the Speaker page (`/`), the gain there and on `/bq` (`/api/audio/digital-gain`, `/api/power/usb-pd`, each taking `{"auto": bool}`). The HUSB238A trigger forgets on power loss and is asked again on every boot, and only for the fixed 5–20 V offers, never EPR.
@@ -227,7 +234,7 @@ scripts/lint.sh            # Run clang-tidy on all C/H files
 scripts/lint.sh --fix      # Attempt to auto-fix clang-tidy issues
 ```
 
-**Host tests**: `tests/pcm51xx/run.py`, `tests/audio_eq/run.py`, `tests/rtp_resend/run.py`, `tests/husb238a/run.py` and `tests/tas58xx_peak/run.py` compile the real driver, EQ, resend-tracker, USB-PD trigger and filter-peak code against small mocks with the host C compiler, and run in CI's `format-check` job. There is no test framework beyond that; everything else needs testing on hardware.
+**Host tests**: `tests/pcm51xx/run.py`, `tests/tas5805m_rate/run.py`, `tests/ptp_clock/run.py`, `tests/audio_eq/run.py`, `tests/rtp_resend/run.py`, `tests/bplist/run.py`, `tests/husb238a/run.py`, `tests/audio_scheduler/run.py` and `tests/tas58xx_peak/run.py` compile the real driver, TAS5805M filter-rate, PTP filter, EQ, resend-tracker, binary-plist, USB-PD trigger, scheduler and filter-peak code with the host C compiler, using small mocks where needed, and run in CI's `format-check` job. The TAS5805M suite also uses Node.js to check the actual EQ page and driver/UI round trips. There is no test framework beyond that; everything else needs testing on hardware.
 
 ## Documentation site
 

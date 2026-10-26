@@ -52,7 +52,7 @@ uint64_t airplay_features(void) {
 
 static void configure_codec(audio_format_t *fmt, const char *name, int64_t sr,
                             int64_t spf) {
-  strcpy(fmt->codec, name);
+  strlcpy(fmt->codec, name, sizeof(fmt->codec));
   fmt->sample_rate = (int)sr;
   fmt->channels = 2;
   fmt->bits_per_sample = 16;
@@ -1347,7 +1347,7 @@ static void handle_setup(int socket, rtsp_conn_t *conn,
         }
       }
     }
-    if (latency_min > 0 && latency_min <= 5 * 44100) {
+    if (latency_min > 0 && latency_min <= INT64_C(5) * 44100) {
       latency_src = "SETUP latencyMin";
     } else {
       latency_min = AIRPLAY_RT_LATENCY_DEFAULT_SAMPLES;
@@ -1896,11 +1896,12 @@ static void handle_teardown(int socket, rtsp_conn_t *conn,
   }
   audio_receiver_stop();
   audio_output_flush();
-  // Drop PTP lock + offset history.  AirPlay group rejoins reuse the same
-  // PTP master clock_id; without this, ptp_clock_set_master_clock_id() on
-  // the next session early-returns and reuses stale samples accumulated
-  // (or missed) while we were detached from the group.
-  ptp_clock_clear();
+  // Drop PTP lock + offset history if they went stale.  AirPlay group
+  // rejoins reuse the same PTP master clock_id, and samples missed while we
+  // were detached must not be reused.  But a phone moving to its next track
+  // tears down and sets up again within half a second while its SYNCs keep
+  // arriving; clearing then cost a ~0.75 s re-lock that the start skipped.
+  ptp_clock_end_session();
   conn->stream_active = false;
   conn->stream_paused =
       has_streams; // Keep session ready if only streams torn down

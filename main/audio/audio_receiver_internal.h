@@ -32,6 +32,8 @@
  * can ever use. */
 #define AUDIO_DRAM_CAPS (MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT)
 
+// Singleton; fields are grouped by purpose, not size.
+// NOLINTNEXTLINE(clang-analyzer-optin.performance.Padding)
 typedef struct audio_receiver_state {
   audio_stream_t *stream;
   audio_stream_t *realtime_stream;

@@ -607,8 +607,12 @@ static void bt_avrc_ct_cb(esp_avrc_ct_cb_event_t event,
     local.meta_rsp.attr_text = copy;
   }
 
-  bt_app_work_dispatch(bt_avrc_ct_evt_handler, (uint16_t)event, &local,
-                       sizeof(esp_avrc_ct_cb_param_t));
+  // Not dispatched: the copy is still ours.
+  if (!bt_app_work_dispatch(bt_avrc_ct_evt_handler, (uint16_t)event, &local,
+                            sizeof(esp_avrc_ct_cb_param_t)) &&
+      event == ESP_AVRC_CT_METADATA_RSP_EVT) {
+    free(local.meta_rsp.attr_text);
+  }
 }
 
 /* ========================================================================== */
@@ -743,6 +747,8 @@ static void bt_register_profiles(void) {
   if (pin_len > ESP_BT_PIN_CODE_LEN) {
     pin_len = ESP_BT_PIN_CODE_LEN;
   }
+  // Length-delimited, not a C string.
+  // NOLINTNEXTLINE(bugprone-not-null-terminated-result)
   memcpy(pin_code, pin_str, pin_len);
   esp_bt_gap_set_pin(pin_type, pin_len, pin_code);
   ESP_LOGI(TAG, "BT PIN set (%d digits)", pin_len);

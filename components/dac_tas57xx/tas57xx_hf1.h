@@ -129,7 +129,7 @@ esp_err_t tas57xx_hf1_set_drc_timing(const tas57xx_cram_sink_t *sink, int band,
                                      const tas57xx_hf1_drc_timing_t *timing,
                                      uint32_t sample_rate_hz);
 
-#define TAS57XX_HF1_DRC_MIX_MIN -1.0f
+#define TAS57XX_HF1_DRC_MIX_MIN (-1.0f)
 #define TAS57XX_HF1_DRC_MIX_MAX 1.0f
 
 /**
@@ -171,7 +171,7 @@ esp_err_t tas57xx_hf1_set_drc_curve(
 esp_err_t tas57xx_hf1_set_smooth_clip(const tas57xx_cram_sink_t *sink,
                                       float threshold_db);
 
-#define TAS57XX_HF1_FINE_VOL_MIN_DB -0.25f
+#define TAS57XX_HF1_FINE_VOL_MIN_DB (-0.25f)
 #define TAS57XX_HF1_FINE_VOL_MAX_DB 0.25f
 
 /**

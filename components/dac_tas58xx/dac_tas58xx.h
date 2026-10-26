@@ -200,8 +200,14 @@ esp_err_t dac_tas58xx_bq_set(int dev, int ch,
 void dac_tas58xx_bq_set_ganged(int dev, bool ganged);
 bool dac_tas58xx_bq_get_ganged(int dev);
 
-/** Sample rate the chain is currently designed against. */
+/** Sample rate the primary amplifier's chain is designed against. */
 uint32_t dac_tas58xx_bq_sample_rate(void);
+
+/**
+ * Sample rate one amplifier's chain is designed against. Amplifiers sharing
+ * an I2S bus can have different DSP rates. An unknown index uses the I2S rate.
+ */
+uint32_t dac_tas58xx_bq_device_sample_rate(int dev);
 
 /** Write the current chains to SPIFFS so they survive a reboot. */
 esp_err_t dac_tas58xx_bq_commit(void);

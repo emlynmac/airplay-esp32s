@@ -49,6 +49,7 @@ are computed for 48 kHz. AirPlay's 44.1 kHz stream is resampled on the way out.
 | --- | --- |
 | `esp32s3-uac` | ESP32-S3 + PCM5102A |
 | `esparagus-audio-brick-dual-uac` | [Esparagus Audio Brick Dual](../boards/esparagus-audio-brick-dual-dac.md) |
+| `louder-esp32-s3-mini-uac` | [Louder-ESP32-Mini](../boards/louder-esp32.md#usb-audio) |
 
 USB audio is enabled by layering `config/sdkconfig.defaults.uac` onto a board's defaults. To
 add it to a [custom board](../boards/custom.md), put that file **last** in your

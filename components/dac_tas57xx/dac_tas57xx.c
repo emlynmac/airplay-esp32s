@@ -103,7 +103,7 @@
 // register map this part shares. The EVM wires the amplifier output labelled
 // A to right and B to left, so A is R62 and B is R61.
 #define TAS57XX_VOL_REG_MAX_DB 24.0f
-#define TAS57XX_VOL_MIN_DB     -103.0f
+#define TAS57XX_VOL_MIN_DB     (-103.0f)
 
 #define I2C_TIMEOUT    100
 #define I2C_LINE_SPEED 100000
@@ -1175,8 +1175,8 @@ esp_err_t dac_tas57xx_hf3_revert(void) {
  * the flow already resident.
  */
 static void tas57xx_replay_working_tuning_locked(void) {
-  tas57xx_dev_t *d;
-  if (s_hf1_dirty && (d = tas57xx_hf1_dev()) != NULL) {
+  tas57xx_dev_t *d = s_hf1_dirty ? tas57xx_hf1_dev() : NULL;
+  if (d != NULL) {
     tas57xx_cram_sink_t sink = {.handle = d->handle};
     if (tas57xx_hf1_apply(&sink, &s_hf1) == ESP_OK) {
       ESP_LOGI(TAG, "Replayed the uncommitted HF1 tuning");
@@ -1184,7 +1184,8 @@ static void tas57xx_replay_working_tuning_locked(void) {
       ESP_LOGW(TAG, "Could not replay the uncommitted HF1 tuning");
     }
   }
-  if (s_hf3_dirty && (d = tas57xx_hf3_dev()) != NULL) {
+  d = s_hf3_dirty ? tas57xx_hf3_dev() : NULL;
+  if (d != NULL) {
     tas57xx_cram_sink_t sink = {.handle = d->handle};
     if (tas57xx_hf3_apply(&sink, &s_hf3) == ESP_OK) {
       tas57xx_write_input_mix(d);
@@ -1293,6 +1294,8 @@ static void tas57xx_reapply_saved_tuning_locked(tas57xx_dev_t *d, int flow) {
     saved.hf1.sample_rate_hz = s_i2s_rate_hz;
   }
 
+  // A file size; an oversized file already failed to load.
+  // NOLINTNEXTLINE(clang-analyzer-optin.taint.TaintedAlloc)
   uint8_t *img = malloc((size_t)d->hf_size);
   if (img == NULL) {
     return;
