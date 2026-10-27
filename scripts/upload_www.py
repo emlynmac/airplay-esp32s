@@ -2,6 +2,7 @@
 """Upload the web interface files to a running AirPlay receiver."""
 
 import argparse
+import gzip
 import json
 import sys
 from pathlib import Path
@@ -13,10 +14,35 @@ from urllib.request import Request, urlopen
 MAX_UPLOAD_BYTES = 256 * 1024
 UPLOAD_TIMEOUT_SECONDS = 30
 
+# Keep in sync with COMPRESS_SUFFIXES in scripts/gen_spiffs_image.py: these
+# are the only names serve_spiffs_file() (main/network/web_server.c) ever
+# falls back to a ".gz" sibling for, so they're the only ones worth gzipping.
+COMPRESS_SUFFIXES = (".html",)
+
+
+def delete_file(device_url, remote_path):
+    """Best-effort delete of a stale uncompressed sibling that would
+    otherwise shadow the .gz file we just uploaded (serve_spiffs_file()
+    tries the exact path before falling back to ".gz")."""
+    url = f"{device_url}/api/fs/delete?path={quote(remote_path, safe='/')}"
+    request = Request(url, method="POST")
+    with urlopen(request, timeout=UPLOAD_TIMEOUT_SECONDS) as response:
+        result = json.loads(response.read())
+    if result.get("success"):
+        print(f"Deleted stale {remote_path}")
+
 
 def upload_file(device_url, source, relative_path):
-    payload = source.read_bytes()
+    raw = source.read_bytes()
     remote_path = f"/spiffs/www/{relative_path.as_posix()}"
+    stale_path = None
+
+    if relative_path.name.endswith(COMPRESS_SUFFIXES):
+        payload = gzip.compress(raw, compresslevel=9, mtime=0)
+        stale_path = remote_path
+        remote_path += ".gz"
+    else:
+        payload = raw
 
     if not payload or len(payload) > MAX_UPLOAD_BYTES:
         raise ValueError(
@@ -35,7 +61,10 @@ def upload_file(device_url, source, relative_path):
         result = json.loads(response.read())
     if not result.get("success"):
         raise RuntimeError(f"{relative_path}: device rejected the upload")
-    print(f"Uploaded {relative_path} ({len(payload)} bytes)")
+    print(f"Uploaded {relative_path} -> {remote_path} ({len(payload)} bytes)")
+
+    if stale_path is not None:
+        delete_file(device_url, stale_path)
 
 
 def main():
