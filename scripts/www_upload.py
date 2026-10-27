@@ -17,7 +17,7 @@ UPLOAD_TIMEOUT_SECONDS = 30
 # Keep in sync with COMPRESS_SUFFIXES in scripts/gen_spiffs_image.py: these
 # are the only names serve_spiffs_file() (main/network/web_server.c) ever
 # falls back to a ".gz" sibling for, so they're the only ones worth gzipping.
-COMPRESS_SUFFIXES = (".html",)
+COMPRESS_SUFFIXES = (".html", ".css", ".js")
 
 
 def delete_file(device_url, remote_path):
