@@ -144,6 +144,18 @@
     "core": false
   },
   {
+    "name": "amped-esp32-plus-bt",
+    "target": "esp32",
+    "sdkconfig": "config/sdkconfig.defaults;config/sdkconfig.defaults.amped-esp32-plus;config/sdkconfig.defaults.bt",
+    "core": false
+  },
+  {
+    "name": "amped-esp32-s3-plus",
+    "target": "esp32s3",
+    "sdkconfig": "config/sdkconfig.defaults;config/sdkconfig.defaults.amped-esp32-s3-plus",
+    "core": false
+  },
+  {
     "name": "louder-esp32-bt",
     "target": "esp32",
     "sdkconfig": "config/sdkconfig.defaults;config/sdkconfig.defaults.louder-esp32;config/sdkconfig.defaults.bt",
@@ -165,6 +177,12 @@
     "name": "louder-esp32-s3-plus",
     "target": "esp32s3",
     "sdkconfig": "config/sdkconfig.defaults;config/sdkconfig.defaults.louder-esp32-s3-plus",
+    "core": false
+  },
+  {
+    "name": "louder-esp32-s3-pro",
+    "target": "esp32s3",
+    "sdkconfig": "config/sdkconfig.defaults;config/sdkconfig.defaults.louder-esp32-s3-pro",
     "core": false
   },
   {

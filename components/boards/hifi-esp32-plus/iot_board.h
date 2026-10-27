@@ -6,8 +6,21 @@
 #include "board_common.h"
 #include "sdkconfig.h"
 
+// Shared by the three Sonocotta PCM5122 boards: the line-level
+// HiFi-ESP32-Plus and the Amped-ESP32-Plus / -S3-Plus, which put a TPA3118
+// behind the same DAC. Only the pins and the label differ.
+#if defined(CONFIG_BOARD_AMPED_ESP32_PLUS)
+#define BOARD_NAME "Amped-ESP32-Plus"
+#define BOARD_DESCRIPTION \
+  "ESP32 with PCM5122 I2C DAC, TPA3118 amp, SPI Ethernet"
+#elif defined(CONFIG_BOARD_AMPED_ESP32_S3_PLUS)
+#define BOARD_NAME "Amped-ESP32-S3-Plus"
+#define BOARD_DESCRIPTION \
+  "ESP32-S3 with PCM5122 I2C DAC, TPA3118 amp, SPI Ethernet"
+#else
 #define BOARD_NAME        "HiFi-ESP32-Plus"
 #define BOARD_DESCRIPTION "ESP32 with PCM5122 I2C-controlled DAC, SPI Ethernet"
+#endif
 
 // I2S configuration (PCM5122 runs from BCK, no MCLK wired)
 #define BOARD_I2S_BCK_GPIO CONFIG_I2S_BCK_IO
