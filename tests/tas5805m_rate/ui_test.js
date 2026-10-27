@@ -12,10 +12,13 @@ const html = fs.readFileSync(path.join(__dirname, '../../data/www/bq.html'), 'ut
 const script = html.match(/<script>([\s\S]*?)<\/script>/)[1];
 const elements = new Map();
 const context = vm.createContext({
-  window: {},
+  window: { addEventListener() {} },
   document: {
     getElementById(id) {
-      if (!elements.has(id)) elements.set(id, { id, style: {}, checked: true });
+      if (!elements.has(id)) elements.set(id, {
+        id, style: {}, checked: true,
+        classList: { toggle() {}, add() {}, remove() {} },
+      });
       return elements.get(id);
     },
   },
@@ -92,12 +95,19 @@ data.amps[0].mutes=[true,true];
 var peak=eqBq(12,6000,5,fs(1));
 data.amps[1].channels[0][0].coeff=[peak.b0,peak.b1,peak.b2,peak.a1,peak.a2];
 gainInfo={db:0,min_db:-30,recommended:[{volts:5,db:0}]};
-show=function(el,text){headroomText=text;};
 `);
+// This page reports the boost in showHeadroom(), which prints the level but
+// not where it peaks, so check the peak it finds directly.
 for (const selected of [0, 1]) {
   context.amp = selected;
-  run('clipNote();');
-  assert.match(context.headroomText, /6\.0 kHz/);
+  run(`showHeadroom();
+var cs=activeChains(),k,r;peakHz=0;peakDb=-Infinity;
+for(k=0;k<cs.length;k++){
+  r=chainPeak(sectionsOf(cs[k].c,cs[k].rate),cs[k].rate,cs[k].g);
+  if(r.db>peakDb){peakDb=r.db;peakHz=r.f;}
+}`);
+  assert.ok(Math.abs(context.peakHz - 6000) < 60,
+    `headroom finds the 6 kHz boost at its DSP rate (${context.peakHz} Hz)`);
 }
 
 // Older API responses and software-EQ firmware retain their global-rate
