@@ -17,6 +17,7 @@ CONFIG_I2S_WS_IO=25
 CONFIG_I2S_DO_IO=32
 CONFIG_DAC_I2C_SDA=27
 CONFIG_DAC_I2C_SCL=26
+
 # Jack detect (GPIO34) reaches the ESP32 only if the J8 option header is
 # fitted; otherwise the pin floats and toggles the speaker off mid-playback.
 # Set to 34 to re-enable.
@@ -39,3 +40,6 @@ CONFIG_LED_STATUS_STANDBY_BLINK_SLOW=y
 # entries cap outstanding data at ~6*MSS = 8640 B.
 CONFIG_LWIP_TCP_WND_DEFAULT=15840
 CONFIG_LWIP_TCP_RECVMBOX_SIZE=16
+
+# Reduce Logging
+CONFIG_LOG_DEFAULT_LEVEL_WARN=y

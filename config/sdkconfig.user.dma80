@@ -28,3 +28,6 @@ CONFIG_ESP_CONSOLE_NONE=y
 # Second-stage bootloader writes to UART0 before app starts — silence it.
 CONFIG_BOOTLOADER_LOG_LEVEL_NONE=y
 CONFIG_BOOTLOADER_LOG_LEVEL=0
+
+# Reduce Logging
+CONFIG_LOG_DEFAULT_LEVEL_WARN=y
